@@ -2,7 +2,7 @@
 #include "SessionController.h"
 #include "Settings.h"
 #include "airplay/ReceiverEndpoint.h"
-#include "audio/AsioCapture.h"
+#include "audio/InputCapture.h"
 #include <QObject>
 #include <QThread>
 #include <memory>
@@ -17,10 +17,11 @@ public:
   void selectDriver(const QString &id, void *window);
   void controlPanel();
   void start(const Settings &settings,
-             const QList<airplay::ReceiverEndpoint> &endpoints);
+             const QList<airplay::ReceiverEndpoint> &endpoints,
+             bool saveSettings = true);
   void stop();
   void volume(double db);
-  bool busy() const { return session_.busy(); }
+  bool busy() const { return permissionPending_ || session_.busy(); }
   SessionController &session() { return session_; }
 signals:
   void channels(QList<audio::ChannelInfo> channels);
@@ -38,10 +39,12 @@ signals:
 private:
   void stopCapture();
   SessionController session_;
-  audio::AsioCapture capture_;
+  std::unique_ptr<audio::InputCapture> capture_;
   QList<audio::DriverInfo> drivers_;
   QString selectedId_;
   void *window_ = nullptr;
   bool saveAllowed_ = true;
+  bool permissionPending_ = false;
+  quint64 permissionRevision_ = 0;
 };
 } // namespace app

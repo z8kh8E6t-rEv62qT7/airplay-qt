@@ -3,13 +3,13 @@
 #include "ui/StreamingPanel.h"
 #include <QApplication>
 #include <map>
-#include <windows.h>
+#include "NativeRuntime.h"
 
 namespace vst3 {
-// Created lazily by IPlugView::attached on the HWND's owning thread.
+// Created lazily by IPlugView::attached on the native UI thread.
 class PluginRuntime {
 public:
-  static PluginRuntime &acquire(HWND parent);
+  static PluginRuntime &acquire(void *parent);
   static void addComponent() noexcept;
   static void removeComponent() noexcept;
   static void processorRemoved(uint64_t id) noexcept;
@@ -17,7 +17,7 @@ public:
   static bool exists() noexcept;
   static bool prepareUnload() noexcept;
   ui::StreamingPanel *open(const std::shared_ptr<PluginState> &,
-                           airplay::DiscoveryApi = {});
+                           const airplay::DiscoveryApi & = airplay::defaultDiscoveryApi());
   void close(uint64_t id);
   void pump();
 
@@ -26,11 +26,10 @@ private:
   PluginRuntime();
   ~PluginRuntime();
   void retire(uint64_t);
-  static LRESULT CALLBACK windowProc(HWND, UINT, WPARAM, LPARAM);
+  struct ApplicationMode;
+  std::unique_ptr<ApplicationMode> applicationMode_;
   std::unique_ptr<QApplication> application_;
-  HWND dispatcher_ = nullptr;
-  HMODULE module_ = nullptr;
-  DWORD threadId_ = 0;
+  std::unique_ptr<NativeRuntime> native_;
   bool pumping_ = false, shutdownPending_ = false, shuttingDown_ = false;
   uint64_t sender_ = 0;
   int argc_ = 1;

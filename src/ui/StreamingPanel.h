@@ -16,8 +16,9 @@ class StreamingPanel : public QWidget {
   Q_OBJECT
 public:
   explicit StreamingPanel(app::SessionController &, QWidget *parent = nullptr,
-                          airplay::DiscoveryApi = {});
+                          const airplay::DiscoveryApi & = airplay::defaultDiscoveryApi());
   app::Timing timing() const;
+  QList<airplay::ReceiverEndpoint> endpoints() const;
   void setTiming(const app::Timing &);
   void beginDiscovery();
   void clearReceiverSelection();
@@ -29,12 +30,12 @@ public:
   void appendLog(const QString &);
   Q_SLOT void setBusy(bool);
 signals:
-  void startRequested(app::Timing, QList<airplay::ReceiverEndpoint>);
+  // UI-thread notifications; consumers read typed values synchronously.
+  void startRequested();
   void discoveryIdle();
-  void timingChanged(app::Timing);
+  void timingChanged();
 
 private:
-  QList<airplay::ReceiverEndpoint> endpoints() const;
   void updateTargets();
   void scan();
   airplay::ReceiverDiscovery discovery_;

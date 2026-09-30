@@ -7,22 +7,33 @@
 #include <QVBoxLayout>
 
 namespace ui {
-MainWindow::MainWindow(airplay::DiscoveryApi api) {
-  setWindowTitle("AirPlayQt · ASIO → HomePod");
+MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
+#ifdef Q_OS_MACOS
+  const QString backend = "Core Audio";
+#else
+  const QString backend = "ASIO";
+#endif
+  setWindowTitle("AirPlayQt · " + backend + " → HomePod");
   resize(900, 980);
   auto *central = new QWidget;
   setCentralWidget(central);
   auto *layout = new QVBoxLayout(central);
-  auto *input = new QGroupBox("ASIO 输入设备");
+  auto *input = new QGroupBox(backend + " 输入设备");
   auto *form = new QFormLayout(input);
   driver_ = new QComboBox;
   left_ = new QComboBox;
   right_ = new QComboBox;
-  panel_ = new QPushButton("驱动控制面板");
+  panel_ = new QPushButton(
+#ifdef Q_OS_MACOS
+      "音频 MIDI 设置"
+#else
+      "驱动控制面板"
+#endif
+  );
   auto *row = new QHBoxLayout;
   row->addWidget(driver_, 1);
   row->addWidget(panel_);
-  form->addRow("ASIO 驱动", row);
+  form->addRow("输入设备", row);
   form->addRow("左声道输入", left_);
   form->addRow("右声道输入", right_);
   layout->addWidget(input);
@@ -51,16 +62,15 @@ MainWindow::MainWindow(airplay::DiscoveryApi api) {
   connect(panel_, &QPushButton::clicked, &controller_,
           &app::Controller::controlPanel);
   connect(streaming_, &StreamingPanel::startRequested, this,
-          [this](app::Timing timing,
-                 const QList<airplay::ReceiverEndpoint> &endpoints) {
+          [this] {
             app::Settings settings;
             settings.driverId = driver_->currentData().toString();
             settings.left =
                 left_->currentIndex() < 0 ? -1 : left_->currentData().toInt();
             settings.right =
                 right_->currentIndex() < 0 ? -1 : right_->currentData().toInt();
-            settings.timing = timing;
-            controller_.start(settings, endpoints);
+            settings.timing = streaming_->timing();
+            controller_.start(settings, streaming_->endpoints());
           });
   QTimer::singleShot(0, this, [this] {
     if (closing_)
@@ -79,7 +89,7 @@ MainWindow::MainWindow(airplay::DiscoveryApi api) {
       else if (!saved_.driverId.isEmpty())
         streaming_->appendLog("已保存的驱动不可用，请重新选择。");
       else
-        streaming_->appendLog("请选择 ASIO 驱动及两个输入通道。配置：" +
+        streaming_->appendLog("请选择输入设备及两个输入通道。配置：" +
                               app::Settings::path());
     } catch (const std::exception &e) {
       streaming_->showError(QString::fromUtf8(e.what()));
@@ -96,10 +106,12 @@ void MainWindow::setChannels(const QList<audio::ChannelInfo> &channels) {
   left_->clear();
   right_->clear();
   for (const auto &channel : channels) {
+#ifdef Q_OS_MACOS
+    const auto label = QString("%1 · %2").arg(channel.index + 1).arg(channel.name);
+#else
     const auto label = QString("%1 · %2 [ASIO 类型 %3]")
-                           .arg(channel.index + 1)
-                           .arg(channel.name)
-                           .arg(channel.type);
+                           .arg(channel.index + 1).arg(channel.name).arg(channel.type);
+#endif
     left_->addItem(label, channel.index);
     right_->addItem(label, channel.index);
   }

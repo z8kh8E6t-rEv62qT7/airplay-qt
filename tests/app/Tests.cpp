@@ -1,3 +1,4 @@
+#include "airplay/DiscoveryApi.h"
 #include "app/Settings.h"
 #include "ui/MainWindow.h"
 #include <QFile>
@@ -79,8 +80,7 @@ private slots:
     QVERIFY(!start->isEnabled());
     QVERIFY(first->text().isEmpty() && second->text().isEmpty());
     for (int i = 1; i <= 3; ++i) {
-      emit discovery->found("same name", airplay::parseReceiverEndpoint(
-                                             QString("192.168.8.%1").arg(i)));
+      emit discovery->found("same name", QString("192.168.8.%1:7000").arg(i));
       QCOMPARE(list->item(i - 1)->checkState(), Qt::Unchecked);
     }
     list->item(0)->setCheckState(Qt::Checked);

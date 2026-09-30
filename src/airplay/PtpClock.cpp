@@ -2,15 +2,26 @@
 #include <QNetworkDatagram>
 #include <QNetworkInterface>
 #include <cmath>
+#ifdef Q_OS_WIN
 #include <windows.h>
+#else
+#include <time.h>
+#endif
 
 namespace airplay {
 int64_t wallNs() {
+#ifdef Q_OS_WIN
   FILETIME time;
   GetSystemTimePreciseAsFileTime(&time);
   const uint64_t ticks =
       (uint64_t(time.dwHighDateTime) << 32) | time.dwLowDateTime;
   return int64_t((ticks - 116444736000000000ULL) * 100);
+#else
+  timespec stamp{};
+  if (clock_gettime(CLOCK_REALTIME, &stamp) != 0)
+    throw Error("无法读取系统时钟");
+  return int64_t(stamp.tv_sec) * 1000000000 + stamp.tv_nsec;
+#endif
 }
 QByteArray ptpHeader(int kind, int length, uint64_t clock, uint16_t sequence,
                      int flags, int interval) {

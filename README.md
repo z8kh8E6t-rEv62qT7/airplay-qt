@@ -1,5 +1,81 @@
 # AirPlayQt
 
+## macOS arm64 移植状态（2026-09-30，本机开发构建完成）
+
+已确认目标为 Release 本机开发构建，独立应用使用 Core Audio 输入设备，插件使用 DAW 音频；采样率不是 44.1 kHz 时只报错拒绝，不引导、不自动切换、不重采样。运行依赖本机 Qt 6.11.1、OpenSSL 3.6.4 和 libplist 2.7.0。只针对当前 macOS 27.2 / arm64 环境；本机 OpenSSL、libplist 二进制最低系统版本为 27.0，构建默认部署目标 26.5 的链接警告不代表已验证旧系统兼容性。
+
+固定执行清单保持原顺序与范围，状态如下：
+
+1. **完成：建立平台边界与构建入口。** 保留共享协议、队列、会话和界面，分离 Windows／macOS 采集、发现和插件窗口实现；公共接口移除 Windows 类型依赖。新增 `macos-release` 配置、构建及测试预设，使用 Apple Clang、Ninja、arm64，输出至 `build/macos-release`，保留既有 Windows 预设。
+2. **完成：实现 Core Audio 独立应用。** 以设备 UID 保存选择，枚举输入声道，接入现有 `CaptureStream`；回调使用预分配缓冲和有界队列，不执行阻塞操作。处理权限拒绝、设备移除、格式变化、无效声道和溢出，异常停止后需手动重启。界面采用输入设备／声道文案，控制面板打开“音频 MIDI 设置”；配置存入用户配置目录，保留现有 JSON 字段和版本。
+3. **完成：移植发现与计时。** 使用 Bonjour DNS-SD，保留扫描期限、IPv4 筛选、去重、取消和刷新语义，正确释放回调资源。Mac 提供纳秒墙钟实现，调度继续使用单调计时；保留现有 PTP 端口和协议行为，移除 Mac 路径上的 Windows 优先级及计时器调用。应用补齐音频输入和本地网络用途声明。
+4. **完成：移植 VST3 编辑器与生命周期。** 共享 Processor、状态、音频透传及会话逻辑，使用 macOS SDK 入口和 NSView 嵌入。处理主线程事件派发、Retina 逻辑尺寸、焦点、编辑器重开及卸载清理；保留兼容 QApplication 借用和不兼容时明确失败的行为。保持插件名称、FUID、状态版本和单发送实例约束。
+5. **完成：构建、验证并交付。** 编译完整 `.app` 和 `.vst3`，运行适用的 CTest、SDK validator、自测及 Mac 原生宿主测试，验证启动与动态依赖。更新构建说明，提供产物绝对路径、测试结果和未完成验收项。
+
+第 4 项原阻塞已解决：接收端列表与发现信号只传递 Qt 内置字符串，业务层继续使用普通 C++ 类型；界面启动／参数变更信号改为同线程通知，由调用方读取类型化数据。移除自定义元类型声明，同时避免 Qt 6.11 `QListWidgetItem::checkState()` 内联枚举转换产生的模块内类型注册，直接读取 `CheckStateRole` 整数。不依赖 Qt 内部注销接口，不改变插件 FUID、状态版本或配置 JSON。
+
+第 5 项验证结果：完整 CTest 在 CLI 开启时 **10/10 组通过**，包含协议、Bonjour、Core Audio、VST 音频／状态及界面回归；SDK validator **47/47**，SDK 自测 **51/51**。Mac 原生宿主分别在自建、借用和不兼容 Qt 模式下完成五轮真实加载／卸载，每轮两次编辑器打开／关闭，并验证逻辑尺寸与焦点。自建与借用模式每轮向发现信号注入确定性结果，覆盖选择、读取、清空、启动拒绝和参数通知，不依赖局域网是否有接收端。参数恢复、窗口重开和多实例单发送限制也已在 Mac 执行；多实例测试只连接本机回环测试端口。
+
+独立应用实际启动、显示主窗口、完成 Bonjour 发现并正常退出（退出码 0）通过；`file` 确认两份二进制均为 arm64，`otool -L` 确认依赖 Homebrew 与系统动态库。SDK 对齐分配测试已按 macOS 的 C `aligned_alloc` 约束验证非对齐倍数返回空指针，保留 Windows 原检查；依据 [WG14 DR 460](https://open-std.org/jtc1/sc22/wg14/www/docs/n1986.htm)。未修改 VST3 SDK。
+
+已实测：Loopback Audio 第 1、2 声道、44.1 kHz，向两台 HomePod 连续发送 30 秒并正常停止，详见下方 CLI 记录。未验证：物理音频设备的权限拒绝／采集／拔插、真实 DAW、HomePod 左右定位与长时同步、Windows 编译及回归。其他 Core Audio 格式、声道映射、分块、溢出和属性变化仍仅通过注入测试验证。**[blocked] 正式上线：** 仍需实际宿主与设备验收，以及 Claude 可维护性／边界条件／回归风险三维审查；本任务不执行 Claude。
+
+当前产物（仅限当前 Mac 的本机开发构建）：
+
+- `/Users/langzhuo/Projects/airplay-qt/build/macos-release/AirPlayQt.app`
+- `/Users/langzhuo/Projects/airplay-qt/build/macos-release/VST3/Release/AirPlayQt.vst3`
+
+复现命令（项目根目录）：
+
+```sh
+cmake --preset macos-release -DBUILD_TESTING=ON
+cmake --build --preset macos-release
+ctest --preset macos-release --output-junit macos-tests.xml
+```
+
+`vst3` 和 `vst3_module_*` 测试需要 macOS 图形会话；模块宿主会扫描设备，但不会开始音频发送。结果在 `build/macos-release/macos-tests.xml` 和 `build/macos-release/Testing/Temporary/LastTest.log`；构建日志为 `build/macos-release/build.log`。编辑器截图位于 `build/macos-release/bin/Release/VstEmbedded-owned.png` 和 `VstEmbedded-borrowed.png`。没有自动安装插件、制作便携包或公证安装包。
+
+
+### macOS CLI 实机测试（用户追加授权）
+
+麦克风权限后端构建遗漏已修复：对 macOS 独立目标执行 `qt_finalize_target(AirPlayQt)`，使 Qt 根据 Info.plist 导入静态 Darwin 麦克风权限插件及请求入口。已从产物符号确认两者存在，并确认 AVFoundation 链接。
+
+CLI 由 `#ifdef AIRPLAY_CLI_TEST` 控制，CMake 选项默认 `OFF`。关闭时不编译 `Cli.cpp`、不定义 CLI 入口，也不注册 `cli_cases`；本次最终产物已关闭 CLI。开关仅适用于 macOS 独立应用。CMake 缓存会保留显式选择，测试后需显式设回 `OFF`。
+
+在项目根目录开启并构建：
+
+```sh
+cmake --preset macos-release -DAIRPLAY_CLI_TEST=ON
+cmake --build --preset macos-release
+```
+
+测试后关闭并构建：
+
+```sh
+cmake --preset macos-release -DAIRPLAY_CLI_TEST=OFF
+cmake --build --preset macos-release
+```
+
+仅开启时，同一个 `AirPlayQt.app` 支持 `--cli`，不显示主窗口，复用 Controller、Core Audio、权限检查与 AirPlay 会话。设备按 UID 选择，声道参数从 1 开始，只接受 44.1 kHz。CLI 读取已有时间设置，不保存设备／声道选择，不执行旧 Windows 实测程序的音量变化和静音测试；协议仍沿用现有会话的初始音量处理。
+
+```sh
+/Users/langzhuo/Projects/airplay-qt/build/macos-release/AirPlayQt.app/Contents/MacOS/AirPlayQt --cli --help
+/Users/langzhuo/Projects/airplay-qt/build/macos-release/AirPlayQt.app/Contents/MacOS/AirPlayQt --cli --list-devices
+/Users/langzhuo/Projects/airplay-qt/build/macos-release/AirPlayQt.app/Contents/MacOS/AirPlayQt --cli --device 'com.rogueamoeba.Loopback::9B38442C-0A0F-4BDD-B24C-A170833A3FB0' --left 1 --right 2 --seconds 30 --receiver 192.168.8.9 --receiver 192.168.8.10
+```
+
+接收端必须显式指定；重复 `--receiver` 可选择已有立体声组的两台设备。`--seconds` 范围 1～3600，从进入发送状态开始计时，默认 30；`--startup-timeout` 范围 1～3600，默认 60，包含授权等待。Ctrl+C／SIGTERM 请求有界正常停止。标准输出为 JSON Lines，包含阶段、组合、初始音量、每秒统计和最终结果；最终计数是最后一次遥测采样值。退出码 0 表示完成规定时长且有发送包，1 表示运行失败，2 表示参数错误，130／143 表示中断。非零峰值用于区分输入音频与静音；发送成功不能代替听音确认。
+
+新增自动回归 `cli_cases` 覆盖 16 项帮助、参数边界、重复接收端、非法地址和不存在设备的失败退出；不向 HomePod 发送。CLI 开启状态完整 CTest **10/10 通过**，关闭状态 **9/9 通过**；两份报告分别为 `build/macos-release/macos-cli-on-tests.xml` 和 `macos-tests.xml`。关闭状态已验证构建命令不包含 `Cli.cpp`、最终二进制不存在 `runCli` 符号，且 `cli_cases` 未注册。实际发送仅由人工明确调用，不加入自动 CTest。
+
+**CLI 实机发送通过（2026-09-30 14:49，America/Denver）：** 用户确认本地网络权限已允许后，通过系统 `open -n -W` 启动同一应用完成了既定测试：Loopback Audio 第 1、2 声道，目标 `192.168.8.9:7000` 和 `192.168.8.10:7000`。立体声组校验、PTP 等待、输入缓冲、30 秒发送及正常停止均完成。最终 `exit_code=0`，含停止清理的发送阶段计时为 30123 ms；最后一次遥测每台 3750 包，重传 0、过期 0，最大积压 55.873 ms，左右声道峰值均为 0.096527，确认输入不是静音。未执行额外音量调节；会话报告初始音量约 -10.5 dB。用户随后确认 HomePod 已实际出声。此结果验证实际采集、发送及出声；左右定位和长期同步尚未验收。
+
+成功日志：`build/macos-release/homepod-cli-retry.jsonl`，标准错误：`homepod-cli-retry.stderr.log`。之前的 `homepod-cli.jsonl` 保留两次失败记录：第一次直接命令启动的麦克风权限归属 Codex 而被拒绝；第二次系统启动已通过麦克风检查，但本地网络首次授权期间连接立即失败。用户确认允许后的本次重试成功，未修改签名或系统权限数据库。`AirPlayQt` 签名标识与 `org.airplayqt.app` 包标识差异仍属于开发构建的已知信息，不能据此断言它是此前错误的根因。构建日志：`build/macos-release/cli-build.log`。
+
+
+macOS 会按启动环境判断权限归属；从命令行启动与从 Finder 启动的授权行为可能不同。参见 [Apple 本地网络隐私说明](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。同一应用的 CLI 现已通过实测；GUI 尚未在此次授权生效后重新开始发送验证。
+
+
 Windows x64 / C++20 / Qt 6 Widgets：读取一个 ASIO 驱动的任意两个输入声道，通过 PoC 的实时 ALAC/PTP 路径发送到一台接收端或已有 HomePod 立体声组。
 
 另提供同进程 Qt 编辑器的 Windows x64 VST3 效果插件：直接接收 DAW 立体声音频，本地 Float32／Float64 原样透传，复用同一套发现、协议和发送实现。当前为 0.1.0 开发构建，尚未满足正式上线门槛。
@@ -234,7 +310,7 @@ VASIO 跟随 Matrix 主时钟。若报 `ASE_NoClock (-995)` 且查询仍为 4800
 
 预缓冲必须小于最大积压。低提前量可能使接收端晚到；不保证零延迟。时钟漂移导致的积压、断流或发送落后会显式报错，不通过丢帧或重采样掩盖。
 
-配置写入 **exe 同目录的 `AirPlayQt.json`**，与启动工作目录无关。成功准备采集后保存驱动 CLSID、从 0 开始的声道索引及时间参数；不保存接收端地址、选择模式、配对密钥或 HomePod 音量。本轮未改变配置版本与格式。
+macOS 配置写入 **`~/.config/AirPlayQt.json`**，Windows 仍写入 **exe 同目录的 `AirPlayQt.json`**，均与启动工作目录无关。macOS 原 `~/Library/Preferences/AirPlayQt/AirPlayQt.json` 已按用户要求删除，不迁移、不读取旧路径。成功准备采集后保存设备标识（macOS UID／Windows 驱动 CLSID）、从 0 开始的声道索引及时间参数；不保存接收端地址、选择模式、配对密钥或 HomePod 音量。配置版本与格式保持不变。
 
 配置使用 `QSaveFile` 原子替换，并关闭直接写入降级。配置缺失使用默认值；损坏、版本无效或参数无效时提示，并在本次运行中禁止覆盖原文件。修复或移走文件后重启可恢复保存。无法保存时明确报错。已保存驱动或声道不存在时保持未选择，不静默替换。
 

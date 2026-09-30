@@ -15,3 +15,5 @@ AirPlayQt.json
 
 # Local IDE cache
 /.vs/
+
+.DS_Store

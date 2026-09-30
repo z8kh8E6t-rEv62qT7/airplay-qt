@@ -5,7 +5,7 @@ using namespace Steinberg;
 using namespace Steinberg::Vst;
 
 bool InitModule() { return true; }
-extern "C" __declspec(dllexport) bool AirPlayQtCanUnload() {
+extern "C" SMTG_EXPORT_SYMBOL bool AirPlayQtCanUnload() {
   return gPluginFactory == nullptr && vst3::PluginRuntime::prepareUnload();
 }
 bool DeinitModule() {

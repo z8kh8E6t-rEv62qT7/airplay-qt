@@ -1,3 +1,4 @@
+#include "airplay/DiscoveryApi.h"
 #include "airplay/ReceiverDiscovery.h"
 #include <QtEndian>
 #include <QtTest>
@@ -124,7 +125,7 @@ private slots:
     dns.finish(0, "same name", "192.168.8.9", 7001);
     QTRY_COMPARE(found.size(), 1);
     QCOMPARE(dns.requests.size(), 4);
-    QCOMPARE(qvariant_cast<ReceiverEndpoint>(found[0][1]).text(),
+    QCOMPARE(found[0][1].toString(),
              QString("192.168.8.9:7001"));
     dns.finish(0, "same name", "192.168.8.10");
     dns.finish(0, "alias", "192.168.8.9", 7001);

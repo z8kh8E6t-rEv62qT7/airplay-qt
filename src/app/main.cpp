@@ -2,12 +2,22 @@
 #include <QApplication>
 #include <QMessageBox>
 #include <stdexcept>
+#ifdef AIRPLAY_CLI_TEST
+#include "Cli.h"
+#endif
+#ifdef Q_OS_WIN
 #include <windows.h>
+#endif
 int main(int argc, char **argv) {
   QApplication application(argc, argv);
   QApplication::setStyle("Fusion");
   QCoreApplication::setApplicationName("AirPlayQt");
+#ifdef AIRPLAY_CLI_TEST
+  if (application.arguments().contains("--cli"))
+    return app::runCli(application);
+#endif
   try {
+#ifdef Q_OS_WIN
     // Apply before MainWindow creates the controller and network thread.
     if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)) {
       const auto error = GetLastError();
@@ -27,6 +37,7 @@ int main(int argc, char **argv) {
           QString("Windows 未采用 Realtime 优先级（实际值 0x%1）")
               .arg(priority, 0, 16)
               .toStdString());
+#endif
     ui::MainWindow window;
     window.show();
     return application.exec();

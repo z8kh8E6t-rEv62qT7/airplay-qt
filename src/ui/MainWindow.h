@@ -8,7 +8,7 @@ namespace ui {
 class MainWindow : public QMainWindow {
   Q_OBJECT
 public:
-  explicit MainWindow(airplay::DiscoveryApi discoveryApi = {});
+  explicit MainWindow(const airplay::DiscoveryApi &discoveryApi = airplay::defaultDiscoveryApi());
 
 protected:
   void closeEvent(QCloseEvent *) override;

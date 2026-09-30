@@ -1,7 +1,11 @@
 #include "Controller.h"
+#ifdef Q_OS_MACOS
+#include <QCoreApplication>
+#include <QPermissions>
+#endif
 
 namespace app {
-Controller::Controller(QObject *parent) : QObject(parent) {
+Controller::Controller(QObject *parent) : QObject(parent), capture_(audio::createInputCapture()) {
   connect(&session_, &SessionController::status, this, &Controller::status);
   connect(&session_, &SessionController::log, this, &Controller::log);
   connect(&session_, &SessionController::group, this, &Controller::group);
@@ -19,16 +23,16 @@ Controller::Controller(QObject *parent) : QObject(parent) {
           &Controller::stopCapture);
   connect(&session_, &SessionController::startCapture, this, [this] {
     try {
-      capture_.start();
+      capture_->start();
       session_.captureStarted();
     } catch (const std::exception &e) {
       session_.stop(QString::fromUtf8(e.what()));
     }
   });
 }
-Controller::~Controller() { capture_.stop(); }
+Controller::~Controller() { capture_->stop(); }
 Settings Controller::initialize() {
-  drivers_ = audio::AsioCapture::enumerate();
+  drivers_ = audio::inputDevices();
   try {
     return Settings::load(Settings::path());
   } catch (const std::exception &e) {
@@ -44,7 +48,7 @@ void Controller::selectDriver(const QString &id, void *window) {
   selectedId_.clear();
   window_ = window;
   try {
-    const auto list = capture_.open(id, window);
+    const auto list = capture_->open(id, window);
     selectedId_ = id;
     emit channels(list);
     emit session_.status("驱动已加载，等待开始");
@@ -57,7 +61,7 @@ void Controller::controlPanel() {
   if (busy())
     return;
   try {
-    capture_.controlPanel();
+    capture_->controlPanel();
     const auto id = selectedId_;
     selectDriver(id, window_);
   } catch (const std::exception &e) {
@@ -65,20 +69,44 @@ void Controller::controlPanel() {
   }
 }
 void Controller::start(const Settings &settings,
-                       const QList<airplay::ReceiverEndpoint> &endpoints) {
+                       const QList<airplay::ReceiverEndpoint> &endpoints,
+                       bool saveSettings) {
   if (busy())
     return;
+#ifdef Q_OS_MACOS
+  const QMicrophonePermission permission;
+  const auto permissionStatus = qApp->checkPermission(permission);
+  if (permissionStatus == Qt::PermissionStatus::Denied) {
+    emit error("音频输入权限被拒绝。");
+    return;
+  }
+  if (permissionStatus == Qt::PermissionStatus::Undetermined) {
+    permissionPending_ = true;
+    const auto revision = ++permissionRevision_;
+    emit busyChanged(true);
+    qApp->requestPermission(permission, this, [this, settings, endpoints, revision, saveSettings](const QPermission &result) {
+      if (!permissionPending_ || revision != permissionRevision_) return;
+      permissionPending_ = false;
+      emit busyChanged(false);
+      if (result.status() == Qt::PermissionStatus::Granted) start(settings, endpoints, saveSettings);
+      else emit error("音频输入权限被拒绝。");
+    });
+    return;
+  }
+#endif
   try {
     airplay::validateEndpoints(endpoints);
     if (settings.driverId.isEmpty() || selectedId_ != settings.driverId)
-      throw airplay::Error("请选择有效 ASIO 驱动");
+      throw airplay::Error("请选择有效输入设备");
     if (const auto message = settings.validate(); !message.isEmpty())
       throw airplay::Error(message);
-    emit session_.status("准备 ASIO 输入");
-    const auto stream = capture_.prepare(settings.left, settings.right,
+    emit session_.status("准备音频输入");
+    const auto stream = capture_->prepare(settings.left, settings.right,
                                          settings.timing.backlog);
+#ifdef Q_OS_WIN
     emit session_.log("采集计时：已申请 1 ms 精度，并禁止忽略计时精度请求。");
-    if (saveAllowed_)
+#endif
+    if (saveAllowed_ && saveSettings)
       settings.save(Settings::path());
     session_.start(settings.timing, stream, endpoints);
   } catch (const std::exception &e) {
@@ -88,9 +116,17 @@ void Controller::start(const Settings &settings,
   }
 }
 void Controller::stopCapture() {
-  if (const auto message = capture_.stop(); !message.isEmpty())
+  if (const auto message = capture_->stop(); !message.isEmpty())
     emit error(message);
 }
-void Controller::stop() { session_.stop(); }
+void Controller::stop() {
+  if (permissionPending_) {
+    permissionPending_ = false;
+    ++permissionRevision_;
+    emit busyChanged(false);
+    emit stopped();
+  }
+  session_.stop();
+}
 void Controller::volume(double db) { session_.volume(db); }
 } // namespace app

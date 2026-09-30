@@ -1,170 +1,13 @@
 #include "Plugin.h"
 #include "PluginRuntime.h"
-#include <QStyleFactory>
-#include <QStyle>
-#include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
+#include "PluginEditor.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
-#include "public.sdk/source/common/pluginview.h"
-#include <QScrollArea>
-#include <QWindow>
 #include <cmath>
 #include <cstring>
 
 namespace vst3 {
 using namespace Steinberg;
 using namespace Steinberg::Vst;
-namespace {
-class Editor final : public CPluginView, public IPlugViewContentScaleSupport {
-public:
-  explicit Editor(std::shared_ptr<PluginState> state)
-      : state_(std::move(state)) {
-    rect = {0, 0, 900, 880};
-    PluginRuntime::addComponent();
-  }
-  ~Editor() override {
-    removed();
-    PluginRuntime::removeComponent();
-  }
-  tresult PLUGIN_API isPlatformTypeSupported(FIDString type) override {
-    return type && std::strcmp(type, kPlatformTypeHWND) == 0 ? kResultTrue
-                                                             : kResultFalse;
-  }
-  tresult PLUGIN_API attached(void *parent, FIDString type) override {
-    if (isAttached() || !parent || isPlatformTypeSupported(type) != kResultTrue)
-      return kResultFalse;
-    try {
-      auto &runtime = PluginRuntime::acquire(static_cast<HWND>(parent));
-      runtime_ = &runtime;
-      panel_ = runtime.open(state_);
-      viewport_ = std::make_unique<QScrollArea>();
-      viewport_->setWidgetResizable(true);
-      viewport_->setFrameShape(QFrame::NoFrame);
-      viewport_->setWidget(panel_);
-      // Scope the editor style to our widgets, including when borrowing the
-      // host's QApplication. QWidget styles do not propagate to children.
-      auto *fusion = QStyleFactory::create("Fusion");
-      if (!fusion)
-        throw airplay::Error("Qt Fusion 样式不可用。");
-      fusion->setParent(panel_);
-      viewport_->setStyle(fusion);
-      for (auto *widget : viewport_->findChildren<QWidget *>())
-        widget->setStyle(fusion);
-      viewport_->setWindowFlags(Qt::FramelessWindowHint);
-      viewport_->setAttribute(Qt::WA_NativeWindow);
-      viewport_->winId();
-      foreign_.reset(QWindow::fromWinId(reinterpret_cast<WId>(parent)));
-      if (!foreign_)
-        throw airplay::Error("Qt 无法嵌入宿主 HWND。");
-      viewport_->windowHandle()->setParent(foreign_.get());
-      applyScale();
-      viewport_->show();
-    } catch (const std::exception &e) {
-      detachPanel();
-      const auto message = QString::fromUtf8(e.what()).toStdWString();
-      error_ = CreateWindowExW(
-          0, L"STATIC", message.c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT, 12,
-          12, rect.getWidth() - 24, 140, static_cast<HWND>(parent), nullptr,
-          GetModuleHandleW(nullptr), nullptr);
-      if (!error_)
-        return kResultFalse;
-    }
-    CPluginView::attached(parent, type);
-    onSize(&rect);
-    return kResultOk;
-  }
-  tresult PLUGIN_API removed() override {
-    detachPanel();
-    if (error_) {
-      DestroyWindow(error_);
-      error_ = nullptr;
-    }
-    return CPluginView::removed();
-  }
-  tresult PLUGIN_API onSize(ViewRect *value) override {
-    if (!value)
-      return kInvalidArgument;
-    CPluginView::onSize(value);
-    if (viewport_) {
-      const auto dpr = viewport_->devicePixelRatioF();
-      viewport_->resize(qRound(value->getWidth() / dpr),
-                        qRound(value->getHeight() / dpr));
-      viewport_->windowHandle()->setPosition(0, 0);
-    }
-    if (error_)
-      MoveWindow(error_, 12, 12, value->getWidth() - 24,
-                 value->getHeight() - 24, TRUE);
-    return kResultOk;
-  }
-  tresult PLUGIN_API onFocus(TBool focus) override {
-    if (panel_ && focus) {
-      panel_->setFocus(Qt::OtherFocusReason);
-      SetFocus(reinterpret_cast<HWND>(viewport_->winId()));
-    }
-    return kResultOk;
-  }
-  tresult PLUGIN_API canResize() override { return kResultTrue; }
-  tresult PLUGIN_API checkSizeConstraint(ViewRect *value) override {
-    if (!value)
-      return kInvalidArgument;
-    value->right =
-        value->left + std::max(value->getWidth(), int32(650 * scale_));
-    value->bottom =
-        value->top + std::max(value->getHeight(), int32(750 * scale_));
-    return kResultTrue;
-  }
-  tresult PLUGIN_API setContentScaleFactor(ScaleFactor factor) override {
-    if (!std::isfinite(factor) || factor <= 0 || factor > 8)
-      return kInvalidArgument;
-    ViewRect changed{0, 0, int32(rect.getWidth() * factor / scale_),
-                     int32(rect.getHeight() * factor / scale_)};
-    scale_ = factor;
-    applyScale();
-    if (plugFrame)
-      return plugFrame->resizeView(this, &changed);
-    rect = changed;
-    return kResultTrue;
-  }
-  OBJ_METHODS(Editor, CPluginView)
-  DEFINE_INTERFACES
-  DEF_INTERFACE(IPlugViewContentScaleSupport)
-  END_DEFINE_INTERFACES(CPluginView)
-  REFCOUNT_METHODS(CPluginView)
-private:
-  void applyScale() {
-    if (!panel_ || !viewport_)
-      return;
-    const auto ratio = scale_ / viewport_->devicePixelRatioF();
-    auto font = QApplication::font();
-    font.setPointSizeF(font.pointSizeF() * ratio);
-    panel_->setFont(font);
-    if (auto *title = panel_->findChild<QLabel *>("streamingTitle"))
-      title->setStyleSheet(
-          QString("font-size: %1px; font-weight: 600; padding: 8px 0;")
-              .arg(22 * ratio));
-  }
-  void detachPanel() {
-    if (panel_) {
-      panel_->hide();
-      if (viewport_)
-        viewport_->takeWidget();
-      panel_ = nullptr;
-      if (runtime_ && state_)
-        runtime_->close(state_->id);
-    }
-    if (viewport_ && viewport_->windowHandle())
-      viewport_->windowHandle()->setParent(nullptr);
-    viewport_.reset();
-    foreign_.reset();
-  }
-  std::shared_ptr<PluginState> state_;
-  ui::StreamingPanel *panel_ = nullptr;
-  PluginRuntime *runtime_ = nullptr;
-  std::unique_ptr<QWindow> foreign_;
-  std::unique_ptr<QScrollArea> viewport_;
-  HWND error_ = nullptr;
-  float scale_ = 1;
-};
-} // namespace
 Processor::Processor() : state_(PluginState::create()) {
   setControllerClass(controllerId);
   PluginRuntime::addComponent();
@@ -340,6 +183,6 @@ tresult PLUGIN_API EditController::setComponentState(IBStream *stream) {
 IPlugView *PLUGIN_API EditController::createView(FIDString name) {
   if (!name || std::strcmp(name, ViewType::kEditor) != 0)
     return nullptr;
-  return new Editor(state_);
+  return createEditor(state_);
 }
 } // namespace vst3

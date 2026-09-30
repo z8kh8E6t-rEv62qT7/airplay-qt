@@ -4,6 +4,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QDir>
 #include <cmath>
 #include <stdexcept>
 
@@ -106,6 +107,13 @@ void Settings::save(const QString &path) const {
     fail(file.errorString());
 }
 QString Settings::path() {
+#ifdef Q_OS_MACOS
+  const auto directory = QDir::home().filePath(".config");
+  if (!QDir().mkpath(directory))
+    fail("无法创建用户配置目录");
+  return directory + "/AirPlayQt.json";
+#else
   return QCoreApplication::applicationDirPath() + "/AirPlayQt.json";
+#endif
 }
 } // namespace app

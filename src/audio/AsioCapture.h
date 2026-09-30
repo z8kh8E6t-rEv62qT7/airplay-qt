@@ -1,5 +1,5 @@
 #pragma once
-#include "CaptureStream.h"
+#include "InputCapture.h"
 #include <QList>
 #include <QString>
 #include <memory>
@@ -13,14 +13,6 @@
 
 namespace audio {
 class CaptureTiming;
-struct DriverInfo {
-  QString id, name;
-};
-struct ChannelInfo {
-  int index;
-  QString name;
-  long type;
-};
 struct CaptureTraceEntry {
   int64_t beginTicks = 0, endTicks = 0;
   uint64_t samplePosition = 0, systemTime = 0;
@@ -36,7 +28,7 @@ struct CaptureTrace {
   std::vector<CaptureTraceEntry> entries;
   size_t used = 0, overflow = 0;
 };
-class AsioCapture {
+class AsioCapture final : public InputCapture {
 public:
   AsioCapture();
   ~AsioCapture();

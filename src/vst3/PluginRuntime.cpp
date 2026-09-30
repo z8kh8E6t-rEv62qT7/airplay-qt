@@ -2,14 +2,14 @@
 #include <QThread>
 #include <QFileInfo>
 #include <QDir>
-#include <mmsystem.h>
+#ifdef AIRPLAY_PACKAGED_RUNTIME
+#include <windows.h>
+#endif
 
 namespace vst3 {
 namespace {
 std::atomic<PluginRuntime *> runtime{nullptr};
 std::atomic<unsigned> components{0};
-constexpr UINT retireMessage = WM_APP + 71, shutdownMessage = WM_APP + 72;
-constexpr wchar_t dispatcherClass[] = L"AirPlayQt.VST3.EventDispatcher.0.1";
 QString faultText(InputFault value) {
   switch (value) {
   case InputFault::Inactive:
@@ -33,6 +33,17 @@ QString faultText(InputFault value) {
   }
 }
 } // namespace
+struct PluginRuntime::ApplicationMode {
+#ifdef Q_OS_MACOS
+  const bool plugin = QCoreApplication::testAttribute(Qt::AA_PluginApplication);
+  const bool menu = QCoreApplication::testAttribute(Qt::AA_DontUseNativeMenuBar);
+  ApplicationMode() { QCoreApplication::setAttribute(Qt::AA_PluginApplication); }
+  ~ApplicationMode() {
+    QCoreApplication::setAttribute(Qt::AA_PluginApplication, plugin);
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeMenuBar, menu);
+  }
+#endif
+};
 struct PluginRuntime::Instance {
   PluginRuntime &runtime;
   std::shared_ptr<PluginState> state;
@@ -65,9 +76,9 @@ struct PluginRuntime::Instance {
   }
   void release() {
     if (timer) {
-      const auto result = timeEndPeriod(1);
+      const bool restored = endSessionTiming();
       timer = false;
-      if (result != TIMERR_NOERROR && panel)
+      if (!restored && panel)
         panel->showError("释放 1 ms 计时精度失败。");
     }
     if (runtime.sender_ == state->id)
@@ -87,8 +98,7 @@ struct PluginRuntime::Instance {
         throw airplay::Error(error);
       airplay::validateEndpoints(endpoints);
       const auto stream = state->input.prepare(timing.backlog);
-      if (timeBeginPeriod(1) != TIMERR_NOERROR)
-        throw airplay::Error("申请 1 ms 计时精度失败。");
+      beginSessionTiming();
       timer = true;
       runtime.sender_ = state->id;
       state->setTiming(timing);
@@ -134,12 +144,11 @@ bool PluginRuntime::prepareUnload() noexcept {
   shutdown();
   return !exists();
 }
-PluginRuntime &PluginRuntime::acquire(HWND parent) {
-  if (!parent ||
-      GetWindowThreadProcessId(parent, nullptr) != GetCurrentThreadId())
+PluginRuntime &PluginRuntime::acquire(void *parent) {
+  if (!NativeRuntime::validParentThread(parent))
     throw airplay::Error("Qt 编辑器必须在宿主窗口所属 UI 线程打开。");
   if (auto *value = runtime.load()) {
-    if (value->threadId_ != GetCurrentThreadId())
+    if (!value->native_->onThread())
       throw airplay::Error("插件 Qt 运行时属于另一个 UI 线程。");
     return *value;
   }
@@ -147,7 +156,7 @@ PluginRuntime &PluginRuntime::acquire(HWND parent) {
   runtime.store(value);
   return *value;
 }
-PluginRuntime::PluginRuntime() : threadId_(GetCurrentThreadId()) {
+PluginRuntime::PluginRuntime() {
   if (auto *existing = QCoreApplication::instance()) {
     if (!qobject_cast<QApplication *>(existing) ||
         existing->thread() != QThread::currentThread())
@@ -159,7 +168,7 @@ PluginRuntime::PluginRuntime() : threadId_(GetCurrentThreadId()) {
     wchar_t path[32768]{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCWSTR>(&windowProc), &module) ||
+                           reinterpret_cast<LPCWSTR>(&PluginRuntime::exists), &module) ||
         !GetModuleFileNameW(module, path, 32768))
       throw airplay::Error("无法定位包内 Qt 平台插件。");
     const auto directory = QFileInfo(QString::fromWCharArray(path)).absolutePath();
@@ -174,46 +183,29 @@ PluginRuntime::PluginRuntime() : threadId_(GetCurrentThreadId()) {
     argv_[1] = platformOption_;
     argv_[2] = platformPath_.data();
 #endif
+    applicationMode_ = std::make_unique<ApplicationMode>();
     application_ = std::make_unique<QApplication>(argc_, argv_);
     QApplication::setStyle("Fusion");
     application_->setQuitOnLastWindowClosed(false);
   }
-  WNDCLASSW type{};
-  type.lpfnWndProc = windowProc;
-  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                          reinterpret_cast<LPCWSTR>(&windowProc), &module_))
-    throw airplay::Error("读取插件模块句柄失败。");
-  type.hInstance = module_;
-  type.lpszClassName = dispatcherClass;
-  if (!RegisterClassW(&type))
-    throw airplay::Error("注册插件事件派发窗口失败。");
-  dispatcher_ = CreateWindowExW(0, dispatcherClass, L"", 0, 0, 0, 0, 0,
-                                HWND_MESSAGE, nullptr, type.hInstance, this);
-  if (!dispatcher_) {
-    UnregisterClassW(dispatcherClass, type.hInstance);
-    throw airplay::Error("创建插件事件派发窗口失败。");
-  }
-  if (!SetTimer(dispatcher_, 1, 10, nullptr)) {
-    DestroyWindow(dispatcher_);
-    UnregisterClassW(dispatcherClass, type.hInstance);
-    throw airplay::Error("启动插件 UI 事件派发失败。");
-  }
+  native_ = std::make_unique<NativeRuntime>([this] {
+    if (shuttingDown_) return;
+    pump();
+    if (shutdownPending_) shutdown();
+  });
 }
 PluginRuntime::~PluginRuntime() {
   shuttingDown_ = true;
-  KillTimer(dispatcher_, 1);
+  native_.reset();
   instances_.clear();
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-  DestroyWindow(dispatcher_);
-  UnregisterClassW(dispatcherClass, module_);
 }
 void PluginRuntime::shutdown() noexcept {
   auto *value = runtime.load();
   if (!value)
     return;
-  if (GetCurrentThreadId() != value->threadId_) {
-    SendMessageW(value->dispatcher_, shutdownMessage, 0, 0);
+  if (!value->native_->onThread()) {
+    value->native_->invoke([] { shutdown(); });
     return;
   }
   if (value->pumping_) {
@@ -227,10 +219,9 @@ void PluginRuntime::processorRemoved(uint64_t id) noexcept {
   auto *value = runtime.load();
   if (!value)
     return;
-  if (GetCurrentThreadId() == value->threadId_)
-    value->retire(id);
-  else
-    SendMessageW(value->dispatcher_, retireMessage, WPARAM(id), 0);
+  value->native_->invoke([id] {
+    if (auto *current = runtime.load()) current->retire(id);
+  });
 }
 void PluginRuntime::retire(uint64_t id) {
   const auto it = instances_.find(id);
@@ -239,45 +230,12 @@ void PluginRuntime::retire(uint64_t id) {
   it->second->state->input.stop();
   it->second->session.stop();
 }
-LRESULT CALLBACK PluginRuntime::windowProc(HWND window, UINT message, WPARAM w,
-                                           LPARAM l) {
-  auto *self = reinterpret_cast<PluginRuntime *>(
-      GetWindowLongPtrW(window, GWLP_USERDATA));
-  if (message == WM_NCCREATE) {
-    self = static_cast<PluginRuntime *>(
-        reinterpret_cast<CREATESTRUCTW *>(l)->lpCreateParams);
-    SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-  }
-  if (self) {
-    // KillTimer cannot retract a WM_TIMER already queued. Native cancellation
-    // may pump messages during destruction; never re-enter a clearing map.
-    if (self->shuttingDown_ &&
-        (message == WM_TIMER || message == retireMessage ||
-         message == shutdownMessage))
-      return 0;
-    if (message == WM_TIMER) {
-      self->pump();
-      if (self->shutdownPending_)
-        shutdown();
-      return 0;
-    }
-    if (message == retireMessage) {
-      self->retire(uint64_t(w));
-      return 0;
-    }
-    if (message == shutdownMessage) {
-      shutdown();
-      return 0;
-    }
-  }
-  return DefWindowProcW(window, message, w, l);
-}
 void PluginRuntime::pump() {
   if (pumping_)
     return;
   pumping_ = true;
-  // The host already dispatches Win32 messages, including Qt's hidden event
-  // window. A second native loop could re-enter host unload from this stack.
+  // Native dispatch belongs to the host. Only drain Qt posted events here;
+  // entering another native loop could re-enter host unload from this stack.
   QCoreApplication::sendPostedEvents();
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   for (auto it = instances_.begin(); it != instances_.end();) {
@@ -292,7 +250,7 @@ void PluginRuntime::pump() {
 }
 ui::StreamingPanel *
 PluginRuntime::open(const std::shared_ptr<PluginState> &state,
-                    airplay::DiscoveryApi api) {
+                    const airplay::DiscoveryApi &api) {
   if (!state || !state->processorAlive.load())
     throw airplay::Error("尚未关联有效音频组件。");
   auto &instance = instances_[state->id];
@@ -308,13 +266,12 @@ PluginRuntime::open(const std::shared_ptr<PluginState> &state,
   panel->setUnavailable(state->input.unavailable());
   QObject::connect(
       panel, &ui::StreamingPanel::startRequested, &instance->session,
-      [target = instance.get()](app::Timing timing,
-                                QList<airplay::ReceiverEndpoint> endpoints) {
-        target->start(timing, endpoints);
+      [target = instance.get(), panel] {
+        target->start(panel->timing(), panel->endpoints());
       });
   QObject::connect(panel, &ui::StreamingPanel::timingChanged,
                    &instance->session,
-                   [state](app::Timing timing) { state->setTiming(timing); });
+                   [state, panel] { state->setTiming(panel->timing()); });
   panel->beginDiscovery();
   return panel;
 }

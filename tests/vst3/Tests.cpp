@@ -1,3 +1,4 @@
+#include "airplay/DiscoveryApi.h"
 #include "airplay/Crypto.h"
 #include "public.sdk/source/common/memorystream.h"
 #include "public.sdk/source/vst/utility/alignedalloc.h"
@@ -15,6 +16,19 @@ using namespace Steinberg::Vst;
 class VstTests : public QObject {
   Q_OBJECT
 private:
+  static airplay::DiscoveryApi unavailableDiscovery() {
+    airplay::DiscoveryApi api;
+#ifdef Q_OS_WIN
+    api.browse = [](auto *, auto *) { return DNS_STATUS(ERROR_NOT_SUPPORTED); };
+#else
+    api.browse = [](DNSServiceRef *, DNSServiceFlags, uint32_t, const char *,
+                    const char *, DNSServiceBrowseReply,
+                    void *) -> DNSServiceErrorType {
+      return kDNSServiceErr_Unsupported;
+    };
+#endif
+    return api;
+  }
   static void ready(vst3::VstAudioInput &input, bool doubles = false,
                     int block = 2048) {
     input.configure(44100, block, doubles);
@@ -101,6 +115,15 @@ private slots:
       for (const size_t size :
            {size_t(0), size_t(1), size_t(17), size_t(352 * 16)}) {
         void *data = Steinberg::Vst::aligned_alloc(size, alignment);
+#ifdef Q_OS_MACOS
+        // The SDK uses C aligned_alloc on macOS, unlike Windows' allocator.
+        // Its size must be a multiple of alignment (WG14 DR 460).
+        if (alignment && size % alignment) {
+          QVERIFY(data == nullptr);
+          continue;
+        }
+        if (!size && !data) continue; // Zero-size allocation may return null.
+#endif
         QVERIFY(data);
         if (alignment)
           QCOMPARE(reinterpret_cast<uintptr_t>(data) % alignment, uintptr_t(0));
@@ -272,23 +295,26 @@ private slots:
   }
   void borrowedQtAndEditorReopen() {
     auto *original = QCoreApplication::instance();
+#ifdef Q_OS_WIN
     const auto priority = GetPriorityClass(GetCurrentProcess());
     HWND window =
         CreateWindowExW(0, L"STATIC", L"Test", 0, 0, 0, 900, 900, nullptr,
                         nullptr, GetModuleHandleW(nullptr), nullptr);
+#else
+    QWidget hostWindow;
+    auto *window = reinterpret_cast<void *>(hostWindow.winId());
+#endif
     QVERIFY(window);
     {
       vst3::Processor processor;
       ready(processor.state()->input);
       auto &runtime = vst3::PluginRuntime::acquire(window);
-      airplay::DiscoveryApi api;
-      api.browse = [](auto *, auto *) {
-        return DNS_STATUS(ERROR_NOT_SUPPORTED);
-      };
+      const auto api = unavailableDiscovery();
       auto *panel = runtime.open(processor.state(), api);
       auto timing = panel->timing();
       timing.lead = .75;
-      emit panel->timingChanged(timing);
+      panel->setTiming(timing);
+      emit panel->timingChanged();
       runtime.close(processor.state()->id);
       panel = runtime.open(processor.state(), api);
       QCOMPARE(panel->timing().lead, .75);
@@ -304,12 +330,17 @@ private slots:
       QVERIFY(panel->grab().save(QCoreApplication::applicationDirPath() +
                                  "/VstStreamingPanel.png"));
       runtime.close(processor.state()->id);
+#ifdef Q_OS_WIN
       QCOMPARE(GetPriorityClass(GetCurrentProcess()), priority);
+#endif
     }
     QVERIFY(!vst3::PluginRuntime::exists());
     QCOMPARE(QCoreApplication::instance(), original);
+#ifdef Q_OS_WIN
     DestroyWindow(window);
+#endif
   }
+#ifdef Q_OS_WIN
   void deleteDuringDiscovery() {
     HWND window =
         CreateWindowExW(0, L"STATIC", L"Test", 0, 0, 0, 900, 900, nullptr,
@@ -341,15 +372,20 @@ private slots:
     QVERIFY(!vst3::PluginRuntime::exists());
     DestroyWindow(window);
   }
+#endif
   void multipleInstancesAndActiveUnload() {
+#ifdef Q_OS_WIN
     HWND window =
         CreateWindowExW(0, L"STATIC", L"Test", 0, 0, 0, 900, 900, nullptr,
                         nullptr, GetModuleHandleW(nullptr), nullptr);
+#else
+    QWidget hostWindow;
+    auto *window = reinterpret_cast<void *>(hostWindow.winId());
+#endif
     QVERIFY(window);
     QTcpServer local;
     QVERIFY(local.listen(QHostAddress::LocalHost, 0));
-    airplay::DiscoveryApi api;
-    api.browse = [](auto *, auto *) { return DNS_STATUS(ERROR_NOT_SUPPORTED); };
+    const auto api = unavailableDiscovery();
     {
       vst3::Processor first, second;
       ready(first.state()->input);
@@ -357,11 +393,14 @@ private slots:
       auto &runtime = vst3::PluginRuntime::acquire(window);
       auto *one = runtime.open(first.state(), api);
       auto *two = runtime.open(second.state(), api);
-      const QList<airplay::ReceiverEndpoint> endpoints{
-          {QHostAddress::LocalHost, local.serverPort()}};
-      emit one->startRequested(app::Timing{}, endpoints);
+      for (auto *panel : {one, two}) {
+        panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
+        panel->findChild<QLineEdit *>("manualFirst")->setText(
+            QString("127.0.0.1:%1").arg(local.serverPort()));
+      }
+      one->findChild<QPushButton *>("start")->click();
       QVERIFY(!one->findChild<QTabWidget *>("receiverModes")->isEnabled());
-      emit two->startRequested(app::Timing{}, endpoints);
+      two->findChild<QPushButton *>("start")->click();
       const auto labels = two->findChildren<QLabel *>();
       QVERIFY(std::any_of(labels.begin(), labels.end(), [](auto *label) {
         return label->text().contains("另一个 AirPlayQt");
@@ -375,7 +414,9 @@ private slots:
       runtime.close(second.state()->id);
     }
     QVERIFY(!vst3::PluginRuntime::exists());
+#ifdef Q_OS_WIN
     DestroyWindow(window);
+#endif
   }
 };
 QTEST_MAIN(VstTests)

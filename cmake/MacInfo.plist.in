@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+<key>CFBundleIdentifier</key><string>org.airplayqt.app</string>
+<key>CFBundleName</key><string>AirPlayQt</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>0.1.0</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>从您选择的音频输入设备采集两个声道并发送到 AirPlay 接收端。</string>
+<key>NSLocalNetworkUsageDescription</key><string>发现并连接您选择的 AirPlay 接收端。</string>
+<key>NSBonjourServices</key><array><string>_airplay._tcp</string></array>
+</dict></plist>

@@ -15,7 +15,7 @@
 
 namespace ui {
 StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
-                               airplay::DiscoveryApi discoveryApi)
+                               const airplay::DiscoveryApi &discoveryApi)
     : QWidget(parent), discovery_(this, std::move(discoveryApi)),
       session_(session) {
   auto *layout = new QVBoxLayout(this);
@@ -77,7 +77,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
                         [](auto *p) { return p != nullptr; })) {
           const auto value = timing();
           if (value.validate().isEmpty())
-            emit timingChanged(value);
+            emit timingChanged();
         }
       });
       if (f.powerOfTwo)
@@ -146,9 +146,9 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
           &QLabel::setText);
   connect(
       &discovery_, &airplay::ReceiverDiscovery::found, this,
-      [this](const QString &name, const airplay::ReceiverEndpoint &endpoint) {
-        auto *item = new QListWidgetItem(name + " · " + endpoint.text());
-        item->setData(Qt::UserRole, QVariant::fromValue(endpoint));
+      [this](const QString &name, const QString &endpoint) {
+        auto *item = new QListWidgetItem(name + " · " + endpoint);
+        item->setData(Qt::UserRole, endpoint);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Unchecked);
         receivers_->addItem(item);
@@ -160,8 +160,11 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   connect(receivers_, &QListWidget::itemChanged, this,
           [this](QListWidgetItem *changed) {
             int checked = 0;
+            // Qt 6.11 checkState() registers an inline enum metatype in
+            // this module. Read the stored integer to keep unload safe.
             for (int i = 0; i < receivers_->count(); ++i)
-              checked += receivers_->item(i)->checkState() == Qt::Checked;
+              checked += receivers_->item(i)->data(Qt::CheckStateRole).toInt() ==
+                         Qt::Checked;
             if (checked > 2) {
               QSignalBlocker blocker(receivers_);
               changed->setCheckState(Qt::Unchecked);
@@ -237,9 +240,9 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     mute_->setChecked(false);
     volumePending_ = false;
     try {
-      const auto selected = endpoints();
+      endpoints(); // Validate before canceling discovery and notifying consumers.
       discovery_.cancel();
-      emit startRequested(timing(), selected);
+      emit startRequested();
     } catch (const std::exception &e) {
       appendLog(QString::fromUtf8(e.what()));
       updateTargets();
@@ -282,9 +285,9 @@ QList<airplay::ReceiverEndpoint> StreamingPanel::endpoints() const {
   if (receiverModes_->currentIndex() == 0) {
     for (int i = 0; i < receivers_->count(); ++i)
       if (const auto *item = receivers_->item(i);
-          item->checkState() == Qt::Checked)
-        result.append(
-            item->data(Qt::UserRole).value<airplay::ReceiverEndpoint>());
+          item->data(Qt::CheckStateRole).toInt() == Qt::Checked)
+        result.append(airplay::parseReceiverEndpoint(
+            item->data(Qt::UserRole).toString()));
   } else {
     result.append(airplay::parseReceiverEndpoint(manualFirst_->text()));
     if (!manualSecond_->text().trimmed().isEmpty())
