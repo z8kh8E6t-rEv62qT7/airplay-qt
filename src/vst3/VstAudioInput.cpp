@@ -7,17 +7,42 @@
 namespace vst3 {
 VstAudioInput::~VstAudioInput() {
   stop();
+  monitored_.store(nullptr);
   while (readers_.load() != 0)
     std::this_thread::yield();
 }
 void VstAudioInput::fail(InputFault value) noexcept {
+  changes_.fetch_add(1);
   auto expected = InputFault::None;
   fault_.compare_exchange_strong(expected, value);
   readers_.fetch_add(1);
-  if (auto *run = published_.load())
+  if (auto *run = monitored_.load())
     run->stream.queue->fault.store(100 + int(fault_.load()));
   published_.store(nullptr);
   readers_.fetch_sub(1);
+}
+void VstAudioInput::interrupt() noexcept {
+  changes_.fetch_add(1);
+  readers_.fetch_add(1);
+  if (auto *run = monitored_.load()) {
+    int64_t zero = 0;
+    run->interruptedAt.compare_exchange_strong(zero, monotonicNs());
+    run->resumedAt.store(0);
+    run->sequence.fetch_add(1);
+    run->stream.queue->interrupted.store(true);
+  }
+  published_.store(nullptr);
+  readers_.fetch_sub(1);
+}
+HostInterruption VstAudioInput::interruption() const noexcept {
+  if (!owned_)
+    return {};
+  const auto sequence = owned_->sequence.load();
+  HostInterruption value{owned_->interruptedAt.load(), owned_->resumedAt.load(),
+                         sequence};
+  if (owned_->sequence.load() != sequence)
+    value.resumed = 0;
+  return value;
 }
 void VstAudioInput::configure(double rate, int maxBlock,
                               bool doubles) noexcept {
@@ -28,14 +53,12 @@ void VstAudioInput::configure(double rate, int maxBlock,
   doubles_.store(doubles);
 }
 void VstAudioInput::setActive(bool active) noexcept {
-  active_.store(active);
-  if (!active)
-    fail(InputFault::Inactive);
+  if (active_.exchange(active) && !active)
+    interrupt();
 }
 void VstAudioInput::setProcessing(bool processing) noexcept {
-  processing_.store(processing);
-  if (!processing)
-    fail(InputFault::Inactive);
+  if (processing_.exchange(processing) && !processing)
+    interrupt();
 }
 void VstAudioInput::setBypass(bool bypass) noexcept {
   bypass_.store(bypass);
@@ -60,8 +83,12 @@ QString VstAudioInput::unavailable() const {
     return "宿主块长度无效。";
   return {};
 }
-audio::CaptureStream VstAudioInput::prepare(double backlog) {
+audio::CaptureStream VstAudioInput::prepare(double backlog, bool resuming) {
+  const auto changes = changes_.load();
+  if (resuming && fault_.load() != InputFault::None)
+    throw std::runtime_error("宿主音频条件已变化，请手动开始。");
   stop();
+  monitored_.store(nullptr);
   // A new queue is never published until the prior callback has relinquished
   // its Run. The network retains its own shared ownership of the old queue.
   if (readers_.load() != 0)
@@ -83,15 +110,28 @@ audio::CaptureStream VstAudioInput::prepare(double backlog) {
   run->stream.rateDiagnostics = true;
 #endif
   owned_ = std::move(run);
-  fault_.store(InputFault::None);
+  if (!resuming)
+    fault_.store(InputFault::None);
+  monitored_.store(owned_.get());
+  if (changes_.load() != changes) {
+    monitored_.store(nullptr);
+    throw std::runtime_error("准备期间宿主音频条件已变化，请手动开始。");
+  }
   return owned_->stream;
 }
 bool VstAudioInput::start() noexcept {
-  if (!owned_ || fault_.load() != InputFault::None || rate_.load() != 44100 ||
+  if (!owned_ || owned_->stream.queue->interrupted.load() ||
+      fault_.load() != InputFault::None || rate_.load() != 44100 ||
       !active_.load() || !processing_.load() || bypass_.load() ||
       !realtime_.load())
     return false;
   published_.store(owned_.get());
+  if (owned_->stream.queue->interrupted.load() ||
+      fault_.load() != InputFault::None || !active_.load() ||
+      !processing_.load()) {
+    published_.store(nullptr);
+    return false;
+  }
   return true;
 }
 void VstAudioInput::stop() noexcept { published_.store(nullptr); }
@@ -118,8 +158,31 @@ void VstAudioInput::processSamples(Sample *const *input, Sample *const *output,
   // Sequential consistency makes pointer retirement and this read-side
   // critical section ordered; there is no lock, reference count or allocation.
   readers_.fetch_add(1);
+  // Validate resumed callbacks even after the old producer gate has closed.
+  // No old partial block is completed or queued during this observation.
+  if (auto *monitor = monitored_.load();
+      monitor && fault_.load() == InputFault::None &&
+      monitor->stream.queue->interrupted.load() && active_.load() &&
+      processing_.load()) {
+    if (frames > maxBlock_.load() ||
+        monitor->doubles != (sizeof(Sample) == 8)) {
+      fail(InputFault::InvalidBlock);
+    } else {
+      for (int i = 0; i < frames; ++i)
+        for (int c = 0; c < 2; ++c)
+          if (input && input[c] && !(silence & (uint64_t{1} << c)) &&
+              !std::isfinite(input[c][i]))
+            fail(InputFault::NonFinite);
+      if (fault_.load() == InputFault::None && rate_.load() == 44100 &&
+          realtime_.load() && !bypass_.load()) {
+        int64_t zero = 0;
+        monitor->resumedAt.compare_exchange_strong(zero, monotonicNs());
+      }
+    }
+  }
   Run *run = published_.load();
-  if (run && fault_.load() == InputFault::None) {
+  if (run && fault_.load() == InputFault::None && active_.load() &&
+      processing_.load() && !run->stream.queue->interrupted.load()) {
     if (frames > maxBlock_.load() || run->doubles != (sizeof(Sample) == 8)) {
       fail(InputFault::InvalidBlock);
     } else {

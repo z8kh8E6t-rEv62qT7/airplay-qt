@@ -1,7 +1,9 @@
-#include "airplay/DiscoveryApi.h"
+#include "../airplay/TestReceiver.h"
 #include "airplay/Crypto.h"
+#include "airplay/DiscoveryApi.h"
 #include "public.sdk/source/common/memorystream.h"
 #include "public.sdk/source/vst/utility/alignedalloc.h"
+#include "vst3/HostRecovery.h"
 #include "vst3/Plugin.h"
 #include "vst3/PluginRuntime.h"
 #include <QFile>
@@ -122,7 +124,8 @@ private slots:
           QVERIFY(data == nullptr);
           continue;
         }
-        if (!size && !data) continue; // Zero-size allocation may return null.
+        if (!size && !data)
+          continue; // Zero-size allocation may return null.
 #endif
         QVERIFY(data);
         if (alignment)
@@ -192,9 +195,14 @@ private slots:
       input.process(in, out, count, 0, cause != 4);
       QCOMPARE(std::memcmp(source.data(), output.data(), count * sizeof(float)),
                0);
-      QVERIFY(input.fault() != vst3::InputFault::None);
-      QVERIFY(stream.queue->fault.load() >=
-              101); // Network observes it without a UI pump.
+      if (cause == 1 || cause == 2) {
+        QCOMPARE(input.fault(), vst3::InputFault::None);
+        QVERIFY(stream.queue->interrupted.load());
+        QCOMPARE(stream.queue->fault.load(), 0);
+      } else {
+        QVERIFY(input.fault() != vst3::InputFault::None);
+        QVERIFY(stream.queue->fault.load() >= 102);
+      }
       QCOMPARE(stream.queue->capturedFrames(), uint64_t(0));
       input.setBypass(false);
       input.setProcessing(true);
@@ -204,6 +212,274 @@ private slots:
       QVERIFY(
           !input.start()); // Explicit prepare/start is required after a fault.
     }
+  }
+  void interruptionKeepsFatalFaultsAndDiscardsPartialAudio() {
+    for (bool doubles : {false, true}) {
+      vst3::VstAudioInput input;
+      ready(input, doubles, 352);
+      auto old = input.prepare(.1);
+      QVERIFY(input.start());
+      std::array<float, 352> f{};
+      std::array<double, 352> d{};
+      f.fill(.25f);
+      d.fill(.25);
+      float *fc[]{f.data(), f.data()};
+      double *dc[]{d.data(), d.data()};
+      if (doubles)
+        input.process(dc, dc, 100, 0, true);
+      else
+        input.process(fc, fc, 100, 0, true);
+      input.setProcessing(false);
+      const auto first = input.interruption();
+      QVERIFY(first.began > 0 && first.sequence == 1 && first.resumed == 0);
+      input.setActive(false);
+      QCOMPARE(input.interruption().began, first.began);
+      QCOMPARE(input.interruption().sequence, uint64_t(2));
+      input.setProcessing(true);
+      input.setActive(true);
+      if (doubles)
+        input.process(dc, dc, 352, 0, true);
+      else
+        input.process(fc, fc, 352, 0, true);
+      QVERIFY(input.interruption().resumed >= first.began);
+      QVERIFY(!input.start());
+      QCOMPARE(old.queue->capturedFrames(), uint64_t(0));
+      auto fresh = input.prepare(.1, true);
+      QVERIFY(input.start());
+      if (doubles)
+        input.process(dc, dc, 252, 0, true);
+      else
+        input.process(fc, fc, 252, 0, true);
+      QCOMPARE(fresh.queue->capturedFrames(), uint64_t(0));
+      input.setProcessing(false);
+      input.setBypass(true);
+      QCOMPARE(input.fault(), vst3::InputFault::Bypass);
+      QCOMPARE(fresh.queue->fault.load(), 103);
+      input.setBypass(false);
+      input.setProcessing(true);
+      QVERIFY_THROWS_EXCEPTION(std::runtime_error, input.prepare(.1, true));
+    }
+  }
+  void hostRecoveryDeadlineAndCancellation() {
+    using Recovery = vst3::HostRecovery;
+    using Action = Recovery::Action;
+    const int64_t start = 1'000'000'000;
+    Recovery recovery;
+    recovery.start();
+    QCOMPARE(recovery.update({start, 0, 1}, false, false, false, start),
+             Action::Cancel);
+    recovery.start();
+    recovery.streaming();
+    QCOMPARE(
+        recovery.update({start, start + 1, 1}, true, false, false, start + 1),
+        Action::Interrupt);
+    // Timely audio can be observed after a slow teardown or delayed UI pump.
+    QCOMPARE(recovery.update({start, start + 1, 1}, true, false, false,
+                             start + Recovery::window),
+             Action::None);
+    QCOMPARE(recovery.update({start, start + 1, 1}, true, true, false,
+                             start + Recovery::window),
+             Action::Reconnect);
+    QCOMPARE(recovery.update({}, true, true, false, start + Recovery::window),
+             Action::None);
+    // A second pause during the reconnect never starts a retry loop.
+    QCOMPARE(recovery.update({start + 2, 0, 1}, false, false, false, start + 3),
+             Action::Cancel);
+    for (bool lateCallback : {false, true}) {
+      recovery.start();
+      recovery.streaming();
+      QCOMPARE(recovery.update({start, 0, 1}, false, false, false, start),
+               Action::Interrupt);
+      QCOMPARE(recovery.update(
+                   {start, lateCallback ? start + Recovery::window : 0, 7},
+                   lateCallback, true, false, start + Recovery::window),
+               Action::Cancel);
+    }
+    recovery.start();
+    recovery.streaming();
+    QCOMPARE(recovery.update({start, 0, 1}, false, false, false, start),
+             Action::Interrupt);
+    QCOMPARE(
+        recovery.update({start, start + 1, 2}, true, true, true, start + 1),
+        Action::Cancel);
+    recovery.start();
+    recovery.streaming();
+    recovery.cancel();
+    recovery.streaming(); // A late signal cannot re-arm a manual stop.
+    QCOMPARE(
+        recovery.update({start, start + 1, 1}, true, true, false, start + 1),
+        Action::None);
+  }
+  void runtimeRecovery_data() {
+    QTest::addColumn<QString>("scenario");
+    for (const auto *name :
+         {"resume", "closed-editor", "manual-stop", "bypass", "state-load",
+          "format", "offline", "timeout", "reconnect-failure", "repeat-pause",
+          "stop-reconnect", "unload", "competing"})
+      QTest::newRow(name) << QString::fromLatin1(name);
+  }
+  void runtimeRecovery() {
+    QFETCH(QString, scenario);
+    test::Receiver receiver("left");
+    receiver.stereo.clear();
+#ifdef Q_OS_WIN
+    HWND window =
+        CreateWindowExW(0, L"STATIC", L"Recovery Test", 0, 0, 0, 900, 900,
+                        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    struct WindowOwner {
+      HWND value;
+      ~WindowOwner() {
+        if (value)
+          DestroyWindow(value);
+      }
+    } windowOwner{window};
+#else
+    QWidget hostWindow;
+    auto *window = reinterpret_cast<void *>(hostWindow.winId());
+#endif
+    QVERIFY(window);
+    auto processor = std::make_unique<vst3::Processor>();
+    ready(processor->state()->input, false, 1024);
+    airplay::SessionEnvironment environment{[] {}, [] {}};
+    auto &runtime = vst3::PluginRuntime::acquire(window, environment);
+    auto *panel = runtime.open(processor->state(), unavailableDiscovery());
+    auto timing = panel->timing();
+    timing.settle = 0;
+    timing.prebuffer = .008;
+    timing.backlog = .5;
+    timing.late = .5;
+    timing.requestTimeout = .3;
+    timing.teardownTimeout = .1;
+    panel->setTiming(timing);
+    panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
+    panel->findChild<QLineEdit *>("manualFirst")
+        ->setText(QString("127.0.0.1:%1").arg(receiver.port()));
+    QElapsedTimer clock;
+    QTimer producer;
+    bool paused = false;
+    uint64_t frames = 0;
+    std::array<float, 352> samples{};
+    samples.fill(.125f);
+    float *channels[]{samples.data(), samples.data()};
+    producer.setTimerType(Qt::PreciseTimer);
+    producer.setInterval(4);
+    QObject::connect(&producer, &QTimer::timeout, &producer, [&] {
+      const auto target =
+          uint64_t(clock.nsecsElapsed()) * 44100 / 1'000'000'000;
+      if (paused || !processor) {
+        frames = target;
+        return;
+      }
+      while (frames + 352 <= target) {
+        processor->state()->input.process(channels, channels, 352, 0, true);
+        frames += 352;
+      }
+    });
+    clock.start();
+    producer.start();
+    panel->findChild<QPushButton *>("start")->click();
+    QTRY_VERIFY_WITH_TIMEOUT(receiver.packets.size() > 3, 4000);
+    QCOMPARE(receiver.connections, 1);
+    const auto id = processor->state()->id;
+    paused = true;
+    processor->setProcessing(false);
+    processor->setActive(false);
+    runtime.pump();
+    QVERIFY(panel->findChild<QPushButton *>("stop")->isEnabled());
+    QVERIFY(!panel->findChild<QTabWidget *>("receiverModes")->isEnabled());
+    if (scenario == "closed-editor") {
+      runtime.close(id);
+      panel = nullptr;
+    }
+    if (scenario == "competing") {
+      QTest::qWait(150); // Reservation survives completion of the old teardown.
+      vst3::Processor other;
+      ready(other.state()->input);
+      auto *second = runtime.open(other.state(), unavailableDiscovery());
+      second->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
+      second->findChild<QLineEdit *>("manualFirst")
+          ->setText(QString("127.0.0.1:%1").arg(receiver.port()));
+      second->findChild<QPushButton *>("start")->click();
+      const auto labels = second->findChildren<QLabel *>();
+      QVERIFY(std::any_of(labels.begin(), labels.end(), [](auto *value) {
+        return value->text().contains("另一个 AirPlayQt");
+      }));
+      runtime.close(other.state()->id);
+    }
+    bool resumes = scenario == "resume" || scenario == "closed-editor" ||
+                   scenario == "competing";
+    if (scenario == "manual-stop")
+      panel->findChild<QPushButton *>("stop")->click();
+    if (scenario == "bypass")
+      processor->state()->input.setBypass(true);
+    if (scenario == "state-load") {
+      MemoryStream saved;
+      QCOMPARE(processor->getState(&saved), kResultOk);
+      saved.seek(0, IBStream::kIBSeekSet, nullptr);
+      QCOMPARE(processor->setState(&saved), kResultOk);
+    }
+    if (scenario == "format")
+      processor->state()->input.configure(48000, 1024, false);
+    if (scenario == "offline")
+      processor->state()->input.setRealtime(false);
+    if (scenario == "unload") {
+      producer.stop();
+      runtime.close(id);
+      processor.reset();
+      QVERIFY(!vst3::PluginRuntime::exists());
+      QCOMPARE(receiver.connections, 1);
+      return;
+    }
+    if (scenario == "timeout")
+      QTRY_VERIFY_WITH_TIMEOUT(
+          !panel->findChild<QPushButton *>("stop")->isEnabled(), 6000);
+    runtime.pump();
+    if (scenario == "reconnect-failure")
+      receiver.failure = test::Receiver::Failure::SessionSetup;
+    if (scenario == "repeat-pause" || scenario == "stop-reconnect")
+      receiver.failure = test::Receiver::Failure::InfoTimeout;
+    processor->state()->input.configure(44100, 1024, false);
+    processor->state()->input.setBypass(false);
+    processor->setActive(true);
+    processor->setProcessing(true);
+    paused = false;
+    if (resumes) {
+      const auto packets = receiver.packets.size();
+      QTRY_COMPARE_WITH_TIMEOUT(receiver.connections, 2, 4000);
+      QTRY_VERIFY_WITH_TIMEOUT(receiver.packets.size() > packets + 3, 4000);
+      QVERIFY(receiver.teardowns >= 1);
+      if (!panel) {
+        panel = runtime.open(processor->state(), unavailableDiscovery());
+        QVERIFY(panel->findChild<QPushButton *>("stop")->isEnabled());
+      }
+    } else if (scenario == "reconnect-failure" || scenario == "repeat-pause" ||
+               scenario == "stop-reconnect") {
+      QTRY_COMPARE_WITH_TIMEOUT(receiver.connections, 2, 4000);
+      if (scenario == "repeat-pause") {
+        paused = true;
+        processor->setProcessing(false);
+        runtime.pump();
+        processor->setProcessing(true);
+        paused = false;
+      }
+      if (scenario == "stop-reconnect")
+        panel->findChild<QPushButton *>("stop")->click();
+      QTRY_VERIFY_WITH_TIMEOUT(
+          !panel->findChild<QPushButton *>("stop")->isEnabled(), 2000);
+      QTest::qWait(400);
+      QCOMPARE(receiver.connections, 2);
+    } else {
+      QTRY_VERIFY_WITH_TIMEOUT(
+          !panel->findChild<QPushButton *>("stop")->isEnabled(), 2000);
+      QTest::qWait(150);
+      QCOMPARE(receiver.connections, 1);
+    }
+    producer.stop();
+    panel->findChild<QPushButton *>("stop")->click();
+    runtime.close(id);
+    processor.reset();
+    QVERIFY(!vst3::PluginRuntime::exists());
+    QVERIFY2(receiver.error.isEmpty(), qPrintable(receiver.error));
   }
   void noAutomaticCapture() {
     vst3::Processor processor;
@@ -395,8 +671,8 @@ private slots:
       auto *two = runtime.open(second.state(), api);
       for (auto *panel : {one, two}) {
         panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
-        panel->findChild<QLineEdit *>("manualFirst")->setText(
-            QString("127.0.0.1:%1").arg(local.serverPort()));
+        panel->findChild<QLineEdit *>("manualFirst")
+            ->setText(QString("127.0.0.1:%1").arg(local.serverPort()));
       }
       one->findChild<QPushButton *>("start")->click();
       QVERIFY(!one->findChild<QTabWidget *>("receiverModes")->isEnabled());

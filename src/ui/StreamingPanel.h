@@ -15,10 +15,14 @@ namespace ui {
 class StreamingPanel : public QWidget {
   Q_OBJECT
 public:
-  explicit StreamingPanel(app::SessionController &, QWidget *parent = nullptr,
-                          const airplay::DiscoveryApi & = airplay::defaultDiscoveryApi());
+  explicit StreamingPanel(
+      app::SessionController &, QWidget *parent = nullptr,
+      const airplay::DiscoveryApi & = airplay::defaultDiscoveryApi());
   app::Timing timing() const;
   QList<airplay::ReceiverEndpoint> endpoints() const;
+  bool discoveryMode() const;
+  QList<app::ReceiverSelection> receiverSelection() const;
+  void setRememberedReceivers(const QList<app::ReceiverSelection> &);
   void setTiming(const app::Timing &);
   void beginDiscovery();
   void clearReceiverSelection();
@@ -28,16 +32,19 @@ public:
   void setUnavailable(const QString &reason);
   void showError(const QString &);
   void appendLog(const QString &);
+  void setRecoveryPending(bool);
   Q_SLOT void setBusy(bool);
 signals:
   // UI-thread notifications; consumers read typed values synchronously.
   void startRequested();
+  void stopRequested();
   void discoveryIdle();
   void timingChanged();
 
 private:
   void updateTargets();
   void scan();
+  void restoreReceivers();
   airplay::ReceiverDiscovery discovery_;
   app::SessionController &session_;
   QTabWidget *receiverModes_;
@@ -51,8 +58,10 @@ private:
   QPlainTextEdit *log_;
   std::array<QDoubleSpinBox *, 13> timings_{};
   bool busy_ = false, closing_ = false, streaming_ = false,
-       volumePending_ = false;
+       volumePending_ = false, recoveryPending_ = false;
   double restoreVolume_ = 0;
   QString unavailable_;
+  QList<app::ReceiverSelection> rememberedReceivers_;
+  bool restoreReceiversAllowed_ = true;
 };
 } // namespace ui

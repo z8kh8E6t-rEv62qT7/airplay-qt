@@ -95,6 +95,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   start_ = new QPushButton("开始");
   start_->setObjectName("start");
   stop_ = new QPushButton("停止");
+  stop_->setObjectName("stop");
   stop_->setEnabled(false);
   controls->addWidget(start_);
   controls->addWidget(stop_);
@@ -138,33 +139,56 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   log_->setReadOnly(true);
   log_->setMaximumBlockCount(1000);
   layout->addWidget(log_, 1);
-  connect(&discovery_, &airplay::ReceiverDiscovery::cleared, receivers_,
-          &QListWidget::clear);
-  connect(&discovery_, &airplay::ReceiverDiscovery::cleared, this,
-          &StreamingPanel::updateTargets);
+  connect(&discovery_, &airplay::ReceiverDiscovery::cleared, this, [this] {
+    QSignalBlocker block(receivers_);
+    receivers_->clear();
+    restoreReceiversAllowed_ = true;
+    updateTargets();
+  });
   connect(&discovery_, &airplay::ReceiverDiscovery::status, discoveryStatus_,
           &QLabel::setText);
-  connect(
-      &discovery_, &airplay::ReceiverDiscovery::found, this,
-      [this](const QString &name, const QString &endpoint) {
-        auto *item = new QListWidgetItem(name + " · " + endpoint);
-        item->setData(Qt::UserRole, endpoint);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(Qt::Unchecked);
-        receivers_->addItem(item);
-      });
+  connect(&discovery_, &airplay::ReceiverDiscovery::found, this,
+          [this](const QString &name, const QString &endpoint) {
+            const auto incoming = airplay::parseReceiverEndpoint(endpoint);
+            const auto address = incoming.host.toIPv4Address();
+            int row = 0;
+            for (; row < receivers_->count(); ++row) {
+              const auto existing = airplay::parseReceiverEndpoint(
+                  receivers_->item(row)->data(Qt::UserRole).toString());
+              if (incoming == existing)
+                return;
+              const auto otherAddress = existing.host.toIPv4Address();
+              if (address < otherAddress ||
+                  (address == otherAddress && incoming.port < existing.port))
+                break;
+            }
+            QSignalBlocker block(receivers_);
+            auto *item = new QListWidgetItem(name + " · " + endpoint);
+            item->setData(Qt::UserRole, endpoint);
+            item->setData(Qt::UserRole + 1, name);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState(Qt::Unchecked);
+            receivers_->insertItem(row, item);
+            restoreReceivers();
+          });
   connect(&discovery_, &airplay::ReceiverDiscovery::idle, this, [this] {
+    if (restoreReceiversAllowed_ && !rememberedReceivers_.isEmpty() &&
+        !closing_)
+      appendLog("上次勾选的接收端尚未全部匹配（名称、地址及端口），请刷新或手动"
+                "选择。");
     if (closing_)
       emit discoveryIdle();
   });
   connect(receivers_, &QListWidget::itemChanged, this,
           [this](QListWidgetItem *changed) {
+            restoreReceiversAllowed_ = false;
             int checked = 0;
             // Qt 6.11 checkState() registers an inline enum metatype in
             // this module. Read the stored integer to keep unload safe.
             for (int i = 0; i < receivers_->count(); ++i)
-              checked += receivers_->item(i)->data(Qt::CheckStateRole).toInt() ==
-                         Qt::Checked;
+              checked +=
+                  receivers_->item(i)->data(Qt::CheckStateRole).toInt() ==
+                  Qt::Checked;
             if (checked > 2) {
               QSignalBlocker blocker(receivers_);
               changed->setCheckState(Qt::Unchecked);
@@ -240,7 +264,8 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     mute_->setChecked(false);
     volumePending_ = false;
     try {
-      endpoints(); // Validate before canceling discovery and notifying consumers.
+      endpoints(); // Validate before canceling discovery and notifying
+                   // consumers.
       discovery_.cancel();
       emit startRequested();
     } catch (const std::exception &e) {
@@ -248,7 +273,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
       updateTargets();
     }
   });
-  connect(stop_, &QPushButton::clicked, this, [this] { session_.stop(); });
+  connect(stop_, &QPushButton::clicked, this, &StreamingPanel::stopRequested);
   connect(applyVolume_, &QPushButton::clicked, this, [this] {
     volumePending_ = true;
     applyVolume_->setEnabled(false);
@@ -296,6 +321,50 @@ QList<airplay::ReceiverEndpoint> StreamingPanel::endpoints() const {
   airplay::validateEndpoints(result);
   return result;
 }
+bool StreamingPanel::discoveryMode() const {
+  return receiverModes_->currentIndex() == 0;
+}
+QList<app::ReceiverSelection> StreamingPanel::receiverSelection() const {
+  QList<app::ReceiverSelection> result;
+  for (int i = 0; i < receivers_->count(); ++i) {
+    const auto *item = receivers_->item(i);
+    if (item->data(Qt::CheckStateRole).toInt() == Qt::Checked)
+      result.append({item->data(Qt::UserRole + 1).toString(),
+                     item->data(Qt::UserRole).toString()});
+  }
+  return result;
+}
+void StreamingPanel::setRememberedReceivers(
+    const QList<app::ReceiverSelection> &selection) {
+  rememberedReceivers_ = selection;
+  restoreReceiversAllowed_ = true;
+  restoreReceivers();
+}
+void StreamingPanel::restoreReceivers() {
+  if (!restoreReceiversAllowed_ || rememberedReceivers_.isEmpty() ||
+      !discoveryMode())
+    return;
+  QList<QListWidgetItem *> matches;
+  for (const auto &saved : rememberedReceivers_) {
+    QListWidgetItem *match = nullptr;
+    for (int i = 0; i < receivers_->count(); ++i) {
+      auto *item = receivers_->item(i);
+      if (item->data(Qt::UserRole).toString() == saved.endpoint &&
+          item->data(Qt::UserRole + 1).toString() == saved.name)
+        match = item;
+    }
+    if (!match)
+      return; // Restore the complete set, never silently use one peer.
+    matches.append(match);
+  }
+  QSignalBlocker block(receivers_);
+  for (int i = 0; i < receivers_->count(); ++i)
+    receivers_->item(i)->setCheckState(Qt::Unchecked);
+  for (auto *item : matches)
+    item->setCheckState(Qt::Checked);
+  restoreReceiversAllowed_ = false;
+  updateTargets();
+}
 void StreamingPanel::updateTargets() {
   try {
     const auto selected = endpoints();
@@ -307,7 +376,8 @@ void StreamingPanel::updateTargets() {
     targets_->setText(addresses.join(" + ") + (unavailable_.isEmpty()
                                                    ? QString{}
                                                    : "\n" + unavailable_));
-    start_->setEnabled(!busy_ && !closing_ && unavailable_.isEmpty());
+    start_->setEnabled(!busy_ && !recoveryPending_ && !closing_ &&
+                       unavailable_.isEmpty());
   } catch (const std::exception &e) {
     title_->setText("音频输入 → AirPlay 接收端");
     targets_->setText(
@@ -317,7 +387,8 @@ void StreamingPanel::updateTargets() {
   }
 }
 void StreamingPanel::scan() {
-  if (!busy_ && !closing_ && receiverModes_->currentIndex() == 0)
+  if (!busy_ && !recoveryPending_ && !closing_ &&
+      receiverModes_->currentIndex() == 0)
     discovery_.refresh();
 }
 app::Timing StreamingPanel::timing() const {
@@ -328,11 +399,12 @@ app::Timing StreamingPanel::timing() const {
 }
 void StreamingPanel::setBusy(bool busy) {
   busy_ = busy;
-  receiverModes_->setEnabled(!busy);
-  defaults_->setEnabled(!busy);
+  const bool engaged = busy || recoveryPending_;
+  receiverModes_->setEnabled(!engaged);
+  defaults_->setEnabled(!engaged);
   for (auto *field : timings_)
-    field->setEnabled(!busy);
-  stop_->setEnabled(busy);
+    field->setEnabled(!engaged);
+  stop_->setEnabled(engaged);
   updateTargets();
   if (!busy) {
     volumePending_ = false;
@@ -341,6 +413,12 @@ void StreamingPanel::setBusy(bool busy) {
     leftLevel_->setFormat("静音");
     rightLevel_->setFormat("静音");
   }
+}
+void StreamingPanel::setRecoveryPending(bool pending) {
+  recoveryPending_ = pending;
+  setBusy(busy_);
+  if (pending)
+    state_->setText("宿主音频处理中断，等待恢复（最多 5 秒）；可点击停止取消");
 }
 void StreamingPanel::appendLog(const QString &text) {
   log_->appendPlainText(QDateTime::currentDateTime().toString("HH:mm:ss.zzz") +

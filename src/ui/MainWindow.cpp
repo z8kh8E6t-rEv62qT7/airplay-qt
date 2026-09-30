@@ -61,17 +61,28 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   });
   connect(panel_, &QPushButton::clicked, &controller_,
           &app::Controller::controlPanel);
-  connect(streaming_, &StreamingPanel::startRequested, this,
-          [this] {
-            app::Settings settings;
-            settings.driverId = driver_->currentData().toString();
-            settings.left =
-                left_->currentIndex() < 0 ? -1 : left_->currentData().toInt();
-            settings.right =
-                right_->currentIndex() < 0 ? -1 : right_->currentData().toInt();
-            settings.timing = streaming_->timing();
-            controller_.start(settings, streaming_->endpoints());
-          });
+  connect(streaming_, &StreamingPanel::stopRequested, &controller_,
+          &app::Controller::stop);
+  connect(streaming_, &StreamingPanel::startRequested, this, [this] {
+    try {
+      const auto endpoints = streaming_->endpoints();
+      if (streaming_->discoveryMode()) {
+        const auto selection = streaming_->receiverSelection();
+        controller_.rememberReceivers(selection);
+        streaming_->setRememberedReceivers(selection);
+      }
+      app::Settings settings;
+      settings.driverId = driver_->currentData().toString();
+      settings.left =
+          left_->currentIndex() < 0 ? -1 : left_->currentData().toInt();
+      settings.right =
+          right_->currentIndex() < 0 ? -1 : right_->currentData().toInt();
+      settings.timing = streaming_->timing();
+      controller_.start(settings, endpoints);
+    } catch (const std::exception &e) {
+      streaming_->showError(QString::fromUtf8(e.what()));
+    }
+  });
   QTimer::singleShot(0, this, [this] {
     if (closing_)
       return;
@@ -80,6 +91,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
       for (const auto &driver : controller_.drivers())
         driver_->addItem(driver.name, driver.id);
       streaming_->setTiming(saved_.timing);
+      streaming_->setRememberedReceivers(saved_.receiverSelection);
       const auto index =
           saved_.driverId.isEmpty() ? -1 : driver_->findData(saved_.driverId);
       driver_->setCurrentIndex(index);
@@ -107,10 +119,13 @@ void MainWindow::setChannels(const QList<audio::ChannelInfo> &channels) {
   right_->clear();
   for (const auto &channel : channels) {
 #ifdef Q_OS_MACOS
-    const auto label = QString("%1 · %2").arg(channel.index + 1).arg(channel.name);
+    const auto label =
+        QString("%1 · %2").arg(channel.index + 1).arg(channel.name);
 #else
     const auto label = QString("%1 · %2 [ASIO 类型 %3]")
-                           .arg(channel.index + 1).arg(channel.name).arg(channel.type);
+                           .arg(channel.index + 1)
+                           .arg(channel.name)
+                           .arg(channel.type);
 #endif
     left_->addItem(label, channel.index);
     right_->addItem(label, channel.index);

@@ -1,7 +1,8 @@
 #include "PluginRuntime.h"
-#include <QThread>
-#include <QFileInfo>
+#include "HostRecovery.h"
 #include <QDir>
+#include <QFileInfo>
+#include <QThread>
 #ifdef Q_OS_MACOS
 #include <dlfcn.h>
 #endif
@@ -15,8 +16,6 @@ std::atomic<PluginRuntime *> runtime{nullptr};
 std::atomic<unsigned> components{0};
 QString faultText(InputFault value) {
   switch (value) {
-  case InputFault::Inactive:
-    return "宿主已停用处理；恢复后请手动开始。";
   case InputFault::SampleRate:
     return "宿主采样率或样本格式改变，已停止 AirPlay。";
   case InputFault::Bypass:
@@ -41,10 +40,12 @@ struct PluginRuntime::ApplicationMode {
   const QStringList paths = QCoreApplication::libraryPaths();
   bool changedPaths = false;
   const bool plugin = QCoreApplication::testAttribute(Qt::AA_PluginApplication);
-  const bool menu = QCoreApplication::testAttribute(Qt::AA_DontUseNativeMenuBar);
+  const bool menu =
+      QCoreApplication::testAttribute(Qt::AA_DontUseNativeMenuBar);
   ApplicationMode() {
     Dl_info module{};
-    if (!dladdr(reinterpret_cast<const void *>(&PluginRuntime::exists), &module) ||
+    if (!dladdr(reinterpret_cast<const void *>(&PluginRuntime::exists),
+                &module) ||
         !module.dli_fname)
       throw airplay::Error("无法定位插件模块。");
     const auto contents = QFileInfo(QString::fromUtf8(module.dli_fname)).dir();
@@ -74,6 +75,9 @@ struct PluginRuntime::Instance {
   app::SessionController session;
   std::unique_ptr<ui::StreamingPanel> panel;
   bool attached = false, timer = false;
+  HostRecovery recovery;
+  app::Timing requestTiming;
+  QList<airplay::ReceiverEndpoint> requestTargets;
   uint64_t stopRevision = 0, timingRevision = 0;
   explicit Instance(PluginRuntime &owner, std::shared_ptr<PluginState> value)
       : runtime(owner), state(std::move(value)),
@@ -88,10 +92,21 @@ struct PluginRuntime::Instance {
                      });
     QObject::connect(&session, &app::SessionController::stopCapture, &session,
                      [this] { state->input.stop(); });
-    QObject::connect(&session, &app::SessionController::stopped, &session,
-                     [this] { release(); });
+    QObject::connect(
+        &session, &app::SessionController::stopped, &session, [this] {
+          if (session.endReason() != airplay::SessionEnd::HostInterrupted)
+            recovery.cancel();
+          release();
+          poll();
+        });
+    QObject::connect(&session, &app::SessionController::streamingChanged,
+                     &session, [this](bool active) {
+                       if (active)
+                         recovery.streaming();
+                     });
   }
   ~Instance() {
+    recovery.cancel();
     state->input.stop();
     if (panel)
       panel->drainDiscovery();
@@ -99,52 +114,97 @@ struct PluginRuntime::Instance {
     release();
   }
   void release() {
-    if (timer) {
+    if (timer && !session.busy()) {
       const bool restored = endSessionTiming();
       timer = false;
       if (!restored && panel)
         panel->showError("释放 1 ms 计时精度失败。");
     }
-    if (runtime.sender_ == state->id)
+    if (runtime.sender_ == state->id && !recovery.active() && !session.busy())
       runtime.sender_ = 0;
+  }
+  void cancel(const QString &reason = {}) {
+    recovery.cancel();
+    state->input.stop();
+    if (panel)
+      panel->setRecoveryPending(false);
+    if (session.busy())
+      session.stop(reason);
+    else {
+      emit session.status(reason.isEmpty() ? "已停止" : "错误：" + reason);
+      if (!reason.isEmpty())
+        emit session.log("错误：" + reason);
+    }
+    release();
   }
   void start(const app::Timing &timing,
              const QList<airplay::ReceiverEndpoint> &endpoints) {
-    if (session.busy())
+    if (session.busy() || recovery.active())
       return;
+    requestTiming = timing;
+    requestTargets = endpoints;
+    recovery.start();
+    begin(false);
+  }
+  void begin(bool reconnect) {
     try {
       if (!state->processorAlive.load())
         throw airplay::Error("音频组件已卸载。");
       if (runtime.sender_ && runtime.sender_ != state->id)
         throw airplay::Error(
             "另一个 AirPlayQt 插件实例正在发送，请先停止该实例。");
-      if (const auto error = timing.validate(); !error.isEmpty())
+      if (const auto error = requestTiming.validate(); !error.isEmpty())
         throw airplay::Error(error);
-      airplay::validateEndpoints(endpoints);
-      const auto stream = state->input.prepare(timing.backlog);
+      airplay::validateEndpoints(requestTargets);
+      if (reconnect && (state->input.fault() != InputFault::None ||
+                        !state->input.unavailable().isEmpty()))
+        throw airplay::Error("宿主音频条件已变化，请手动开始。");
+      const auto stream =
+          state->input.prepare(requestTiming.backlog, reconnect);
       beginSessionTiming();
       timer = true;
       runtime.sender_ = state->id;
-      state->setTiming(timing);
-      session.start(timing, stream, endpoints);
-    } catch (const std::exception &e) {
-      state->input.stop();
-      release();
+      state->setTiming(requestTiming);
       if (panel)
-        panel->showError(QString::fromUtf8(e.what()));
+        panel->setRecoveryPending(false);
+      if (reconnect)
+        emit session.log("宿主已恢复，自动重建 AirPlay 会话（一次）");
+      session.start(requestTiming, stream, requestTargets,
+                    runtime.environment_);
+    } catch (const std::exception &e) {
+      cancel(QString::fromUtf8(e.what()));
     }
   }
   void poll() {
     const auto stop = state->stopRevision.load();
     const auto timing = state->timingRevision.load();
     if (!state->processorAlive.load() || stop != stopRevision)
-      session.stop();
+      cancel();
     if (stop != stopRevision && panel)
       panel->clearReceiverSelection();
     stopRevision = stop;
-    if (session.busy() && state->input.fault() != InputFault::None)
-      session.stop(faultText(state->input.fault()));
+    const auto fault = state->input.fault();
+    switch (recovery.update(
+        state->input.interruption(), state->input.unavailable().isEmpty(),
+        !session.busy(), fault != InputFault::None, monotonicNs())) {
+    case HostRecovery::Action::Interrupt:
+      emit session.log("宿主暂停音频处理，等待恢复（最多 5 秒）");
+      session.stop({}, airplay::SessionEnd::HostInterrupted);
+      break;
+    case HostRecovery::Action::Reconnect:
+      begin(true);
+      break;
+    case HostRecovery::Action::Cancel:
+      cancel(
+          fault != InputFault::None
+              ? faultText(fault)
+              : "宿主未满足 5 秒自动恢复条件，或重连中再次中断；请手动开始。");
+      break;
+    case HostRecovery::Action::None:
+      break;
+    }
     if (panel) {
+      panel->setRecoveryPending(recovery.waiting());
       if (timing != timingRevision)
         panel->setTiming(state->timing());
       panel->setUnavailable(state->processorAlive.load()
@@ -168,7 +228,8 @@ bool PluginRuntime::prepareUnload() noexcept {
   shutdown();
   return !exists();
 }
-PluginRuntime &PluginRuntime::acquire(void *parent) {
+PluginRuntime &PluginRuntime::acquire(void *parent,
+                                      airplay::SessionEnvironment environment) {
   if (!NativeRuntime::validParentThread(parent))
     throw airplay::Error("Qt 编辑器必须在宿主窗口所属 UI 线程打开。");
   if (auto *value = runtime.load()) {
@@ -176,11 +237,12 @@ PluginRuntime &PluginRuntime::acquire(void *parent) {
       throw airplay::Error("插件 Qt 运行时属于另一个 UI 线程。");
     return *value;
   }
-  auto *value = new PluginRuntime;
+  auto *value = new PluginRuntime(std::move(environment));
   runtime.store(value);
   return *value;
 }
-PluginRuntime::PluginRuntime() {
+PluginRuntime::PluginRuntime(airplay::SessionEnvironment environment)
+    : environment_(std::move(environment)) {
   if (auto *existing = QCoreApplication::instance()) {
     if (!qobject_cast<QApplication *>(existing) ||
         existing->thread() != QThread::currentThread())
@@ -191,14 +253,17 @@ PluginRuntime::PluginRuntime() {
     HMODULE module = nullptr;
     wchar_t path[32768]{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCWSTR>(&PluginRuntime::exists), &module) ||
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&PluginRuntime::exists),
+                            &module) ||
         !GetModuleFileNameW(module, path, 32768))
       throw airplay::Error("无法定位包内 Qt 平台插件。");
-    const auto directory = QFileInfo(QString::fromWCharArray(path)).absolutePath();
+    const auto directory =
+        QFileInfo(QString::fromWCharArray(path)).absolutePath();
     if (!QFileInfo::exists(directory + "/platforms/qwindows.dll"))
       throw airplay::Error("包内缺少 platforms/qwindows.dll。");
-    platformPath_ = QDir::toNativeSeparators(directory + "/platforms").toLocal8Bit();
+    platformPath_ =
+        QDir::toNativeSeparators(directory + "/platforms").toLocal8Bit();
     // The Qt build's compiled-in development path must not win over this
     // package. This branch owns the application; borrowed applications retain
     // their existing library paths untouched.
@@ -213,9 +278,11 @@ PluginRuntime::PluginRuntime() {
     application_->setQuitOnLastWindowClosed(false);
   }
   native_ = std::make_unique<NativeRuntime>([this] {
-    if (shuttingDown_) return;
+    if (shuttingDown_)
+      return;
     pump();
-    if (shutdownPending_) shutdown();
+    if (shutdownPending_)
+      shutdown();
   });
 }
 PluginRuntime::~PluginRuntime() {
@@ -244,15 +311,15 @@ void PluginRuntime::processorRemoved(uint64_t id) noexcept {
   if (!value)
     return;
   value->native_->invoke([id] {
-    if (auto *current = runtime.load()) current->retire(id);
+    if (auto *current = runtime.load())
+      current->retire(id);
   });
 }
 void PluginRuntime::retire(uint64_t id) {
   const auto it = instances_.find(id);
   if (it == instances_.end())
     return;
-  it->second->state->input.stop();
-  it->second->session.stop();
+  it->second->cancel();
 }
 void PluginRuntime::pump() {
   if (pumping_)
@@ -288,14 +355,17 @@ PluginRuntime::open(const std::shared_ptr<PluginState> &state,
   auto *panel = instance->panel.get();
   panel->setTiming(state->timing());
   panel->setUnavailable(state->input.unavailable());
-  QObject::connect(
-      panel, &ui::StreamingPanel::startRequested, &instance->session,
-      [target = instance.get(), panel] {
-        target->start(panel->timing(), panel->endpoints());
-      });
+  panel->setRecoveryPending(instance->recovery.waiting());
+  QObject::connect(panel, &ui::StreamingPanel::startRequested,
+                   &instance->session, [target = instance.get(), panel] {
+                     target->start(panel->timing(), panel->endpoints());
+                   });
   QObject::connect(panel, &ui::StreamingPanel::timingChanged,
                    &instance->session,
                    [state, panel] { state->setTiming(panel->timing()); });
+  QObject::connect(panel, &ui::StreamingPanel::stopRequested,
+                   &instance->session,
+                   [target = instance.get()] { target->cancel(); });
   panel->beginDiscovery();
   return panel;
 }

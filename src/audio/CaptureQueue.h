@@ -66,6 +66,9 @@ public:
     return write_.load(std::memory_order_acquire) * frames_;
   }
   std::atomic<int> fault{0};
+  // VST host suspension ends this stream without being an input failure.
+  // Sticky for the queue's lifetime; resumption always gets a new queue.
+  std::atomic<bool> interrupted{false};
 
 private:
   size_t frames_, leftBytes_, rightBytes_, capacity_;

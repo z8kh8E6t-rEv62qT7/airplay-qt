@@ -5,7 +5,8 @@
 #endif
 
 namespace app {
-Controller::Controller(QObject *parent) : QObject(parent), capture_(audio::createInputCapture()) {
+Controller::Controller(QObject *parent)
+    : QObject(parent), capture_(audio::createInputCapture()) {
   connect(&session_, &SessionController::status, this, &Controller::status);
   connect(&session_, &SessionController::log, this, &Controller::log);
   connect(&session_, &SessionController::group, this, &Controller::group);
@@ -34,9 +35,8 @@ Controller::~Controller() { capture_->stop(); }
 Settings Controller::initialize() {
   drivers_ = audio::inputDevices();
   try {
-    return Settings::load(Settings::path());
+    return settings_.load();
   } catch (const std::exception &e) {
-    saveAllowed_ = false;
     emit error(QString::fromUtf8(e.what()) +
                "\n原配置不会被覆盖。请修复或移走 AirPlayQt.json 后重启。");
     return {};
@@ -84,13 +84,19 @@ void Controller::start(const Settings &settings,
     permissionPending_ = true;
     const auto revision = ++permissionRevision_;
     emit busyChanged(true);
-    qApp->requestPermission(permission, this, [this, settings, endpoints, revision, saveSettings](const QPermission &result) {
-      if (!permissionPending_ || revision != permissionRevision_) return;
-      permissionPending_ = false;
-      emit busyChanged(false);
-      if (result.status() == Qt::PermissionStatus::Granted) start(settings, endpoints, saveSettings);
-      else emit error("音频输入权限被拒绝。");
-    });
+    qApp->requestPermission(
+        permission, this,
+        [this, settings, endpoints, revision,
+         saveSettings](const QPermission &result) {
+          if (!permissionPending_ || revision != permissionRevision_)
+            return;
+          permissionPending_ = false;
+          emit busyChanged(false);
+          if (result.status() == Qt::PermissionStatus::Granted)
+            start(settings, endpoints, saveSettings);
+          else
+            emit error("音频输入权限被拒绝。");
+        });
     return;
   }
 #endif
@@ -102,12 +108,12 @@ void Controller::start(const Settings &settings,
       throw airplay::Error(message);
     emit session_.status("准备音频输入");
     const auto stream = capture_->prepare(settings.left, settings.right,
-                                         settings.timing.backlog);
+                                          settings.timing.backlog);
 #ifdef Q_OS_WIN
     emit session_.log("采集计时：已申请 1 ms 精度，并禁止忽略计时精度请求。");
 #endif
-    if (saveAllowed_ && saveSettings)
-      settings.save(Settings::path());
+    if (saveSettings && settings_.writable())
+      settings_.saveInput(settings);
     session_.start(settings.timing, stream, endpoints);
   } catch (const std::exception &e) {
     stopCapture();

@@ -457,12 +457,15 @@ void AirPlaySession::captureStarted() {
   lastInput_ = lastStats_ = 0;
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   if (stream_.rateDiagnostics)
-    emit log(QString("[VST速率] 开始统计：44100 帧/s，%1-bit 输入，%2 帧/队列块；"
-                     "预缓冲 %3 ms，积压上限 %4 ms。发送计数按每台接收端的同一时间线计算；"
-                     "首个窗口包含预缓冲，每秒报告一次，停止前补充最后窗口。")
-                 .arg(stream_.left.bytes * 8).arg(stream_.blockFrames)
-                 .arg(timing_.prebuffer * 1000, 0, 'f', 1)
-                 .arg(timing_.backlog * 1000, 0, 'f', 1));
+    emit log(
+        QString("[VST速率] 开始统计：44100 帧/s，%1-bit 输入，%2 帧/队列块；"
+                "预缓冲 %3 ms，积压上限 %4 "
+                "ms。发送计数按每台接收端的同一时间线计算；"
+                "首个窗口包含预缓冲，每秒报告一次，停止前补充最后窗口。")
+            .arg(stream_.left.bytes * 8)
+            .arg(stream_.blockFrames)
+            .arg(timing_.prebuffer * 1000, 0, 'f', 1)
+            .arg(timing_.backlog * 1000, 0, 'f', 1));
 #endif
   poll_.start();
 }
@@ -479,19 +482,24 @@ void AirPlaySession::logRates(bool final) {
   const double seconds = double(interval) / 1e9;
   const double inputRate = double(captured - rates_.captured) / seconds;
   const double outputRate = double(sentFrames_ - rates_.sent) / seconds;
-  emit log(QString("[VST速率%1] 窗口 %2 ms；输入 %3 帧/s；发送 %4 帧/s；"
-                   "净增 %5 ms/s；积压 %6 ms（队列 %7 / PCM %8 ms）；"
-                   "poll 最大间隔 %9 ms / 耗时 %10 ms；累计入/出 %11/%12 帧；故障码 %13")
-               .arg(final ? "·停止" : "")
-               .arg(seconds * 1000, 0, 'f', 1)
-               .arg(inputRate, 0, 'f', 1).arg(outputRate, 0, 'f', 1)
-               .arg((inputRate - outputRate) / 44.1, 0, 'f', 2)
-               .arg(double(queued + pcm_.size() / 2) / 44.1, 0, 'f', 2)
-               .arg(double(queued) / 44.1, 0, 'f', 2)
-               .arg(double(pcm_.size() / 2) / 44.1, 0, 'f', 2)
-               .arg(double(rates_.maxGap) / 1e6, 0, 'f', 3)
-               .arg(double(rates_.maxWork) / 1e6, 0, 'f', 3)
-               .arg(captured).arg(sentFrames_).arg(stream_.queue->fault.load()));
+  emit log(
+      QString(
+          "[VST速率%1] 窗口 %2 ms；输入 %3 帧/s；发送 %4 帧/s；"
+          "净增 %5 ms/s；积压 %6 ms（队列 %7 / PCM %8 ms）；"
+          "poll 最大间隔 %9 ms / 耗时 %10 ms；累计入/出 %11/%12 帧；故障码 %13")
+          .arg(final ? "·停止" : "")
+          .arg(seconds * 1000, 0, 'f', 1)
+          .arg(inputRate, 0, 'f', 1)
+          .arg(outputRate, 0, 'f', 1)
+          .arg((inputRate - outputRate) / 44.1, 0, 'f', 2)
+          .arg(double(queued + pcm_.size() / 2) / 44.1, 0, 'f', 2)
+          .arg(double(queued) / 44.1, 0, 'f', 2)
+          .arg(double(pcm_.size() / 2) / 44.1, 0, 'f', 2)
+          .arg(double(rates_.maxGap) / 1e6, 0, 'f', 3)
+          .arg(double(rates_.maxWork) / 1e6, 0, 'f', 3)
+          .arg(captured)
+          .arg(sentFrames_)
+          .arg(stream_.queue->fault.load()));
   rates_.reportedAt = now;
   rates_.captured = captured;
   rates_.sent = sentFrames_;
@@ -512,9 +520,13 @@ void AirPlaySession::poll() {
     if (const int fault = stream_.queue->fault.load())
       throw Error(QString("音频输入故障 %1（1 缓冲索引，2 溢出，3 回调重入，4 "
                           "采样率/时钟变化，5 采样位置跳变，6 重置/失步/过载；"
-                          "101 宿主停用，102 格式变化，103 旁路，104 非实时，"
+                          "102 格式变化，103 旁路，104 非实时，"
                           "105 溢出，106 块无效，107 NaN/Inf，108 状态载入）")
                       .arg(fault));
+    if (stream_.queue->interrupted.load()) {
+      stop({}, SessionEnd::HostInterrupted);
+      return;
+    }
     const auto captured = stream_.queue->capturedFrames();
     if (captured != seenFrames_) {
       seenFrames_ = captured;
@@ -698,15 +710,19 @@ void AirPlaySession::keepAlive() {
     fail(e);
   }
 }
-void AirPlaySession::stop(const QString &error) {
+void AirPlaySession::stop(const QString &error, SessionEnd reason) {
   if (state_ == State::Stopping || state_ == State::Stopped ||
       state_ == State::Error)
     return;
   error_ = error;
+  endReason_ = error.isEmpty() ? reason : SessionEnd::Failure;
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   logRates(true);
 #endif
-  setState(State::Stopping, error.isEmpty() ? "停止中" : "停止中：" + error);
+  setState(State::Stopping,
+           endReason_ == SessionEnd::HostInterrupted
+               ? "宿主音频处理中断，正在清理会话"
+               : (error.isEmpty() ? "停止中" : "停止中：" + error));
   emit stopCapture();
   poll_.stop();
   settle_.stop();
@@ -759,6 +775,6 @@ void AirPlaySession::finishStop() {
   pcm_.clear();
   setState(error_.isEmpty() ? State::Stopped : State::Error,
            error_.isEmpty() ? "已停止" : "错误：" + error_);
-  emit finished(error_);
+  emit finished(error_, int(endReason_));
 }
 } // namespace airplay

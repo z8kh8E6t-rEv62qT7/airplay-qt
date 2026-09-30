@@ -52,9 +52,9 @@ void SessionController::shutdown() {
   thread_.wait();
   busy_ = streaming_ = false;
 }
-void SessionController::start(
-    const Timing &timing, audio::CaptureStream stream,
-    const QList<airplay::ReceiverEndpoint> &endpoints) {
+void SessionController::start(const Timing &timing, audio::CaptureStream stream,
+                              const QList<airplay::ReceiverEndpoint> &endpoints,
+                              airplay::SessionEnvironment environment) {
   if (busy_)
     return;
   airplay::validateEndpoints(endpoints);
@@ -64,14 +64,15 @@ void SessionController::start(
     throw airplay::Error("音频输入尚未准备");
   busy_ = true;
   stopping_ = false;
+  endReason_ = airplay::SessionEnd::Stopped;
   const auto generation = ++generation_;
   emit busyChanged(true);
   if (timing.lead < .5)
     emit log("播放提前量较低，接收端可能晚到；不保证零延迟。");
   QMetaObject::invokeMethod(worker_, [this, context = network_, timing, stream,
-                                      endpoints, generation] {
-    auto *session =
-        new airplay::AirPlaySession(timing, stream, endpoints, worker_);
+                                      endpoints, generation, environment] {
+    auto *session = new airplay::AirPlaySession(timing, stream, endpoints,
+                                                worker_, environment);
     context->session = session;
     // Every delivery is tagged; events from a prior session cannot update a
     // replacement session or reopen its producer gate.
@@ -97,10 +98,11 @@ void SessionController::start(
                 emit startCapture();
             });
     connect(session, &airplay::AirPlaySession::finished, this,
-            [this, generation](QString message) {
+            [this, generation](QString message, int reason) {
               if (generation != generation_)
                 return;
               emit stopCapture();
+              endReason_ = airplay::SessionEnd(reason);
               busy_ = false;
               emit busyChanged(false);
               emit streamingChanged(false);
@@ -124,14 +126,14 @@ void SessionController::captureStarted() {
       context->session->captureStarted();
   });
 }
-void SessionController::stop(const QString &reason) {
+void SessionController::stop(const QString &reason, airplay::SessionEnd end) {
   if (!busy_)
     return;
   stopping_ = true;
   emit stopCapture();
-  QMetaObject::invokeMethod(worker_, [context = network_, reason] {
+  QMetaObject::invokeMethod(worker_, [context = network_, reason, end] {
     if (context->session)
-      context->session->stop(reason);
+      context->session->stop(reason, end);
   });
 }
 void SessionController::volume(double db) {

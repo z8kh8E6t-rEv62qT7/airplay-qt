@@ -13,6 +13,9 @@ public:
   explicit Controller(QObject *parent = nullptr);
   ~Controller() override;
   Settings initialize();
+  void rememberReceivers(const QList<ReceiverSelection> &value) {
+    settings_.rememberReceivers(value);
+  }
   QList<audio::DriverInfo> drivers() const { return drivers_; }
   void selectDriver(const QString &id, void *window);
   void controlPanel();
@@ -43,7 +46,7 @@ private:
   QList<audio::DriverInfo> drivers_;
   QString selectedId_;
   void *window_ = nullptr;
-  bool saveAllowed_ = true;
+  SettingsStore settings_;
   bool permissionPending_ = false;
   quint64 permissionRevision_ = 0;
 };

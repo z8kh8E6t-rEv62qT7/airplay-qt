@@ -11,9 +11,11 @@ public:
   ~SessionController() override;
   void shutdown();
   void start(const Timing &, audio::CaptureStream,
-             const QList<airplay::ReceiverEndpoint> &);
+             const QList<airplay::ReceiverEndpoint> &,
+             airplay::SessionEnvironment environment = {});
   void captureStarted();
-  void stop(const QString &reason = {});
+  void stop(const QString &reason = {},
+            airplay::SessionEnd end = airplay::SessionEnd::Stopped);
   void volume(double db);
   bool busy() const { return busy_; }
   bool streaming() const { return streaming_; }
@@ -22,6 +24,7 @@ public:
   QStringList recentLog() const { return log_; }
   double currentVolume() const { return volume_; }
   double restoreVolume() const { return restoreVolume_; }
+  airplay::SessionEnd endReason() const { return endReason_; }
 signals:
   void startCapture();
   void stopCapture();
@@ -46,5 +49,6 @@ private:
   QString status_ = "就绪", group_;
   QStringList log_;
   double volume_ = 0, restoreVolume_ = 0;
+  airplay::SessionEnd endReason_ = airplay::SessionEnd::Stopped;
 };
 } // namespace app
