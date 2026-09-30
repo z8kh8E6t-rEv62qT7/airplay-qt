@@ -1,0 +1,39 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "debug", "generator": "Ninja", "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "E:/MSYS/clang64/bin/clang++.exe",
+        "CMAKE_MAKE_PROGRAM": "E:/MSYS/clang64/bin/ninja.exe",
+        "CMAKE_PREFIX_PATH": "E:/MSYS/clang64", "ASIO_SDK_ROOT": "E:/MSYS/clang64/include/asiosdk"
+      }
+    },
+    { "name": "release", "inherits": "debug", "binaryDir": "${sourceDir}/build/release", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    {
+      "name": "msvc", "generator": "Visual Studio 18 2026",
+      "architecture": "x64", "toolset": "v143",
+      "binaryDir": "${sourceDir}/build/msvc",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Release",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/build/msvc-deps/Library",
+        "OPENSSL_ROOT_DIR": "${sourceDir}/build/msvc-deps/Library",
+        "CMAKE_IGNORE_PREFIX_PATH": "E:/MSYS/clang64",
+        "LIBPLIST_ROOT": "E:/MSYS/clang64",
+        "ASIO_SDK_ROOT": "E:/MSYS/clang64/include/asiosdk"
+      },
+      "environment": {
+        "PATH": "${sourceDir}/build/msvc/libplist;${sourceDir}/build/msvc-deps/Library/bin;${sourceDir}/build/msvc-deps/Library/lib/qt6/bin;C:/Windows/System32;E:/MSYS/usr/bin",
+        "QT_PLUGIN_PATH": "${sourceDir}/build/msvc-deps/Library/lib/qt6/plugins",
+        "QT_QPA_PLATFORM_PLUGIN_PATH": "${sourceDir}/build/msvc-deps/Library/lib/qt6/plugins/platforms"
+      }
+    }
+  ],
+  "buildPresets": [ { "name": "debug", "configurePreset": "debug" }, { "name": "release", "configurePreset": "release" },
+    { "name": "msvc-release", "configurePreset": "msvc", "configuration": "Release", "jobs": 6 } ],
+  "testPresets": [
+    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "msvc-release", "configurePreset": "msvc", "configuration": "Release", "output": { "outputOnFailure": true } }
+  ]
+}

@@ -1,0 +1,17 @@
+# CMake build output, tests, screenshots and capture diagnostics
+/build/
+/build-*/
+/cmake-build-*/
+/CMakeUserPresets.json
+
+# Python virtual environments and bytecode
+/venv/
+/.venv/
+__pycache__/
+*.py[cod]
+
+# Local runtime configuration
+AirPlayQt.json
+
+# Local IDE cache
+/.vs/

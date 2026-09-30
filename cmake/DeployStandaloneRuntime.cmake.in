@@ -1,0 +1,8 @@
+set(DUMPBIN "@LIBPLIST_DUMPBIN@")
+set(DEPENDENCY_BIN "@deploy_prefix@/bin")
+get_filename_component(PLIST_BIN "@LIBPLIST_DLL@" DIRECTORY)
+set(SCAN_ROOT "@PROJECT_BINARY_DIR@/runtime-scan")
+include("@PROJECT_SOURCE_DIR@/cmake/CollectRuntime.cmake")
+get_filename_component(destination "${APP}" DIRECTORY)
+airplay_collect_runtime("${APP}" "@AIRPLAY_QWINDOWS@" "${destination}")
+file(WRITE "${destination}/qt.conf" "[Paths]\nPrefix=.\nPlugins=.\n")

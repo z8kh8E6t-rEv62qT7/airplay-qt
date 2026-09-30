@@ -1,0 +1,47 @@
+#pragma once
+#include "SessionController.h"
+#include "Settings.h"
+#include "airplay/ReceiverEndpoint.h"
+#include "audio/AsioCapture.h"
+#include <QObject>
+#include <QThread>
+#include <memory>
+namespace app {
+class Controller : public QObject {
+  Q_OBJECT
+public:
+  explicit Controller(QObject *parent = nullptr);
+  ~Controller() override;
+  Settings initialize();
+  QList<audio::DriverInfo> drivers() const { return drivers_; }
+  void selectDriver(const QString &id, void *window);
+  void controlPanel();
+  void start(const Settings &settings,
+             const QList<airplay::ReceiverEndpoint> &endpoints);
+  void stop();
+  void volume(double db);
+  bool busy() const { return session_.busy(); }
+  SessionController &session() { return session_; }
+signals:
+  void channels(QList<audio::ChannelInfo> channels);
+  void status(QString text);
+  void log(QString text);
+  void group(QString text);
+  void error(QString text);
+  void busyChanged(bool busy);
+  void streamingChanged(bool streaming);
+  void volumeApplied(double db);
+  void telemetry(double left, double right, double backlog, quint64 packets,
+                 quint64 retransmitted, quint64 expired);
+  void stopped();
+
+private:
+  void stopCapture();
+  SessionController session_;
+  audio::AsioCapture capture_;
+  QList<audio::DriverInfo> drivers_;
+  QString selectedId_;
+  void *window_ = nullptr;
+  bool saveAllowed_ = true;
+};
+} // namespace app
