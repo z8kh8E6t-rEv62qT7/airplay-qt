@@ -1,5 +1,6 @@
 # CMake build output, tests, screenshots and capture diagnostics
 /build/
+/dist/
 /build-*/
 /cmake-build-*/
 /CMakeUserPresets.json

@@ -1,0 +1,163 @@
+cmake_minimum_required(VERSION 3.25)
+if(NOT CONFIG STREQUAL "Release" OR "@AIRPLAY_CLI_TEST@" OR
+    NOT "@CMAKE_OSX_ARCHITECTURES@" STREQUAL "arm64" OR
+    NOT "@CMAKE_OSX_DEPLOYMENT_TARGET@" STREQUAL "27.0")
+  message(FATAL_ERROR "Packaging requires Release, arm64, macOS 27.0 and AIRPLAY_CLI_TEST=OFF")
+endif()
+set(BUILD_ROOT "@PROJECT_BINARY_DIR@")
+set(SOURCE_ROOT "@PROJECT_SOURCE_DIR@")
+set(QT_VERSION "@Qt6Core_VERSION@")
+set(stage "${BUILD_ROOT}/package-macos-stage")
+set(payload "${stage}/AirPlayQt-macos-arm64")
+set(destination "${SOURCE_ROOT}/dist/macos-arm64")
+file(MAKE_DIRECTORY "${SOURCE_ROOT}/dist")
+file(LOCK "${SOURCE_ROOT}/dist/.package-macos.lock" GUARD PROCESS TIMEOUT 0)
+file(REMOVE_RECURSE "${stage}")
+file(MAKE_DIRECTORY "${payload}" "${stage}/checks")
+set(REPORT "${stage}/verification.txt")
+file(WRITE "${REPORT}" "AirPlayQt macOS arm64 package verification\nMinimum macOS: 27.0\nCLI: OFF\nSigning: ad-hoc, no notarization\n")
+include("${SOURCE_ROOT}/cmake/MacBundle.cmake")
+include("${SOURCE_ROOT}/cmake/MacLicenses.cmake")
+mac_run("CTest" "@CMAKE_CTEST_COMMAND@" --test-dir "${BUILD_ROOT}" -C Release
+  --output-on-failure --output-junit "${stage}/ctest.xml")
+
+get_filename_component(qt_bin "@AIRPLAY_MACDEPLOYQT@" DIRECTORY)
+execute_process(COMMAND "${qt_bin}/qtpaths" --query QT_INSTALL_PLUGINS
+  OUTPUT_VARIABLE qt_plugins OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+set(cocoa "${qt_plugins}/platforms/libqcocoa.dylib")
+set(CMAKE_GET_RUNTIME_DEPENDENCIES_PLATFORM macos+macho)
+set(CMAKE_GET_RUNTIME_DEPENDENCIES_TOOL otool)
+set(CMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND /usr/bin/otool)
+file(GET_RUNTIME_DEPENDENCIES EXECUTABLES "${APP}/Contents/MacOS/AirPlayQt"
+  MODULES "${PLUGIN}/Contents/MacOS/AirPlayQt" "${cocoa}"
+  PRE_EXCLUDE_REGEXES "^/System/Library/" "^/usr/lib/"
+  RESOLVED_DEPENDENCIES_VAR originals UNRESOLVED_DEPENDENCIES_VAR unresolved
+  CONFLICTING_DEPENDENCIES_PREFIX conflicts)
+if(unresolved OR conflicts_FILENAMES)
+  message(FATAL_ERROR "Unresolved/conflicting dependencies: ${unresolved}; ${conflicts_FILENAMES}")
+endif()
+set(app "${payload}/AirPlayQt.app")
+set(plugin "${payload}/AirPlayQt.vst3")
+mac_run("Stage app" /usr/bin/ditto "${APP}" "${app}")
+mac_run("Stage VST3" /usr/bin/ditto "${PLUGIN}" "${plugin}")
+file(MAKE_DIRECTORY "${app}/Contents/PlugIns/platforms")
+file(COPY "${cocoa}" DESTINATION "${app}/Contents/PlugIns/platforms")
+# Only Cocoa is loaded by this Widgets application. Qt's permission backend is
+# linked statically. Avoid unrelated image/SQL/TLS plugins and their dependencies.
+mac_run("Qt official deployment" "@AIRPLAY_MACDEPLOYQT@" "${app}"
+  -no-plugins -no-strip -no-codesign
+  "-executable=${app}/Contents/PlugIns/platforms/libqcocoa.dylib")
+file(WRITE "${app}/Contents/Resources/qt.conf" "[Paths]\nPlugins=PlugIns\n")
+mac_run("Private VST frameworks" /usr/bin/ditto "${app}/Contents/Frameworks" "${plugin}/Contents/Frameworks")
+mac_run("Private VST platform plugin" /usr/bin/ditto "${app}/Contents/PlugIns" "${plugin}/Contents/PlugIns")
+mac_licenses("${originals}" "${app}/Contents/Resources/ThirdPartyLicenses")
+mac_run("Private VST notices" /usr/bin/ditto "${app}/Contents/Resources/ThirdPartyLicenses"
+  "${plugin}/Contents/Resources/ThirdPartyLicenses")
+foreach(bundle IN ITEMS "${app}" "${plugin}")
+  if(bundle STREQUAL plugin)
+    mac_run("Minimum OS metadata" /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 27.0" "${bundle}/Contents/Info.plist")
+  endif()
+  mac_binaries("${bundle}" binaries)
+  foreach(binary IN LISTS binaries)
+    mac_rewrite("${binary}" "${bundle}/Contents/Frameworks")
+  endforeach()
+  mac_audit("${bundle}")
+  mac_sign("${bundle}")
+endforeach()
+
+# Different parent directories ensure the app and plugin cannot help each other.
+set(relocated_app "${stage}/checks/独立 应用/AirPlayQt.app")
+set(relocated_plugin "${stage}/checks/独立 插件/AirPlayQt.vst3")
+mac_run("Relocate app" /usr/bin/ditto "${app}" "${relocated_app}")
+mac_run("Relocate plugin" /usr/bin/ditto "${plugin}" "${relocated_plugin}")
+foreach(bundle IN ITEMS "${relocated_app}" "${relocated_plugin}")
+  mac_audit("${bundle}")
+  mac_run("Relocated signature" /usr/bin/codesign --verify --deep --strict "${bundle}")
+endforeach()
+mac_run("Packaged app smoke" "${SMOKE}" "${relocated_app}" "${stage}/app-load.log")
+mac_verify_trace("${stage}/app-load.log" "${relocated_app}")
+
+set(test_host "${stage}/checks/test_vst3_module")
+file(COPY_FILE "${HOST}" "${test_host}")
+mac_rewrite("${test_host}" "${relocated_plugin}/Contents/Frameworks")
+mac_run("Sign test host" /usr/bin/codesign --force --sign - "${test_host}")
+foreach(mode IN ITEMS owned borrowed incompatible missing-platform)
+  if(mode STREQUAL "missing-platform")
+    file(RENAME "${relocated_plugin}/Contents/PlugIns/platforms/libqcocoa.dylib"
+      "${stage}/checks/libqcocoa.dylib")
+  endif()
+  set(qt_environment --unset=QT_PLUGIN_PATH --unset=QT_QPA_PLATFORM_PLUGIN_PATH)
+  if(mode STREQUAL "borrowed")
+    set(qt_environment "QT_PLUGIN_PATH=${relocated_plugin}/Contents/PlugIns"
+      "QT_QPA_PLATFORM_PLUGIN_PATH=${relocated_plugin}/Contents/PlugIns/platforms")
+  endif()
+  execute_process(COMMAND "@CMAKE_COMMAND@" -E env
+    --unset=DYLD_LIBRARY_PATH --unset=DYLD_FRAMEWORK_PATH --unset=DYLD_INSERT_LIBRARIES
+    --unset=DYLD_FALLBACK_LIBRARY_PATH --unset=DYLD_FALLBACK_FRAMEWORK_PATH
+    ${qt_environment}
+    QT_QPA_PLATFORM=cocoa DYLD_PRINT_LIBRARIES=1
+    "${test_host}" "${relocated_plugin}" "${mode}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 60)
+  set(log "${stage}/vst3-${mode}.log")
+  file(WRITE "${log}" "${output}${errors}")
+  if(mode STREQUAL "missing-platform")
+    file(RENAME "${stage}/checks/libqcocoa.dylib"
+      "${relocated_plugin}/Contents/PlugIns/platforms/libqcocoa.dylib")
+    mac_run("Restored test bundle signature" /usr/bin/codesign --verify --deep --strict "${relocated_plugin}")
+  endif()
+  if(NOT result STREQUAL "0")
+    message(FATAL_ERROR "Packaged VST3 ${mode} failed (${result}); see ${log}")
+  endif()
+  mac_verify_trace("${log}" "${relocated_plugin}" "${test_host}")
+  file(APPEND "${REPORT}" "\nPackaged native host ${mode}: passed, 5 load/unload cycles, 2 reopens each.\n")
+endforeach()
+mac_run("Packaged VST3 validator" "${VALIDATOR}" "${relocated_plugin}")
+
+# Prove the package gate rejects a missing dynamic dependency and a damaged
+# signature, without changing either the build products or delivery bundles.
+set(damaged "${stage}/checks/damaged.app")
+mac_run("Stage failure checks" /usr/bin/ditto "${app}" "${damaged}")
+file(REMOVE "${damaged}/Contents/Frameworks/libcrypto.3.dylib")
+execute_process(COMMAND "@CMAKE_COMMAND@" "-DAUDIT_ROOT=${damaged}" "-DREPORT=${REPORT}"
+  -P "${SOURCE_ROOT}/cmake/MacBundle.cmake" RESULT_VARIABLE result
+  OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+if(result STREQUAL "0" OR NOT errors MATCHES "Unresolved dependency")
+  message(FATAL_ERROR "Missing-library gate did not reject the damaged bundle: ${output}${errors}")
+endif()
+execute_process(COMMAND /usr/bin/codesign --verify --deep --strict "${damaged}"
+  RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+if(result STREQUAL "0")
+  message(FATAL_ERROR "Signature gate accepted the damaged bundle")
+endif()
+file(APPEND "${REPORT}" "\nNegative checks passed: missing library and damaged signature rejected.\n")
+
+file(WRITE "${payload}/README.txt" "AirPlayQt @PROJECT_VERSION@\narm64; macOS 27.0 or later.\nEach bundle includes its own runtime libraries. Homebrew is not required.\nAd-hoc signed; not notarized or Developer ID signed.\nCopy AirPlayQt.app to your preferred location. Install AirPlayQt.vst3 manually in a VST3 location if desired.\nMicrophone and Local Network permissions are required for input and receiver access.\nConfiguration: ~/.config/AirPlayQt.json\nCLI test entry is disabled.\nThird-party notices and source provenance: Contents/Resources/ThirdPartyLicenses in each bundle.\nThis software uses the FreeType project (https://freetype.org).\nUser confirmed prior hardware playback. Packaged DAW playback, long-duration sync, other machines/OS versions and Windows have not been revalidated.\nClaude review remains a go-live gate and was not run.\n")
+file(APPEND "${REPORT}" "\nUser reported real-device playback passed before packaging. No audio was sent by packaging tests.\nNot verified: packaged DAW/playback, other machines/OS versions, long-duration sync, Windows.\nClaude review remains required for go-live; not executed.\n")
+set(zip "${stage}/AirPlayQt-macos-arm64.zip")
+mac_run("Create ZIP" /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${payload}" "${zip}")
+mac_run("Extract ZIP" /usr/bin/ditto -x -k "${zip}" "${stage}/unpacked")
+foreach(name IN ITEMS AirPlayQt.app AirPlayQt.vst3)
+  mac_audit("${stage}/unpacked/AirPlayQt-macos-arm64/${name}")
+  mac_run("Extracted signature" /usr/bin/codesign --verify --deep --strict "${stage}/unpacked/AirPlayQt-macos-arm64/${name}")
+endforeach()
+file(APPEND "${REPORT}" "\nFinal ZIP extraction: dependency and signature checks passed.\n")
+file(SHA256 "${zip}" hash)
+file(WRITE "${payload}/SHA256SUMS" "${hash}  AirPlayQt-macos-arm64.zip\n")
+file(COPY "${REPORT}" "${stage}/ctest.xml" "${stage}/app-load.log"
+  "${stage}/vst3-owned.log" "${stage}/vst3-borrowed.log" "${stage}/vst3-incompatible.log" "${stage}/vst3-missing-platform.log"
+  DESTINATION "${payload}")
+# Publish only validated output. Keep the prior delivery until the final rename.
+file(RENAME "${zip}" "${payload}/AirPlayQt-macos-arm64.zip")
+file(REMOVE_RECURSE "${destination}.previous")
+if(EXISTS "${destination}")
+  file(RENAME "${destination}" "${destination}.previous")
+endif()
+file(RENAME "${payload}" "${destination}" RESULT published)
+if(NOT published STREQUAL "0")
+  if(EXISTS "${destination}.previous")
+    file(RENAME "${destination}.previous" "${destination}")
+  endif()
+  message(FATAL_ERROR "Publication failed: ${published}")
+endif()
+file(REMOVE_RECURSE "${destination}.previous")
+message(STATUS "Validated package: ${destination}")

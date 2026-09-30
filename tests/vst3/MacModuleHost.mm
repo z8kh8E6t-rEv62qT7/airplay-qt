@@ -112,6 +112,7 @@ int main(int argc, char **argv) {
     [NSApplication sharedApplication];
     const bool borrowed = std::strcmp(argv[2], "borrowed") == 0;
     const bool incompatible = std::strcmp(argv[2], "incompatible") == 0;
+    const bool missingPlatform = std::strcmp(argv[2], "missing-platform") == 0;
     std::unique_ptr<QCoreApplication> application;
     if (borrowed)
       application = std::make_unique<QApplication>(argc, argv);
@@ -182,7 +183,7 @@ int main(int argc, char **argv) {
         REQUIRE(view->attached([window contentView], kPlatformTypeNSView) ==
                 kResultOk);
         QWidget *widget = embedded([window contentView]);
-        REQUIRE(incompatible ? !widget : widget != nullptr);
+        REQUIRE((incompatible || missingPlatform) ? !widget : widget != nullptr);
         ViewRect rect{0, 0, 900, 880};
         REQUIRE(view->onSize(&rect) == kResultOk);
         REQUIRE(view->onFocus(true) == kResultOk);
@@ -229,8 +230,7 @@ int main(int argc, char **argv) {
               originalMenu);
       REQUIRE([NSApp delegate] == originalDelegate &&
               [NSApp mainMenu] == originalMainMenu);
-      if (borrowed)
-        REQUIRE(QCoreApplication::libraryPaths() == originalPaths);
+      REQUIRE(QCoreApplication::libraryPaths() == originalPaths);
       factory = nullptr;
       REQUIRE(exit());
       REQUIRE(dlclose(module) == 0);

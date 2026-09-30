@@ -5,6 +5,7 @@
 <key>CFBundleIdentifier</key><string>org.airplayqt.app</string>
 <key>CFBundleName</key><string>AirPlayQt</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>LSMinimumSystemVersion</key><string>27.0</string>
 <key>CFBundleVersion</key><string>0.1.0</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>NSHighResolutionCapable</key><true/>

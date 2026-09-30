@@ -1,8 +1,46 @@
 # AirPlayQt
 
+## macOS 完整打包（用户追加授权，2026-09-30）
+
+新增打包任务独立于下方原有移植计划。输出 **arm64、macOS 27.0 及以上** 的完整 `.app` 和 `.vst3`，两者分别内置 Qt、OpenSSL、libplist 及间接运行依赖，无须目标机器安装 Homebrew。实测系统为 macOS 27.2；CLI 关闭，使用 ad-hoc 本地签名，不提供 Developer ID 签名、公证或自动安装。
+
+在项目根目录执行：
+
+```sh
+cmake --preset macos-release -DBUILD_TESTING=ON -DAIRPLAY_CLI_TEST=OFF
+cmake --build --preset macos-release --target package-macos
+```
+
+目标要求 Release、arm64、部署目标 27.0 和 CLI 关闭。它依赖应用、VST3 和测试程序完成构建，执行 CTest，再在 `build/macos-release/package-macos-stage` 暂存、部署、签名及验证，全部通过后才替换 `dist/macos-arm64`。失败保留此前交付和暂存诊断。运行需要已登录的 macOS 图形会话；首次收集 Qt 许可证时按本机 Homebrew 配方的 URL 和 SHA-256 下载精确版本源码，缓存于 `build/macos-release/package-sources`。
+
+交付文件：
+
+- `dist/macos-arm64/AirPlayQt.app`
+- `dist/macos-arm64/AirPlayQt.vst3`
+- `dist/macos-arm64/AirPlayQt-macos-arm64.zip`：包含两个完整 bundle 与使用说明，保留 framework 符号链接。
+- `dist/macos-arm64/SHA256SUMS`、`verification.txt`、`ctest.xml` 及应用／原生宿主的动态加载日志：作为归档旁的验证材料。
+
+Qt 官方 `macdeployqt` 部署框架与 Cocoa 平台插件；所有非系统动态库引用改为相对于加载模块自身的路径，移除构建时 rpath。每个 bundle 的 `Contents/Resources/ThirdPartyLicenses` 包含许可证、Qt 第三方归属记录及上游源码来源。VST3 自建 QApplication 时定位自身模块的 `Contents/PlugIns`，缺失 Cocoa 后端时明确失败，卸载恢复原 Qt 路径；借用 QApplication 不修改宿主路径。
+
+包验证包含：完整 CTest、打包后的 SDK validator、分别位于中文／空格路径下的应用启动与正常退出、VST3 自建／借用／不兼容 Qt 与缺失平台插件的生命周期检查。测试宿主重定位到被测插件自己的 Qt；通过 dyld 加载日志逐项检查非系统镜像来自被测包。递归审计每份 Mach-O 的架构、最低系统版本、依赖闭包及符号链接，逐层签名后验证，并对最终 ZIP 解压副本再次审计与验签。缺库及签名损坏的副本必须被门禁拒绝。测试不自动发送 HomePod 音频，也不隐藏或修改 Homebrew。
+
+本次结果：CTest **9/9**、打包后 SDK validator **47/47**，CTest 中 SDK 自测 **51/51**。四种原生宿主模式各完成五轮加载／卸载和每轮两次窗口重开；应用显示窗口后正常退出 0。两个包各有 **29 个 arm64 Mach-O 文件**，实际加载、迁移路径、签名与最终 ZIP 解压审计全部通过。另以独立 CLI=ON 配置执行发布脚本，确认在暂存／发布前拒绝；日志为 `build/macos-release/package-cli-guard.log`。最终常规构建缓存仍为 CLI=OFF。
+
+新增打包计划的固定清单仅更新完成状态：
+
+1. **完成：建立可重复打包入口。** 新增 CMake `package-macos` 目标，依赖 Release 应用及插件构建完成；通过独立暂存目录打包，成功验证后发布至 `dist/macos-arm64`。明确最低系统版本 27.0，拒绝 CLI 开启的发布配置。
+2. **完成：完整部署运行依赖。** 使用 Qt 官方部署工具处理应用，递归收集 Qt、OpenSSL、libplist 及其非系统依赖；每个包独立包含自己的 Frameworks、Qt 插件和必要资源。重写动态库引用及搜索路径，移除对 Homebrew、源码目录和构建目录的运行依赖；保留 framework 符号链接、权限声明及第三方许可证。
+3. **完成：补齐 VST3 包内路径处理。** 从已加载插件模块的位置定位自身 Qt 插件目录；创建 QApplication 前配置路径，失败及卸载时恢复此前状态。借用兼容 QApplication 时保持宿主路径不变；保留不兼容时明确失败的行为。插件名称、FUID、状态版本及单发送实例约束不变。
+4. **完成：签名与验证。** 完成所有文件修改后，从内部库到外层 bundle 逐层签名，核验签名和依赖闭包。运行现有 CTest、SDK validator 和原生宿主测试；针对打包副本验证窗口重开、反复加载卸载及 Qt 自建／借用／不兼容场景。将两个包分别复制到含空格和中文的路径再验证，确认运行时实际加载包内依赖，不修改或隐藏本机 Homebrew。
+5. **完成：归档交付。** 输出两个完整 bundle、`AirPlayQt-macos-arm64.zip`、SHA-256 校验文件及验证报告；解压 ZIP 后复核结构和签名。更新构建说明、系统要求、打包命令与交付路径。
+
+用户已确认打包前实机播放通过；打包后的真实 DAW／播放、其他机器及系统版本、长时同步与 Windows 尚未重新验收。ad-hoc 签名不保证其他机器通过 Gatekeeper。**[blocked] 正式上线：Claude 可维护性／边界条件／回归风险三维审查仍未执行。**
+
+依据：[Qt macOS 部署](https://doc.qt.io/qt-6/macos-deployment.html)、[Qt 库搜索路径](https://doc.qt.io/qt-6/qcoreapplication.html#libraryPaths)、[Apple 嵌套代码签名](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)。
+
 ## macOS arm64 移植状态（2026-09-30，本机开发构建完成）
 
-已确认目标为 Release 本机开发构建，独立应用使用 Core Audio 输入设备，插件使用 DAW 音频；采样率不是 44.1 kHz 时只报错拒绝，不引导、不自动切换、不重采样。运行依赖本机 Qt 6.11.1、OpenSSL 3.6.4 和 libplist 2.7.0。只针对当前 macOS 27.2 / arm64 环境；本机 OpenSSL、libplist 二进制最低系统版本为 27.0，构建默认部署目标 26.5 的链接警告不代表已验证旧系统兼容性。
+原移植目标为 Release 本机开发构建，独立应用使用 Core Audio 输入设备，插件使用 DAW 音频；采样率不是 44.1 kHz 时只报错拒绝，不引导、不自动切换、不重采样。常规构建运行依赖本机 Qt 6.11.1、OpenSSL 3.6.4 和 libplist 2.7.0。只针对当前 macOS 27.2 / arm64 环境；本机 OpenSSL、libplist 二进制最低系统版本为 27.0。新增打包任务将 macOS 预设的部署目标明确为 27.0；旧系统兼容性未验证。
 
 固定执行清单保持原顺序与范围，状态如下：
 
@@ -33,7 +71,7 @@ cmake --build --preset macos-release
 ctest --preset macos-release --output-junit macos-tests.xml
 ```
 
-`vst3` 和 `vst3_module_*` 测试需要 macOS 图形会话；模块宿主会扫描设备，但不会开始音频发送。结果在 `build/macos-release/macos-tests.xml` 和 `build/macos-release/Testing/Temporary/LastTest.log`；构建日志为 `build/macos-release/build.log`。编辑器截图位于 `build/macos-release/bin/Release/VstEmbedded-owned.png` 和 `VstEmbedded-borrowed.png`。没有自动安装插件、制作便携包或公证安装包。
+`vst3` 和 `vst3_module_*` 测试需要 macOS 图形会话；模块宿主会扫描设备，但不会开始音频发送。结果在 `build/macos-release/macos-tests.xml` 和 `build/macos-release/Testing/Temporary/LastTest.log`；构建日志为 `build/macos-release/build.log`。编辑器截图位于 `build/macos-release/bin/Release/VstEmbedded-owned.png` 和 `VstEmbedded-borrowed.png`。本节记录原开发构建；完整包见上方新增打包任务。没有自动安装插件或制作公证安装包。
 
 
 ### macOS CLI 实机测试（用户追加授权）
@@ -446,4 +484,4 @@ SDK validator 对插件执行 47 项检查、SDK 自测执行 51 项；两者均
 - [Windows timeBeginPeriod](https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timebeginperiod)、[SetProcessInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation)：配对释放计时请求及显式控制忽略计时精度请求的策略。
 - [OpenSSL EVP](https://docs.openssl.org/3.6/man3/EVP_EncryptInit/) 与 [HKDF](https://docs.openssl.org/3.6/man3/EVP_PKEY_CTX_set_hkdf_md/)：认证加密和密钥派生。
 
-ASIO SDK、Qt、OpenSSL、libplist 的许可证由各上游提供；本工程未复制 SDK 实现源码。本次不提供安装包或便携分发包。
+ASIO SDK、Qt、OpenSSL、libplist 的许可证由各上游提供；本工程未复制 SDK 实现源码。macOS 完整包内附运行依赖的许可证与来源信息；不提供自动安装程序或公证安装包。Windows 开发构建的交付边界不变。

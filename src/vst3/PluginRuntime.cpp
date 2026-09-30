@@ -2,6 +2,9 @@
 #include <QThread>
 #include <QFileInfo>
 #include <QDir>
+#ifdef Q_OS_MACOS
+#include <dlfcn.h>
+#endif
 #ifdef AIRPLAY_PACKAGED_RUNTIME
 #include <windows.h>
 #endif
@@ -35,10 +38,31 @@ QString faultText(InputFault value) {
 } // namespace
 struct PluginRuntime::ApplicationMode {
 #ifdef Q_OS_MACOS
+  const QStringList paths = QCoreApplication::libraryPaths();
+  bool changedPaths = false;
   const bool plugin = QCoreApplication::testAttribute(Qt::AA_PluginApplication);
   const bool menu = QCoreApplication::testAttribute(Qt::AA_DontUseNativeMenuBar);
-  ApplicationMode() { QCoreApplication::setAttribute(Qt::AA_PluginApplication); }
+  ApplicationMode() {
+    Dl_info module{};
+    if (!dladdr(reinterpret_cast<const void *>(&PluginRuntime::exists), &module) ||
+        !module.dli_fname)
+      throw airplay::Error("无法定位插件模块。");
+    const auto contents = QFileInfo(QString::fromUtf8(module.dli_fname)).dir();
+    const auto plugins = QDir::cleanPath(contents.filePath("../PlugIns"));
+    // Development builds have no private runtime. A deployed bundle must have
+    // its Cocoa backend; never silently fall back to the developer's Qt.
+    if (QFileInfo::exists(contents.filePath("../Frameworks"))) {
+      if (!QFileInfo::exists(plugins + "/platforms/libqcocoa.dylib"))
+        throw airplay::Error("包内缺少 platforms/libqcocoa.dylib。");
+      QCoreApplication::setLibraryPaths({plugins});
+      changedPaths = true;
+    }
+    QCoreApplication::setAttribute(Qt::AA_PluginApplication);
+  }
   ~ApplicationMode() {
+    // application_ is destroyed first, including Qt's default-path reset.
+    if (changedPaths)
+      QCoreApplication::setLibraryPaths(paths);
     QCoreApplication::setAttribute(Qt::AA_PluginApplication, plugin);
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeMenuBar, menu);
   }

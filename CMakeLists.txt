@@ -137,3 +137,7 @@ if(BUILD_TESTING AND APPLE AND AIRPLAY_BUILD_STANDALONE)
   target_link_libraries(test_coreaudio PRIVATE airplay_coreaudio Qt6::Test "-framework CoreAudio")
   add_test(NAME coreaudio COMMAND test_coreaudio)
 endif()
+
+if(APPLE AND AIRPLAY_BUILD_STANDALONE AND AIRPLAY_BUILD_VST3 AND BUILD_TESTING)
+  include(cmake/PackageMac.cmake)
+endif()
