@@ -14,7 +14,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
 #else
   const QString backend = "ASIO";
 #endif
-  setWindowTitle("AirPlayQt · " + backend + " → HomePod");
+  setWindowTitle("AirPlayQt · " + backend + " → AirPlay");
   resize(900, 980);
   auto *central = new QWidget;
   setCentralWidget(central);

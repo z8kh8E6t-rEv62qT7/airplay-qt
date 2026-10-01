@@ -1,6 +1,6 @@
 # AirPlayQt
 
-Stream live audio to an AirPlay receiver or an existing HomePod stereo pair from a standalone app or a VST3 effect plugin.
+Stream live audio to an AirPlay receiver or an existing AirPlay stereo pair from a standalone app or a VST3 effect plugin.
 
 Built with C++20 and Qt Widgets for Windows x64 and macOS.
 
@@ -17,11 +17,11 @@ Built with C++20 and Qt Widgets for Windows x64 and macOS.
 
 1. Open the app, or insert AirPlayQt as an effect on a stereo track or bus in your DAW.
 2. For the app, select an input device and two distinct input channels. For VST3, use a 44.1 kHz project with real-time processing enabled.
-3. Select one receiver or both members of an existing HomePod stereo pair. Manual addresses use `IPv4[:port]`, with port `7000` as the default.
+3. Select one receiver or both members of an existing AirPlay stereo pair. Manual addresses use `IPv4[:port]`, with port `7000` as the default.
 4. Choose a network interface if needed, then click **Start**.
 5. Adjust receiver volume or mute during playback. Click **Stop** to end the session.
 
-Sending requires **44.1 kHz** audio. AirPlayQt does not resample; it converts input to stereo 16-bit PCM for the ALAC transport. Stereo-pair channel roles come from the HomePod group, not selection order. Discovery alone does not guarantee receiver compatibility.
+Sending requires **44.1 kHz** audio. AirPlayQt does not resample; it converts input to stereo 16-bit PCM for the ALAC transport. Stereo-pair channel roles come from the AirPlay group, not selection order. Discovery alone does not guarantee receiver compatibility.
 
 The VST3 plugin keeps local audio passing through and reports zero local latency; remote playback has its own buffering delay. Closing the plugin editor leaves sending active. A streaming instance can reconnect once if valid host audio resumes within five seconds of suspension.
 

@@ -34,7 +34,6 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
                     ? i18n::Language::Chinese
                     : i18n::Language::English);
   });
-  layout->addWidget(label(i18n::text(i18n::Id::KHzBitStereoNoResampling)));
   inputLayout_ = new QVBoxLayout;
   layout->addLayout(inputLayout_);
   auto *networkRow = new QHBoxLayout;
@@ -133,7 +132,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   volume_->setRange(-144, 0);
   volume_->setDecimals(2);
   volume_->setSuffix(" dB");
-  applyVolume_ = button(i18n::text(i18n::Id::SetHomePodVolume));
+  applyVolume_ = button(i18n::text(i18n::Id::SetAirPlayVolume));
   mute_ = new QCheckBox;
   bindText(mute_, "text", i18n::text(i18n::Id::Mute));
   volumeRow->addWidget(label(i18n::text(i18n::Id::ReceiverVolume)));
@@ -508,7 +507,7 @@ void StreamingPanel::updateTargets() {
     bindText(title_, "text",
              selected.size() == 1
                  ? i18n::text(i18n::Id::AudioInputSingleAirPlayReceiver)
-                 : i18n::text(i18n::Id::AudioInputHomePodStereoPair));
+                 : i18n::text(i18n::Id::AudioInputAirPlayStereoPair));
     bindText(targets_, "text",
              addresses.join(" + ") + (unavailable_.isEmpty()
                                           ? i18n::Message{}

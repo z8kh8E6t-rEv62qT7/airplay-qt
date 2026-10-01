@@ -67,7 +67,7 @@ ReceiverInfo receiverInfo(const QByteArray &data) {
 }
 void validateGroup(const ReceiverInfo &a, const ReceiverInfo &b) {
   if (a.stereoId.isEmpty() || a.stereoId != b.stereoId)
-    throw Error(i18n::text(i18n::Id::TheTwoHomePodsAreNotInThe));
+    throw Error(i18n::text(i18n::Id::AirPlayReceiversNotInSameStereoPair));
   if (a.deviceId.isEmpty() || b.deviceId.isEmpty() ||
       a.deviceId.compare(b.deviceId, Qt::CaseInsensitive) == 0)
     throw Error(i18n::text(i18n::Id::TwoDifferentReceiverDevicesAreRequired));
