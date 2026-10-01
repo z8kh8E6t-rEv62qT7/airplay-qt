@@ -18,7 +18,7 @@ public:
   explicit Editor(std::shared_ptr<PluginState> state,
                   std::function<void()> languageEdited)
       : state_(std::move(state)), languageEdited_(std::move(languageEdited)) {
-    rect = {0, 0, 900, 880};
+    rect = {0, 0, 1400, 880};
     PluginRuntime::addComponent();
   }
   ~Editor() override {

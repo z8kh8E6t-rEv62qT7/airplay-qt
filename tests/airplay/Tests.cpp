@@ -85,6 +85,68 @@ struct SessionFixture {
 class ProtocolTests : public QObject {
   Q_OBJECT
 private slots:
+  void pausedTelemetryPreservesTransportAndDiagnostics() {
+    SessionFixture f;
+    f.l.fill(16384);
+    f.r.fill(-8192);
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
+    f.attach(session);
+    QSignalSpy telemetry(&session, &AirPlaySession::telemetry);
+    QSignalSpy logs(&session, &AirPlaySession::log);
+    QSignalSpy volume(&session, &AirPlaySession::volumeApplied);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.setTelemetryEnabled(false, 1);
+    session.start();
+    QTRY_VERIFY(f.left.packets.size() > 20);
+    QVERIFY(telemetry.isEmpty());
+    QVERIFY(!logs.isEmpty());
+
+    session.setTelemetryEnabled(true, 2);
+    QTRY_VERIFY(!telemetry.isEmpty());
+    QCOMPARE(telemetry.last()[0].toDouble(), .5);
+    QCOMPARE(telemetry.last()[1].toDouble(), .25);
+    QCOMPARE(telemetry.last()[6].toULongLong(), quint64(2));
+    const auto packets = telemetry.last()[3].toULongLong();
+    session.setTelemetryEnabled(false, 3);
+    telemetry.clear();
+    const auto received = f.left.packets.size();
+    const auto seq = uint16_t(readBe(f.left.packets.last(), 2, 2));
+    f.left.retransmit(seq, 1);
+    f.left.retransmit(uint16_t(readBe(f.left.packets.first(), 2, 2) - 1), 1);
+    QTRY_COMPARE(f.left.retransmits.size(), 1);
+    const auto applied = volume.size();
+    session.volume(-25);
+    QTRY_COMPARE(volume.size(), applied + 1);
+    QTRY_VERIFY(f.left.packets.size() > received + 20);
+    QVERIFY(telemetry.isEmpty());
+    QVERIFY(done.isEmpty());
+
+    f.l.fill(0);
+    f.r.fill(0);
+    // Drain samples captured before switching the test input to silence.
+    QTest::qWait(150);
+    session.setTelemetryEnabled(true, 4);
+    QTest::qWait(40);
+    QVERIFY(telemetry.isEmpty());
+    QTRY_VERIFY(!telemetry.isEmpty());
+    QCOMPARE(telemetry.first()[0].toDouble(), 0.);
+    QCOMPARE(telemetry.first()[1].toDouble(), 0.);
+    QVERIFY(telemetry.first()[3].toULongLong() > packets);
+    QCOMPARE(telemetry.first()[4].toULongLong(), quint64(1));
+    QCOMPARE(telemetry.first()[5].toULongLong(), quint64(1));
+    QCOMPARE(telemetry.first()[6].toULongLong(), quint64(4));
+
+    session.setTelemetryEnabled(false, 5);
+    telemetry.clear();
+    const auto logCount = logs.size();
+    f.stream.queue->fault = 2;
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(done.first()[1].toInt(), int(SessionEnd::Failure));
+    QVERIFY(!i18n::Message(done.first()[0].toJsonArray()).isEmpty());
+    QVERIFY(logs.size() > logCount);
+    QVERIFY(telemetry.isEmpty());
+  }
 #ifdef Q_OS_MACOS
   void nativeDacpPublication() {
     NetworkRoute route;

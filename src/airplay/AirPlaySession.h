@@ -45,6 +45,7 @@ public:
   void stop(const i18n::Message &error = {},
             SessionEnd reason = SessionEnd::Stopped);
   void volume(double db);
+  void setTelemetryEnabled(bool enabled, quint64 revision);
 signals:
   void status(QJsonArray text);
   void streamingChanged(bool active);
@@ -54,7 +55,7 @@ signals:
   void stopCapture();
   void volumeApplied(double db);
   void telemetry(double left, double right, double backlog, quint64 packets,
-                 quint64 retransmitted, quint64 expired);
+                 quint64 retransmitted, quint64 expired, quint64 revision);
   void finished(QJsonArray error, int reason);
 
 private:
@@ -107,6 +108,8 @@ private:
   uint64_t seenFrames_ = 0;
   std::deque<int16_t> pcm_;
   double leftPeak_ = 0, rightPeak_ = 0, volume_ = 0;
+  bool telemetryEnabled_ = true;
+  quint64 telemetryRevision_ = 0;
   double restoreVolume_ = -30;
   bool volumePending_ = false, firstSync_ = true;
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS

@@ -576,6 +576,12 @@ void AirPlaySession::logRates(bool final) {
   rates_.maxGap = rates_.maxWork = 0;
 }
 #endif
+void AirPlaySession::setTelemetryEnabled(bool enabled, quint64 revision) {
+  telemetryEnabled_ = enabled;
+  telemetryRevision_ = revision;
+  leftPeak_ = rightPeak_ = 0;
+  lastStats_ = elapsed_.isValid() ? elapsed_.nsecsElapsed() : 0;
+}
 void AirPlaySession::poll() {
   if (state_ != State::Buffering && state_ != State::Streaming)
     return;
@@ -610,11 +616,12 @@ void AirPlaySession::poll() {
       const auto samples =
           audio::convert(left, stream_.left, right, stream_.right);
       stream_.queue->pop();
-      for (size_t i = 0; i < samples.size(); i += 2) {
-        leftPeak_ = std::max(leftPeak_, std::abs(double(samples[i])) / 32768);
-        rightPeak_ =
-            std::max(rightPeak_, std::abs(double(samples[i + 1])) / 32768);
-      }
+      if (telemetryEnabled_)
+        for (size_t i = 0; i < samples.size(); i += 2) {
+          leftPeak_ = std::max(leftPeak_, std::abs(double(samples[i])) / 32768);
+          rightPeak_ =
+              std::max(rightPeak_, std::abs(double(samples[i + 1])) / 32768);
+        }
       pcm_.insert(pcm_.end(), samples.begin(), samples.end());
       if (pcm_.size() / 2 > timing_.backlog * 44100)
         throw Error(i18n::text(i18n::Id::PCMBacklogExceedsTheLimit));
@@ -674,11 +681,11 @@ void AirPlaySession::poll() {
         sentFrames_ += 352;
       }
     }
-    if (now - lastStats_ >= 100000000) {
+    if (telemetryEnabled_ && now - lastStats_ >= 100000000) {
       emit telemetry(leftPeak_, rightPeak_,
                      double(stream_.queue->queuedFrames() + pcm_.size() / 2) /
                          44100,
-                     counter_, retransmitted_, expired_);
+                     counter_, retransmitted_, expired_, telemetryRevision_);
       leftPeak_ = rightPeak_ = 0;
       lastStats_ = now;
     }

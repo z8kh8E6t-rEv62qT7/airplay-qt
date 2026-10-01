@@ -19,18 +19,33 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
                                const airplay::DiscoveryApi &discoveryApi)
     : QWidget(parent), discovery_(this, std::move(discoveryApi)),
       session_(session) {
-  auto *layout = new QVBoxLayout(this);
+  session_.setTelemetryEnabled(true);
   auto *languageRow = new QHBoxLayout;
   languageRow->addStretch();
+  pauseDisplay_ = button(i18n::text(i18n::Id::PauseDisplay));
+  pauseDisplay_->setObjectName("pauseDisplay");
+  pauseDisplay_->setCheckable(true);
+  languageRow->addWidget(pauseDisplay_);
+  connect(pauseDisplay_, &QPushButton::toggled, this, [this](bool paused) {
+    session_.setTelemetryEnabled(!paused);
+    bindText(pauseDisplay_, "text",
+             i18n::text(paused ? i18n::Id::ResumeDisplay
+                               : i18n::Id::PauseDisplay));
+  });
   languageButton_ = new QPushButton;
   languageButton_->setObjectName("languageToggle");
   languageRow->addWidget(languageButton_);
-  layout->addLayout(languageRow);
   connect(languageButton_, &QPushButton::clicked, this, [this] {
     setLanguage(language() == i18n::Language::English
                     ? i18n::Language::Chinese
                     : i18n::Language::English);
   });
+  auto *columns = new QHBoxLayout(this);
+  auto *controlsPane = new QWidget;
+  controlsPane->setObjectName("controlsPane");
+  auto *layout = new QVBoxLayout(controlsPane);
+  layout->setContentsMargins(0, 0, 0, 0);
+  columns->addWidget(controlsPane, 1);
   inputLayout_ = new QVBoxLayout;
   layout->addLayout(inputLayout_);
   auto *networkRow = new QHBoxLayout;
@@ -143,6 +158,8 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   auto *meters = new QHBoxLayout;
   leftLevel_ = new QProgressBar;
   rightLevel_ = new QProgressBar;
+  leftLevel_->setObjectName("leftLevel");
+  rightLevel_->setObjectName("rightLevel");
   for (auto *meter : {leftLevel_, rightLevel_}) {
     meter->setRange(0, 1000);
     meter->setValue(0);
@@ -155,12 +172,20 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   layout->addLayout(meters);
   state_ = label(i18n::text(i18n::Id::Ready));
   stats_ = label(i18n::text(i18n::Id::InitialStatistics));
+  state_->setObjectName("sessionStatus");
+  stats_->setObjectName("statistics");
+  state_->setWordWrap(true);
+  stats_->setWordWrap(true);
   layout->addWidget(state_);
   layout->addWidget(stats_);
+  layout->addStretch();
+  layout->addLayout(languageRow);
   log_ = new QPlainTextEdit;
+  log_->setObjectName("sessionLog");
   log_->setReadOnly(true);
   log_->setMaximumBlockCount(1000);
-  layout->addWidget(log_, 1);
+  log_->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+  columns->addWidget(log_, 1);
   connect(&discovery_, &airplay::ReceiverDiscovery::cleared, this,
           &StreamingPanel::clearDiscoveredReceivers);
   connect(
@@ -274,6 +299,8 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   connect(&session_, &app::SessionController::telemetry, this,
           [this](double l, double r, double backlog, quint64 packets,
                  quint64 retransmitted, quint64 expired) {
+            if (!session_.telemetryEnabled())
+              return;
             for (auto [meter, value] :
                  {std::pair{leftLevel_, l}, std::pair{rightLevel_, r}}) {
               meter->setValue(int(value * 1000));
@@ -550,10 +577,12 @@ void StreamingPanel::setBusy(bool busy) {
   updateTargets();
   if (!busy) {
     volumePending_ = false;
-    leftLevel_->setValue(0);
-    rightLevel_->setValue(0);
-    bindText(leftLevel_, "format", i18n::text(i18n::Id::Mute));
-    bindText(rightLevel_, "format", i18n::text(i18n::Id::Mute));
+    if (session_.telemetryEnabled()) {
+      leftLevel_->setValue(0);
+      rightLevel_->setValue(0);
+      bindText(leftLevel_, "format", i18n::text(i18n::Id::Mute));
+      bindText(rightLevel_, "format", i18n::text(i18n::Id::Mute));
+    }
   }
 }
 void StreamingPanel::setRecoveryPending(bool pending) {

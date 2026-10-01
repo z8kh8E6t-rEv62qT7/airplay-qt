@@ -80,6 +80,10 @@ int main(int argc, char **argv) {
     auto view = owned(controller->createView(ViewType::kEditor));
     if (!view || QCoreApplication::instance() != existing.get())
       return 6;
+    ViewRect initial;
+    if (view->getSize(&initial) != kResultOk || initial.getWidth() != 1400 ||
+        initial.getHeight() != 880)
+      return 23;
     HWND window = CreateWindowExW(0, L"STATIC", L"AirPlayQt test host",
                                   WS_OVERLAPPED, 0, 0, 1000, 1000, nullptr,
                                   nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -95,12 +99,18 @@ int main(int argc, char **argv) {
     if (embedded) {
       auto *toggle = embedded->findChild<QPushButton *>("languageToggle");
       auto *start = embedded->findChild<QPushButton *>("start");
-      if (!toggle || !start || start->text() != "Start")
+      auto *pause = embedded->findChild<QPushButton *>("pauseDisplay");
+      if (!toggle || !start || !pause || pause->isChecked() ||
+          start->text() != "Start")
         return 21;
       const auto dirty = handler.dirtyCalls;
+      pause->click();
+      if (!pause->isChecked() || handler.dirtyCalls != dirty ||
+          handler.parameterCalls)
+        return 24;
       toggle->click();
       if (handler.dirtyCalls != dirty + 1 || handler.parameterCalls ||
-          start->text() != "开始")
+          start->text() != "开始" || pause->text() != "恢复显示")
         return 22;
     }
     ViewRect size{0, 0, 900, 880};

@@ -21,6 +21,8 @@ public:
   void stop(const i18n::Message &reason = {},
             airplay::SessionEnd end = airplay::SessionEnd::Stopped);
   void volume(double db);
+  void setTelemetryEnabled(bool enabled);
+  bool telemetryEnabled() const { return telemetryEnabled_; }
   bool busy() const { return busy_; }
   bool streaming() const { return streaming_; }
   i18n::Message currentStatus() const { return status_; }
@@ -49,6 +51,8 @@ private:
   QThread thread_;
   QObject *worker_;
   quint64 generation_ = 0;
+  quint64 telemetryRevision_ = 0;
+  bool telemetryEnabled_ = true;
   bool busy_ = false, stopping_ = false, streaming_ = false;
   i18n::Message status_ = i18n::text(i18n::Id::Ready), group_;
   QStringList log_;

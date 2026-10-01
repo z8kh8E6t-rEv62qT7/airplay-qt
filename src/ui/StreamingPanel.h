@@ -64,7 +64,7 @@ private:
   QLabel *label(const i18n::Message &);
   QPushButton *button(const i18n::Message &);
   void retranslate();
-  QPushButton *languageButton_;
+  QPushButton *languageButton_, *pauseDisplay_;
   QTabWidget *timingTabs_;
   QVBoxLayout *inputLayout_;
   void updateTargets();

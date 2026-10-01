@@ -5,6 +5,8 @@
 namespace app {
 struct SessionController::NetworkContext {
   airplay::AirPlaySession *session = nullptr;
+  bool telemetryEnabled = true;
+  quint64 telemetryRevision = 0;
 };
 SessionController::SessionController(QObject *parent)
     : QObject(parent), network_(std::make_shared<NetworkContext>()),
@@ -77,6 +79,8 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
     auto *session = new airplay::AirPlaySession(timing, stream, endpoints,
                                                 worker_, environment, route);
     context->session = session;
+    session->setTelemetryEnabled(context->telemetryEnabled,
+                                 context->telemetryRevision);
     // Every delivery is tagged; events from a prior session cannot update a
     // replacement session or reopen its producer gate.
     const auto forward = [this, session, generation](auto source, auto target) {
@@ -92,7 +96,16 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
             &SessionController::streamingChanged);
     forward(&airplay::AirPlaySession::volumeApplied,
             &SessionController::volumeApplied);
-    forward(&airplay::AirPlaySession::telemetry, &SessionController::telemetry);
+    // A pause/resume cycle also invalidates telemetry already queued to the UI.
+    connect(session, &airplay::AirPlaySession::telemetry, this,
+            [this, generation](double left, double right, double backlog,
+                               quint64 packets, quint64 retransmitted,
+                               quint64 expired, quint64 revision) {
+              if (generation == generation_ && telemetryEnabled_ &&
+                  revision == telemetryRevision_)
+                emit telemetry(left, right, backlog, packets, retransmitted,
+                               expired);
+            });
     forward(&airplay::AirPlaySession::stopCapture,
             &SessionController::stopCapture);
     connect(session, &airplay::AirPlaySession::startCapture, this,
@@ -138,6 +151,18 @@ void SessionController::stop(const i18n::Message &reason,
   QMetaObject::invokeMethod(worker_, [context = network_, reason, end] {
     if (context->session)
       context->session->stop(reason, end);
+  });
+}
+void SessionController::setTelemetryEnabled(bool enabled) {
+  if (telemetryEnabled_ == enabled)
+    return;
+  telemetryEnabled_ = enabled;
+  const auto revision = ++telemetryRevision_;
+  QMetaObject::invokeMethod(worker_, [context = network_, enabled, revision] {
+    context->telemetryEnabled = enabled;
+    context->telemetryRevision = revision;
+    if (context->session)
+      context->session->setTelemetryEnabled(enabled, revision);
   });
 }
 void SessionController::volume(double db) {

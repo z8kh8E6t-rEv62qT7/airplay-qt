@@ -398,6 +398,11 @@ private slots:
     QCOMPARE(processor->state()->timingRevision.load(), timingRevision);
     panel->setLanguage(i18n::Language::English);
     const auto id = processor->state()->id;
+    QString frozenStats;
+    if (scenario == "resume") {
+      panel->findChild<QPushButton *>("pauseDisplay")->click();
+      frozenStats = panel->findChild<QLabel *>("statistics")->text();
+    }
     paused = true;
     processor->setProcessing(false);
     processor->setActive(false);
@@ -472,7 +477,15 @@ private slots:
       if (!panel) {
         panel = runtime.open(processor->state(), unavailableDiscovery());
         QVERIFY(panel->findChild<QPushButton *>("stop")->isEnabled());
+        QVERIFY(!panel->findChild<QPushButton *>("pauseDisplay")->isChecked());
       }
+      if (scenario == "resume") {
+        auto *pauseDisplay = panel->findChild<QPushButton *>("pauseDisplay");
+        QVERIFY(pauseDisplay->isChecked());
+        QCOMPARE(panel->findChild<QLabel *>("statistics")->text(), frozenStats);
+        pauseDisplay->click();
+      }
+      QTRY_COMPARE(panel->findChild<QProgressBar *>("leftLevel")->value(), 125);
       QCOMPARE(panel->networkBinding(), loopback);
       QCOMPARE(receiver.dataSource, QHostAddress(loopback.ipv4));
     } else if (scenario == "reconnect-failure" || scenario == "repeat-pause" ||
@@ -633,6 +646,17 @@ private slots:
       auto *panel = runtime.open(processor.state(), api);
       vst3::Processor otherProcessor;
       auto *otherPanel = runtime.open(otherProcessor.state(), api);
+      auto *pauseDisplay = panel->findChild<QPushButton *>("pauseDisplay");
+      QVERIFY(pauseDisplay);
+      MemoryStream beforePause;
+      QCOMPARE(processor.getState(&beforePause), kResultOk);
+      pauseDisplay->click();
+      QVERIFY(pauseDisplay->isChecked());
+      QVERIFY(!otherPanel->findChild<QPushButton *>("pauseDisplay")->isChecked());
+      MemoryStream afterPause;
+      QCOMPARE(processor.getState(&afterPause), kResultOk);
+      QCOMPARE(QByteArray(beforePause.getData(), int(beforePause.getSize())),
+               QByteArray(afterPause.getData(), int(afterPause.getSize())));
       auto *toggle = panel->findChild<QPushButton *>("languageToggle");
       QVERIFY(toggle);
       toggle->click();
@@ -649,6 +673,7 @@ private slots:
       runtime.close(processor.state()->id);
       panel = runtime.open(processor.state(), api);
       QCOMPARE(panel->language(), i18n::Language::Chinese);
+      QVERIFY(!panel->findChild<QPushButton *>("pauseDisplay")->isChecked());
       QCOMPARE(panel->timing().lead, .75);
       QCOMPARE(panel->networkBinding(), binding);
       panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);

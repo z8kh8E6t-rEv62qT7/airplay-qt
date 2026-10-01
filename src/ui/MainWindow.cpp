@@ -15,7 +15,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   const QString backend = "ASIO";
 #endif
   setWindowTitle("AirPlayQt · " + backend + " → AirPlay");
-  resize(900, 980);
+  resize(1400, 980);
   auto *central = new QWidget;
   setCentralWidget(central);
   auto *layout = new QVBoxLayout(central);

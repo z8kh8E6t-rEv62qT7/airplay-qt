@@ -182,6 +182,9 @@ int main(int argc, char **argv) {
       [window setReleasedWhenClosed:NO];
       auto view = owned(controller->createView(ViewType::kEditor));
       REQUIRE(view && QCoreApplication::instance() == application.get());
+      ViewRect initial;
+      REQUIRE(view->getSize(&initial) == kResultOk);
+      REQUIRE(initial.getWidth() == 1400 && initial.getHeight() == 880);
       REQUIRE(view->isPlatformTypeSupported(kPlatformTypeHWND) == kResultFalse);
       for (int reopen = 0; reopen < 2; ++reopen) {
         REQUIRE(view->attached([window contentView], kPlatformTypeNSView) ==
@@ -203,15 +206,21 @@ int main(int argc, char **argv) {
           REQUIRE(exercisePanel(widget) == 0);
           auto *toggle = widget->findChild<QPushButton *>("languageToggle");
           auto *start = widget->findChild<QPushButton *>("start");
-          REQUIRE(toggle && start);
+          auto *pause = widget->findChild<QPushButton *>("pauseDisplay");
+          REQUIRE(toggle && start && pause && !pause->isChecked());
           REQUIRE(start->text() ==
                   (reopen == 0 ? QString("Start") : QString("开始")));
           const auto dirty = handler.dirtyCalls;
+          pause->click();
+          REQUIRE(pause->isChecked());
+          REQUIRE(handler.dirtyCalls == dirty && handler.parameterCalls == 0);
           toggle->click();
           REQUIRE(handler.dirtyCalls == dirty + 1 &&
                   handler.parameterCalls == 0);
           REQUIRE(start->text() ==
                   (reopen == 0 ? QString("开始") : QString("Start")));
+          REQUIRE(pause->text() ==
+                  (reopen == 0 ? QString("恢复显示") : QString("Resume Display")));
         }
         pump();
         if (widget && cycle == 0)

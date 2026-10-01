@@ -1,14 +1,149 @@
 #include "airplay/DiscoveryApi.h"
 #include "app/Settings.h"
 #include "ui/StreamingPanel.h"
+#include "../airplay/TestReceiver.h"
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <cmath>
 class CommonAppTests : public QObject {
   Q_OBJECT
 private slots:
+  void pauseDisplayFreezesOnlyTelemetry() {
+    app::SessionController session, otherSession;
+    ui::StreamingPanel panel(session), other(otherSession);
+    auto *pause = panel.findChild<QPushButton *>("pauseDisplay");
+    auto *left = panel.findChild<QProgressBar *>("leftLevel");
+    auto *right = panel.findChild<QProgressBar *>("rightLevel");
+    auto *stats = panel.findChild<QLabel *>("statistics");
+    auto *status = panel.findChild<QLabel *>("sessionStatus");
+    auto *log = panel.findChild<QPlainTextEdit *>("sessionLog");
+    auto *first = panel.findChild<QLineEdit *>("manualFirst");
+    QVERIFY(pause && left && right && stats && status && log && first);
+    first->setText("192.0.2.1:7000");
+    const auto timing = panel.timing();
+    QSignalSpy starts(&panel, &ui::StreamingPanel::startRequested);
+    QSignalSpy stops(&panel, &ui::StreamingPanel::stopRequested);
+    QSignalSpy edits(&panel, &ui::StreamingPanel::timingChanged);
+    emit session.telemetry(.5, .25, .02, 123, 4, 5);
+    const auto frozen = stats->text();
+    pause->click();
+    QVERIFY(pause->isChecked());
+    QVERIFY(!session.telemetryEnabled());
+    QCOMPARE(pause->text(), QString("Resume Display"));
+    QVERIFY(otherSession.telemetryEnabled());
+    emit session.telemetry(0, 0, .03, 456, 7, 8);
+    panel.setBusy(false);
+    QCOMPARE(left->value(), 500);
+    QCOMPARE(right->value(), 250);
+    QCOMPARE(stats->text(), frozen);
+    emit session.status(i18n::text(i18n::Id::Stopped));
+    QCOMPARE(status->text(), QString("Stopped"));
+    emit session.log(i18n::text(i18n::Id::WaitingForPTPSynchronization));
+    const auto history = log->toPlainText();
+    QVERIFY(history.endsWith("Waiting for PTP synchronization"));
+    panel.showError(i18n::text(i18n::Id::SelectOneOrTwoReceivers));
+    QVERIFY(log->toPlainText().contains("Error: Select one or two receivers"));
+    panel.setLanguage(i18n::Language::Chinese);
+    QCOMPARE(pause->text(), QString("恢复显示"));
+    QVERIFY(stats->text().contains("每台包数 123"));
+    QCOMPARE(left->value(), 500);
+    QVERIFY(log->toPlainText().startsWith(history));
+    pause->click();
+    QVERIFY(session.telemetryEnabled());
+    QCOMPARE(left->value(), 500);
+    emit session.telemetry(.1, .2, .03, 456, 7, 8);
+    QCOMPARE(left->value(), 100);
+    QVERIFY(stats->text().contains("每台包数 456"));
+    QCOMPARE(first->text(), QString("192.0.2.1:7000"));
+    QCOMPARE(panel.timing().lead, timing.lead);
+    QVERIFY(starts.isEmpty() && stops.isEmpty() && edits.isEmpty());
+
+    panel.resize(1400, 880);
+    panel.show();
+    QCoreApplication::processEvents();
+    auto *controls = panel.findChild<QWidget *>("controlsPane");
+    QVERIFY(controls);
+    QVERIFY(log->x() >= controls->geometry().right());
+    QCOMPARE(log->y(), controls->y());
+    QCOMPARE(log->height(), controls->height());
+    QVERIFY(std::abs(log->width() - controls->width()) <= 1);
+    QCOMPARE(log->lineWrapMode(), QPlainTextEdit::WidgetWidth);
+    QCOMPARE(log->maximumBlockCount(), 1000);
+    panel.appendLog(QStringLiteral("Receiver 192.0.2.1:7000: diagnostic detail; ")
+                        .repeated(20));
+    pause->click();
+    for (const auto language :
+         {i18n::Language::English, i18n::Language::Chinese}) {
+      panel.setLanguage(language);
+      QCoreApplication::processEvents();
+      QVERIFY(pause->width() >= pause->sizeHint().width());
+      const auto suffix = language == i18n::Language::English ? "en" : "zh";
+      QVERIFY(panel.grab().save(QCoreApplication::applicationDirPath() +
+                               "/PausedDisplay-" + suffix + ".png"));
+      QVERIFY(std::abs(log->width() - controls->width()) <= 1);
+    }
+  }
+  void telemetryGateSurvivesQueuedEventsAndRestart() {
+    app::SessionController session;
+    session.setTelemetryEnabled(false);
+    QSignalSpy telemetry(&session, &app::SessionController::telemetry);
+    QSignalSpy errors(&session, &app::SessionController::error);
+    for (int run = 0; run < 2; ++run) {
+      test::Receiver receiver("single");
+      app::Timing timing;
+      timing.settle = 0;
+      timing.prebuffer = .008;
+      timing.backlog = .5;
+      timing.late = .5;
+      audio::CaptureStream stream{
+          std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
+          audio::format(16), audio::format(16), 352};
+      QTimer producer;
+      QElapsedTimer clock;
+      std::array<int16_t, 352> samples;
+      samples.fill(4096);
+      connect(&producer, &QTimer::timeout, &producer, [&] {
+        const auto target = quint64(clock.nsecsElapsed()) * 44100 / 1000000000;
+        while (stream.queue->capturedFrames() + 352 <= target)
+          if (!stream.queue->push(samples.data(), samples.data()))
+            break;
+      });
+      connect(&session, &app::SessionController::startCapture, &producer, [&] {
+        clock.start();
+        producer.start(4);
+        session.captureStarted();
+      });
+      connect(&session, &app::SessionController::stopCapture, &producer,
+              &QTimer::stop);
+      telemetry.clear();
+      session.start(timing, stream,
+                    {{QHostAddress::LocalHost, receiver.port()}},
+                    {[] {}, [] {}, false});
+      QTRY_VERIFY(receiver.packets.size() > 20);
+      QVERIFY(telemetry.isEmpty());
+      session.setTelemetryEnabled(true);
+      QTRY_VERIFY(!telemetry.isEmpty());
+      telemetry.clear();
+      // Leave old telemetry queued while the network thread keeps polling.
+      QTest::qSleep(150);
+      session.setTelemetryEnabled(false);
+      session.setTelemetryEnabled(true);
+      QCoreApplication::sendPostedEvents(&session, QEvent::MetaCall);
+      QVERIFY(telemetry.isEmpty());
+      QTRY_VERIFY(!telemetry.isEmpty());
+      session.setTelemetryEnabled(false);
+      telemetry.clear();
+      const auto received = receiver.packets.size();
+      QTRY_VERIFY(receiver.packets.size() > received + 20);
+      QVERIFY(telemetry.isEmpty());
+      session.stop();
+      QTRY_VERIFY(!session.busy());
+      QVERIFY(errors.isEmpty());
+    }
+  }
   void messagesPreserveLiteralArgumentsAndCatalogueCoverage() {
     using namespace i18n;
     const auto message =

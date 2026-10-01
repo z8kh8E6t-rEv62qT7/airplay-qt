@@ -437,6 +437,7 @@ void PluginRuntime::close(uint64_t id) {
     return;
   auto &instance = *it->second;
   instance.attached = false;
+  instance.session.setTelemetryEnabled(false);
   instance.panel->hide();
   instance.panel->cancelDiscovery();
   if (!instance.panel->discoveryBusy())
