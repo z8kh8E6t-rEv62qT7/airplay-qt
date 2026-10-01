@@ -6,17 +6,16 @@ Built with C++20 and Qt Widgets for Windows x64 and macOS.
 
 ## Features
 
-- **Standalone input:** ASIO on Windows and Core Audio on macOS.
+- **Standalone capture:** ASIO inputs on Windows; Core Audio inputs and output-device auto loopback on macOS.
 - **VST3 input:** stereo audio from your DAW, with unchanged local Float32/Float64 passthrough.
 - **Receiver selection:** automatic discovery or manual IPv4 address entry.
-- **Network selection:** system routing or a specific interface and IPv4 address.
-- **Volume control:** receiver volume and mute, without changing the input PCM gain.
+- **Volume control:** receiver native volume and mute.
 - **English and Chinese UI:** switch instantly; the app and each plugin instance save their language independently.
 
 ## Quick start
 
 1. Open the app, or insert AirPlayQt as an effect on a stereo track or bus in your DAW.
-2. For the app, select an input device and two distinct input channels. For VST3, use a 44.1 kHz project with real-time processing enabled.
+2. For the app, select a capture device and two distinct channels. On macOS, output devices are labeled `(auto loopback)`. For VST3, use a 44.1 kHz project with real-time processing enabled.
 3. Select one receiver or both members of an existing AirPlay stereo pair. Manual addresses use `IPv4[:port]`, with port `7000` as the default.
 4. Choose a network interface if needed, then click **Start**.
 5. Adjust receiver volume or mute during playback. Click **Stop** to end the session.
@@ -25,7 +24,11 @@ Sending requires **44.1 kHz** audio. AirPlayQt does not resample; it converts in
 
 The VST3 plugin keeps local audio passing through and reports zero local latency; remote playback has its own buffering delay. Closing the plugin editor leaves sending active. A streaming instance can reconnect once if valid host audio resumes within five seconds of suspension.
 
-On macOS, allow microphone and local network access. The Windows app requests real-time process priority and exits if that request fails; elevated execution may be required.
+On macOS, allow microphone access for input devices, system audio recording for auto loopback, and local network access for AirPlay.
+
+Auto loopback captures applications playing through the selected output device using native Core Audio taps; no virtual audio driver is required. Local playback of the tapped audio is muted while capture runs and resumes when capture stops. Selecting a device alone does not mute it. AirPlayQt does not change the system default output, device volume, or sample rate. Set the output device to **44.1 kHz** in **Audio MIDI Setup** before starting. Multi-stream output channels are listed in device stream order; choose two distinct channels. Devices with fewer than two channels are listed but cannot start a stereo session. Device removal or format changes stop sending; select the device again before restarting. Any native cleanup failure is reported and must be retried before switching capture devices.
+
+The Windows app requests real-time process priority and exits if that request fails; elevated execution may be required.
 
 ## Build
 

@@ -1,5 +1,6 @@
 #include "Controller.h"
 #include "app/Message.h"
+#include <algorithm>
 #ifdef Q_OS_MACOS
 #include <QCoreApplication>
 #include <QPermissions>
@@ -59,7 +60,17 @@ void Controller::selectDriver(const QString &id, void *window) {
   selectedId_.clear();
   window_ = window;
   try {
+    const auto drivers = audio::inputDevices();
+    const auto selected = std::find_if(
+        drivers.begin(), drivers.end(),
+        [&](const auto &driver) { return driver.id == id; });
+    if (selected == drivers.end())
+      throw i18n::MessageError(i18n::text(i18n::Id::SelectAValidInputDevice));
+    if (const auto error = capture_->close(); !error.isEmpty())
+      throw i18n::MessageError(error);
+    capture_ = audio::createInputCapture(selected->kind);
     const auto list = capture_->open(id, window);
+    selectedKind_ = selected->kind;
     selectedId_ = id;
     emit channels(list);
     emit session_.status(i18n::text(i18n::Id::DriverLoadedReadyToStart));
@@ -86,6 +97,8 @@ void Controller::start(
   if (busy())
     return;
   try {
+    if (settings.driverId.isEmpty() || selectedId_ != settings.driverId)
+      throw airplay::Error(i18n::text(i18n::Id::SelectAValidInputDevice));
     airplay::validateEndpoints(endpoints);
     airplay::NetworkRoute::resolve(settings.networkBinding);
     if (const auto error = settings.validate(); !error.isEmpty())
@@ -97,35 +110,35 @@ void Controller::start(
     return;
   }
 #ifdef Q_OS_MACOS
-  const QMicrophonePermission permission;
-  const auto permissionStatus = qApp->checkPermission(permission);
-  if (permissionStatus == Qt::PermissionStatus::Denied) {
-    emit error(i18n::text(i18n::Id::AudioInputPermissionDenied));
-    return;
-  }
-  if (permissionStatus == Qt::PermissionStatus::Undetermined) {
-    permissionPending_ = true;
-    const auto revision = ++permissionRevision_;
-    emit busyChanged(true);
-    qApp->requestPermission(
-        permission, this,
-        [this, settings, endpoints, revision](const QPermission &result) {
-          if (!permissionPending_ || revision != permissionRevision_)
-            return;
-          permissionPending_ = false;
-          emit busyChanged(false);
-          if (result.status() == Qt::PermissionStatus::Granted)
-            start(settings, endpoints, false);
-          else
-            emit error(i18n::text(i18n::Id::AudioInputPermissionDenied));
-        });
-    return;
+  if (selectedKind_ == audio::CaptureKind::Input) {
+    const QMicrophonePermission permission;
+    const auto permissionStatus = qApp->checkPermission(permission);
+    if (permissionStatus == Qt::PermissionStatus::Denied) {
+      emit error(i18n::text(i18n::Id::AudioInputPermissionDenied));
+      return;
+    }
+    if (permissionStatus == Qt::PermissionStatus::Undetermined) {
+      permissionPending_ = true;
+      const auto revision = ++permissionRevision_;
+      emit busyChanged(true);
+      qApp->requestPermission(
+          permission, this,
+          [this, settings, endpoints, revision](const QPermission &result) {
+            if (!permissionPending_ || revision != permissionRevision_)
+              return;
+            permissionPending_ = false;
+            emit busyChanged(false);
+            if (result.status() == Qt::PermissionStatus::Granted)
+              start(settings, endpoints, false);
+            else
+              emit error(i18n::text(i18n::Id::AudioInputPermissionDenied));
+          });
+      return;
+    }
   }
 #endif
   try {
     airplay::validateEndpoints(endpoints);
-    if (settings.driverId.isEmpty() || selectedId_ != settings.driverId)
-      throw airplay::Error(i18n::text(i18n::Id::SelectAValidInputDevice));
     if (const auto message = settings.validate(); !message.isEmpty())
       throw airplay::Error(message);
     emit session_.status(i18n::text(i18n::Id::PreparingAudioInput));
@@ -154,7 +167,10 @@ void Controller::stop() {
     emit busyChanged(false);
     emit stopped();
   }
+  const bool sessionWasBusy = session_.busy();
   session_.stop();
+  if (!sessionWasBusy)
+    stopCapture();
 }
 void Controller::volume(double db) { session_.volume(db); }
 } // namespace app

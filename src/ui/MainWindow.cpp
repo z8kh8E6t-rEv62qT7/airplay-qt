@@ -22,7 +22,13 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   streaming_ = new StreamingPanel(controller_.session(), central, api);
   auto *input = new QGroupBox;
   streaming_->bindText(input, "title",
-                       backend + i18n::text(i18n::Id::InputDeviceGroupSuffix));
+                       backend +
+#ifdef Q_OS_MACOS
+                       " " + i18n::text(i18n::Id::AudioCaptureDevice)
+#else
+                       i18n::text(i18n::Id::InputDeviceGroupSuffix)
+#endif
+  );
   auto label = [this](const i18n::Message &message) {
     auto *widget = new QLabel;
     streaming_->bindText(widget, "text", message);
@@ -30,6 +36,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   };
   auto *form = new QFormLayout(input);
   driver_ = new QComboBox;
+  driver_->setObjectName("captureDevice");
   left_ = new QComboBox;
   right_ = new QComboBox;
   panel_ = new QPushButton;
@@ -43,7 +50,13 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   auto *row = new QHBoxLayout;
   row->addWidget(driver_, 1);
   row->addWidget(panel_);
-  form->addRow(label(i18n::text(i18n::Id::InputDeviceLabel)), row);
+  form->addRow(label(i18n::text(
+#ifdef Q_OS_MACOS
+      i18n::Id::AudioCaptureDevice
+#else
+      i18n::Id::InputDeviceLabel
+#endif
+      )), row);
   form->addRow(label(i18n::text(i18n::Id::LeftInputChannel)), left_);
   form->addRow(label(i18n::text(i18n::Id::RightInputChannel)), right_);
   streaming_->addInputWidget(input);
@@ -51,7 +64,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   connect(streaming_, &StreamingPanel::languageChanged, this, [this] {
     if (!loading_)
       controller_.saveLanguage(streaming_->language());
-    for (auto *combo : {left_, right_})
+    for (auto *combo : {driver_, left_, right_})
       for (int i = 0; i < combo->count(); ++i)
         combo->setItemText(
             i, i18n::Message(combo->itemData(i, Qt::UserRole + 1).toJsonArray())
@@ -109,8 +122,11 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
       saved_ = controller_.initialize();
       streaming_->setLanguage(saved_.language);
       streaming_->setNetworkBinding(saved_.networkBinding);
-      for (const auto &driver : controller_.drivers())
-        driver_->addItem(driver.name, driver.id);
+      for (const auto &driver : controller_.drivers()) {
+        const auto name = driver.displayName();
+        driver_->addItem(name.render(streaming_->language()), driver.id);
+        driver_->setItemData(driver_->count() - 1, QJsonArray(name), Qt::UserRole + 1);
+      }
       streaming_->setTiming(saved_.timing);
       streaming_->setRememberedReceivers(saved_.receiverSelection);
       const auto index =

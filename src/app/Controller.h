@@ -49,6 +49,7 @@ private:
   std::unique_ptr<audio::InputCapture> capture_;
   QList<audio::DriverInfo> drivers_;
   QString selectedId_;
+  audio::CaptureKind selectedKind_ = audio::CaptureKind::Input;
   void *window_ = nullptr;
   SettingsStore settings_;
   bool permissionPending_ = false;

@@ -371,7 +371,9 @@ long AsioCapture::message(long selector, long value, void *, double *) {
 
 namespace audio {
 QList<DriverInfo> inputDevices() { return AsioCapture::enumerate(); }
-std::unique_ptr<InputCapture> createInputCapture() {
+std::unique_ptr<InputCapture> createInputCapture(CaptureKind kind) {
+  if (kind != CaptureKind::Input)
+    throw i18n::MessageError(i18n::text(i18n::Id::SelectAValidInputDevice));
   return std::make_unique<AsioCapture>();
 }
 } // namespace audio

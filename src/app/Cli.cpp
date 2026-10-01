@@ -248,8 +248,8 @@ int runCli(QApplication &application) {
   parser.addHelpOption();
   parser.addOptions(
       {{"cli", "Run without the main window."},
-       {"list-devices", "List input device names and stable UIDs, then exit."},
-       {"device", "Input device UID (from --list-devices).", "uid"},
+       {"list-devices", "List capture devices (including auto loopback) and stable IDs, then exit."},
+       {"device", "Capture device ID (from --list-devices).", "uid"},
        {"left", "Left input channel, 1-based.", "channel", "1"},
        {"right", "Right input channel, 1-based.", "channel", "2"},
        {"seconds", "Streaming duration, 1..3600 seconds.", "seconds", "30"},
@@ -271,7 +271,7 @@ int runCli(QApplication &application) {
           throw std::invalid_argument(
               "--list-devices cannot be combined with transmission options");
       for (const auto &device : audio::inputDevices())
-        report("device", {{"uid", device.id}, {"name", device.name}});
+        report("device", {{"uid", device.id}, {"name", device.displayName().render()}});
       return 0;
     }
     return transmit(application, options(parser));

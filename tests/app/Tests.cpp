@@ -134,19 +134,40 @@ private slots:
     QVERIFY(panel && toggle && input);
     const auto widgetCount = window.findChildren<QWidget *>().size();
     const auto originalTitle = input->title();
+    auto *devices = window.findChild<QComboBox *>("captureDevice");
+    QVERIFY(devices);
+    const audio::DriverInfo loopback{"loopback:test", "MacBook Speakers", audio::CaptureKind::Loopback};
+    const auto name = loopback.displayName();
+    devices->addItem(name.render(), loopback.id);
+    devices->setItemData(0, QJsonArray(name), Qt::UserRole + 1);
+    devices->setCurrentIndex(0);
+    QSignalSpy selectionChanged(devices, &QComboBox::currentIndexChanged);
+#ifdef Q_OS_MACOS
+    QVERIFY(originalTitle.endsWith("Audio Capture Device"));
+#else
     QVERIFY(originalTitle.endsWith("Input Device"));
+#endif
     QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
                                "/MainWindow-en.png"));
-    // Exercise the shipping widget bindings without writing the user's config.
-    const QSignalBlocker noPersistence(panel);
+    // The initialization timer has not run: language changes cannot save settings.
+    // Keep signals enabled to exercise MainWindow's combo translations too.
     toggle->click();
+#ifdef Q_OS_MACOS
+    QVERIFY(input->title().endsWith("音频采集设备"));
+#else
     QVERIFY(input->title().endsWith("输入设备"));
+#endif
     QCOMPARE(toggle->text(), QString("English"));
+    QCOMPARE(devices->currentText(), QString("MacBook Speakers(自动环回)"));
+    QCOMPARE(devices->currentData().toString(), loopback.id);
+    QCOMPARE(selectionChanged.count(), 0);
     QCOMPARE(window.findChildren<QWidget *>().size(), widgetCount);
     QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
                                "/MainWindow-zh.png"));
     toggle->click();
     QCOMPARE(input->title(), originalTitle);
+    QCOMPARE(devices->currentText(), QString("MacBook Speakers(auto loopback)"));
+    QCOMPARE(selectionChanged.count(), 0);
     window.close();
   }
 };

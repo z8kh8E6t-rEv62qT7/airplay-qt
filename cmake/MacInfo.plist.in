@@ -9,6 +9,7 @@
 <key>CFBundleVersion</key><string>0.1.0</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSAudioCaptureUsageDescription</key><string>Auto loopback access.</string>
 <key>NSMicrophoneUsageDescription</key><string>Record access.</string>
 <key>NSLocalNetworkUsageDescription</key><string>Network access.</string>
 <key>NSBonjourServices</key><array><string>_airplay._tcp</string><string>_dacp._tcp</string></array>

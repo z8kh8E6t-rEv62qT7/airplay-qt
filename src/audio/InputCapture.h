@@ -6,8 +6,15 @@
 #include <memory>
 
 namespace audio {
+enum class CaptureKind { Input, Loopback };
 struct DriverInfo {
   QString id, name;
+  CaptureKind kind = CaptureKind::Input;
+  i18n::Message displayName() const {
+    return kind == CaptureKind::Loopback
+               ? i18n::text(i18n::Id::AutoLoopbackDevice).arg(name)
+               : i18n::Message(name);
+  }
 };
 struct ChannelInfo {
   int index;
@@ -27,5 +34,6 @@ public:
   virtual i18n::Message close() noexcept = 0;
 };
 QList<DriverInfo> inputDevices();
-std::unique_ptr<InputCapture> createInputCapture();
+std::unique_ptr<InputCapture>
+createInputCapture(CaptureKind kind = CaptureKind::Input);
 } // namespace audio
