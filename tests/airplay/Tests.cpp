@@ -1,11 +1,14 @@
 #include "TestReceiver.h"
 #include "airplay/AirPlaySession.h"
+#include "airplay/EventChannel.h"
+#include "airplay/NowPlaying.h"
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkDatagram>
 #include <QNetworkProxy>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QTcpServer>
 #include <QtTest>
 #include <openssl/bn.h>
@@ -15,6 +18,9 @@
 #else
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <dns_sd.h>
+#include <QSocketNotifier>
+#include <QtEndian>
 #endif
 
 using namespace airplay;
@@ -44,6 +50,7 @@ struct SessionFixture {
                  ReceiverEndpoint{QHostAddress::LocalHost, right.port()}};
     environment.startClock = [] {};
     environment.stopClock = [] {};
+    environment.advertiseRemote = false;
     for (size_t i = 0; i < l.size(); ++i) {
       l[i] = int16_t(i + 1);
       r[i] = -int16_t(i + 1);
@@ -78,6 +85,222 @@ struct SessionFixture {
 class ProtocolTests : public QObject {
   Q_OBJECT
 private slots:
+#ifdef Q_OS_MACOS
+  void nativeDacpPublication() {
+    NetworkRoute route;
+    for (const auto &binding : NetworkBinding::available())
+      if (!QHostAddress(binding.ipv4).isLoopback()) {
+        route = NetworkRoute::resolve(binding);
+        break;
+      }
+    if (route.local.isNull())
+      QSKIP("No active LAN IPv4 for native Bonjour test");
+    DacpServer server;
+    const auto id = QString::fromLatin1(randomBytes(8).toHex().toUpper());
+    QSignalSpy ready(&server, &DacpServer::ready);
+    QSignalSpy failed(&server, &DacpServer::failed);
+    server.start(id, route.local, route, {route.local});
+    QTRY_VERIFY_WITH_TIMEOUT(!ready.isEmpty() || !failed.isEmpty(), 6000);
+    QVERIFY2(failed.isEmpty(), failed.isEmpty() ? "" : qPrintable(failed[0][0].toString()));
+    struct Result { bool done = false; int error = 0; quint16 port = 0; QString host; } result;
+    DNSServiceRef ref = nullptr;
+    const auto name = ("iTunes_Ctrl_" + id).toLatin1();
+    QCOMPARE(DNSServiceResolve(&ref, 0, route.index, name.constData(), "_dacp._tcp",
+        "local.", [](DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceErrorType error,
+            const char *, const char *host, uint16_t port, uint16_t, const unsigned char *, void *ctx) {
+          auto &r = *static_cast<Result *>(ctx);
+          r.done = true; r.error = error;
+          if (!error) { r.port = qFromBigEndian(port); r.host = QString::fromUtf8(host); }
+        }, &result), 0);
+    const auto release = qScopeGuard([&] { DNSServiceRefDeallocate(ref); });
+    QSocketNotifier notifier(DNSServiceRefSockFD(ref), QSocketNotifier::Read);
+    connect(&notifier, &QSocketNotifier::activated, this, [&] {
+      const int error = DNSServiceProcessResult(ref);
+      if (error) { result.error = error; result.done = true; }
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(result.done, 5000);
+    QCOMPARE(result.error, 0);
+    QCOMPARE(result.port, server.port());
+    QCOMPARE(result.host.toLower(), "airplayqt-" + id.toLower() + ".local.");
+    struct AddressResult { bool done = false; int error = 0; uint index = 0; QHostAddress address; } address;
+    DNSServiceRef addressRef = nullptr;
+    const auto hostname = result.host.toUtf8();
+    QCOMPARE(DNSServiceGetAddrInfo(&addressRef, 0, route.index, kDNSServiceProtocol_IPv4,
+        hostname.constData(), [](DNSServiceRef, DNSServiceFlags, uint32_t index,
+            DNSServiceErrorType error, const char *, const sockaddr *sa, uint32_t, void *ctx) {
+          auto &r = *static_cast<AddressResult *>(ctx);
+          r.done = true; r.error = error; r.index = index;
+          if (!error && sa && sa->sa_family == AF_INET)
+            r.address = QHostAddress(ntohl(reinterpret_cast<const sockaddr_in *>(sa)->sin_addr.s_addr));
+        }, &address), 0);
+    const auto releaseAddress = qScopeGuard([&] { DNSServiceRefDeallocate(addressRef); });
+    QSocketNotifier addressNotifier(DNSServiceRefSockFD(addressRef), QSocketNotifier::Read);
+    connect(&addressNotifier, &QSocketNotifier::activated, this, [&] {
+      const int error = DNSServiceProcessResult(addressRef);
+      if (error) { address.error = error; address.done = true; }
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(address.done, 5000);
+    QCOMPARE(address.error, 0);
+    QCOMPARE(address.address, route.local);
+    QCOMPARE(address.index, route.index);
+    server.stop();
+    QVERIFY(!server.port());
+  }
+#endif
+  void encryptedEventsAndRemoteVolume() {
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    QSignalSpy applied(&session, &AirPlaySession::volumeApplied);
+    session.start();
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    QVERIFY(f.left.metadata.contains("AirPlayQt"));
+    QCOMPARE(f.left.metadataRtpInfo, QByteArray("rtptime=") +
+             QByteArray::number(readBe(f.left.packets.first(), 4, 4)));
+    QCOMPARE(f.left.commands.size(), 5);
+    const auto npi = f.left.commands[1]["params"].toMap()["params"].toMap();
+    QCOMPARE(npi["Title"].toString(), QString("AirPlayQt"));
+    QVERIFY(!npi.contains("Duration"));
+    QVERIFY(f.left.commands[2]["params"].toMap()["mrSupportedCommandsFromSender"].toList().isEmpty());
+    const auto body = plistEncode(QVariantMap{{"type", "updateInfo"},
+        {"params", QVariantMap{{"diagnostic", QByteArray(2500, 'x')}}}});
+    auto request = QByteArray("POST /command RTSP/1.0\r\nCSeq: 73\r\nContent-Length: ") +
+        QByteArray::number(body.size()) + "\r\n\r\n" + body;
+    auto wire = f.left.eventRecords->encode(request);
+    // Split a record header, then deliver multiple encrypted records together.
+    f.left.eventSocket->write(wire.left(1));
+    QTest::qWait(10);
+    f.left.eventSocket->write(wire.mid(1));
+    QTRY_COMPARE(f.left.eventResponses.size(), 1);
+    QCOMPARE(f.left.eventResponses[0].status, 200);
+    QCOMPARE(f.left.eventResponses[0].headers["cseq"], QByteArray("73"));
+    QVERIFY(f.left.error.isEmpty());
+    auto *remote = session.findChild<DacpServer *>();
+    QVERIFY(remote);
+    auto send = [&](const QByteArray &path, const QByteArray &token) {
+      QTcpSocket socket;
+      socket.connectToHost(QHostAddress::LocalHost, remote->port());
+      if (!socket.waitForConnected(1000))
+        return QByteArray{};
+      socket.write("GET /ctrl-int/1/" + path + " HTTP/1.1\r\nActive-Remote: " +
+                   token + "\r\n\r\n");
+      QByteArray response;
+      QElapsedTimer timer;
+      timer.start();
+      while (!response.contains("\r\n\r\n") && timer.elapsed() < 1000) {
+        QTest::qWait(1);
+        response += socket.readAll();
+      }
+      return response;
+    };
+    QVERIFY(send("volumeup", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(f.left.volumes.last(), -29.);
+    QTRY_COMPARE(f.right.volumes.last(), -29.);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -29.);
+    const auto property = send("getproperty?properties=dmcp.volume,dacp.volumecontrollable",
+                               f.left.activeRemote);
+    QVERIFY(property.contains("200"));
+    QVERIFY(property.endsWith(volumeProperties(-29., true, true)));
+    auto count = f.left.volumeRequests;
+    QVERIFY(send("setproperty?dmcp.device-volume=-29", f.left.activeRemote).contains("204"));
+    QTest::qWait(20);
+    QCOMPARE(f.left.volumeRequests, count); // echo does not loop
+    QVERIFY(send("volumeup", "stale-token").contains("403"));
+    QVERIFY(send("pause", f.left.activeRemote).contains("501"));
+    QVERIFY(send("setproperty?dmcp.device-volume=nan", f.left.activeRemote).contains("400"));
+    QVERIFY(send("setproperty?dmcp.device-volume=1", f.left.activeRemote).contains("400"));
+    QVERIFY(send("setproperty?dmcp.device-volume=-18&dmcp.device-volume=-12", f.left.activeRemote).contains("400"));
+    QVERIFY(send("devicevolume=-24", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(f.right.volumes.last(), -24.);
+    QVERIFY(send("devicevolume=-29", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(applied.last()[0].toDouble(), -29.);
+    QVERIFY(send("mutetoggle", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(f.left.volumes.last(), -144.);
+    QVERIFY(send("mutetoggle", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(f.left.volumes.last(), -29.);
+    // Rapid desired values coalesce while an older RTSP write is in flight.
+    session.volume(-25);
+    session.volume(-22);
+    session.volume(-18);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -18.);
+    QCOMPARE(f.left.volumes.last(), -18.);
+    QCOMPARE(f.right.volumes.last(), -18.);
+    QVERIFY(done.isEmpty());
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(f.left.commands.last()["params"].toMap()["mrPlaybackState"].toInt(), 3);
+    QCOMPARE(f.left.teardowns, 1);
+    QCOMPARE(remote->port(), quint16(0));
+  }
+  void eventAuthenticationFailureStopsGroup() {
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    auto bad = f.left.eventRecords->encode("POST /command RTSP/1.0\r\nContent-Length: 0\r\n\r\n");
+    bad[bad.size()-1] ^= 1;
+    f.left.eventSocket->write(bad);
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(done[0][1].toInt(), int(SessionEnd::Failure));
+    QVERIFY(!done[0][0].toString().isEmpty());
+  }
+  void eventReplySurvivesReceiverDeadline() {
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    const auto body = plistEncode(QVariantMap{{"type", "updateInfo"}});
+    const auto request = QByteArray("POST /command RTSP/1.0\r\nCSeq: 1\r\nContent-Length: ") +
+        QByteArray::number(body.size()) + "\r\n\r\n" + body;
+    f.left.eventSocket->write(f.left.eventRecords->encode(request));
+    // Reproduce the receiver's observed 30-second response deadline. This is
+    // real elapsed time, including normal audio pacing and RTSP keepalives.
+    bool checked = false;
+    QTimer::singleShot(30000, &session, [&] {
+      checked = true;
+      if (f.left.eventResponses.isEmpty())
+        f.left.eventSocket->disconnectFromHost();
+    });
+    QTRY_COMPARE_WITH_TIMEOUT(f.left.eventResponses.size(), 1, 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(checked, 32000);
+    QVERIFY(done.isEmpty());
+    QVERIFY(f.left.eventSocket);
+    QCOMPARE(f.left.eventSocket->state(), QAbstractSocket::ConnectedState);
+    QVERIFY(f.left.packets.size() > 3000);
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+  }
+  void metadataRejectionStopsBeforeAudio() {
+    SessionFixture f;
+    f.right.rejectMetadata = true;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_COMPARE(done.size(), 1);
+    QVERIFY(done[0][0].toString().contains("播放信息／外部控制未就绪"));
+    QVERIFY(f.left.packets.isEmpty());
+    QVERIFY(f.right.packets.isEmpty());
+  }
+  void boundedControlFraming() {
+    QByteArray part = "POST /command RTSP/1.0\r\nContent-Length: 4\r\n\r\nab";
+    QVERIFY(!parseControlMessage(part));
+    part += "cdGET /x HTTP/1.1\r\n\r\n";
+    QCOMPARE(parseControlMessage(part)->body, QByteArray("abcd"));
+    QCOMPARE(parseControlMessage(part)->line, QByteArray("GET /x HTTP/1.1"));
+    QVERIFY(part.isEmpty());
+    for (auto bad : {QByteArray("GET / HTTP/1.1\r\nContent-Length: -1\r\n\r\n"),
+                     QByteArray("GET / HTTP/1.1\r\nContent-Length: 1048577\r\n\r\n"),
+                     QByteArray("GET / HTTP/1.1\r\nContent-Length: 1\r\ncontent-length: 1\r\n\r\n"),
+                     QByteArray("GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"),
+                     QByteArray(16385, 'x')})
+      QVERIFY_THROWS_EXCEPTION(Error, parseControlMessage(bad));
+  }
   void networkBindingAndNativeSockets() {
     QVERIFY(NetworkBinding{}.json().isNull());
     QVERIFY(NetworkBinding::fromJson(QJsonValue(QJsonValue::Null)).automatic());

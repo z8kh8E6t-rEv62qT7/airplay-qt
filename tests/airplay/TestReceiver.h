@@ -85,6 +85,11 @@ public:
   QTcpServer server, eventServer;
   QUdpSocket data, control;
   QTcpSocket *socket = nullptr;
+  QTcpSocket *eventSocket = nullptr;
+  QByteArray eventWire, eventPlain, activeRemote;
+  std::unique_ptr<HapRecords> eventRecords;
+  QList<RtspResponse> eventResponses;
+  bool rejectMetadata = false;
   QByteArray wire, plain;
   std::unique_ptr<HapRecords> records;
   ServerSrp srp;
@@ -94,6 +99,9 @@ public:
       optionsDelay = 0;
   QList<double> volumes;
   QVariantMap sessionSetup;
+  QList<QVariantMap> commands;
+  QByteArray metadata;
+  QByteArray metadataRtpInfo;
   QList<QByteArray> packets, retransmits;
   QHostAddress eventSource, dataSource, controlSource;
   quint16 clientControl = 0;
@@ -123,9 +131,30 @@ public:
     });
     connect(&eventServer, &QTcpServer::newConnection, this, [this] {
       auto *client = eventServer.nextPendingConnection();
+      eventSocket = client;
+      eventWire.clear();
+      eventPlain.clear();
+      eventRecords = std::make_unique<HapRecords>(
+          hkdf(srp.key, "Events-Salt", "Events-Write-Encryption-Key"),
+          hkdf(srp.key, "Events-Salt", "Events-Read-Encryption-Key"));
       eventSource = client->peerAddress();
       client->setParent(this);
       connect(client, &QTcpSocket::disconnected, client, &QObject::deleteLater);
+      connect(client, &QTcpSocket::disconnected, this, [this, client] {
+        if (eventSocket == client)
+          eventSocket = nullptr;
+      });
+      connect(client, &QTcpSocket::readyRead, this, [this, client] {
+        try {
+          eventWire += client->readAll();
+          eventPlain += eventRecords->decodeAvailable(eventWire);
+          while (auto response = parseResponse(eventPlain))
+            eventResponses.append(*response);
+        } catch (const std::exception &e) {
+          error = QString::fromUtf8(e.what());
+          client->abort();
+        }
+      });
     });
     connect(&data, &QUdpSocket::readyRead, this, [this] {
       while (data.hasPendingDatagrams()) {
@@ -145,6 +174,10 @@ public:
     });
   }
   quint16 port() const { return server.serverPort(); }
+  ~Receiver() override {
+    for (auto *socket : findChildren<QTcpSocket *>())
+      socket->disconnect(this);
+  }
   void retransmit(uint16_t first, uint16_t count) {
     QByteArray request = QByteArray::fromHex("80551234");
     appendBe(request, first, 2);
@@ -200,6 +233,7 @@ private:
       plain.remove(0, end + 4 + size);
       const auto method = requestLine[0], path = requestLine[1],
                  cseq = headers["cseq"];
+      activeRemote = headers["active-remote"];
       if (path == "/info") {
         if (failure == Failure::InfoTimeout)
           continue;
@@ -250,10 +284,19 @@ private:
           respond(cseq, plistEncode(QVariantMap{
                             {"eventPort", int(eventServer.serverPort())}}));
       } else if (method == "SET_PARAMETER") {
-        ++volumeRequests;
-        volumes.append(body.mid(8).trimmed().toDouble());
+        if (headers["content-type"] == "text/parameters") {
+          ++volumeRequests;
+          volumes.append(body.mid(8).trimmed().toDouble());
+        } else {
+          metadata = body;
+          metadataRtpInfo = headers["rtp-info"];
+        }
         respond(cseq, {},
-                failure == Failure::Volume && volumeRequests > 1 ? 500 : 200);
+                failure == Failure::Volume && body.startsWith("volume:") &&
+                volumeRequests > 1 ? 500 : 200);
+      } else if (path == "/command") {
+        commands.append(plistDecode(body).toMap());
+        respond(cseq, {}, rejectMetadata ? 400 : 200);
       } else if (method == "OPTIONS") {
         ++options;
         const int code = failure == Failure::KeepAlive ? 500 : 200;

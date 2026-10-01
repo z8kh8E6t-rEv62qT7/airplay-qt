@@ -340,7 +340,7 @@ private slots:
     QVERIFY(window);
     auto processor = std::make_unique<vst3::Processor>();
     ready(processor->state()->input, false, 1024);
-    airplay::SessionEnvironment environment{[] {}, [] {}};
+    airplay::SessionEnvironment environment{[] {}, [] {}, false};
     auto &runtime = vst3::PluginRuntime::acquire(window, environment);
     auto *panel = runtime.open(processor->state(), unavailableDiscovery());
     auto timing = panel->timing();

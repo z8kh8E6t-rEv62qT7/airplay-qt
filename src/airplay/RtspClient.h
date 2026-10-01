@@ -14,6 +14,12 @@ struct RtspResponse {
   QMap<QByteArray, QByteArray> headers;
   QByteArray body;
 };
+struct ControlMessage {
+  QByteArray line;
+  QMap<QByteArray, QByteArray> headers;
+  QByteArray body;
+};
+std::optional<ControlMessage> parseControlMessage(QByteArray &data);
 std::optional<RtspResponse> parseResponse(QByteArray &data);
 class RtspClient : public QObject {
   Q_OBJECT
@@ -21,10 +27,10 @@ public:
   explicit RtspClient(QObject *parent = nullptr);
   void open(const QHostAddress &host, quint16 port, const QString &identity,
             double timeout, const QHostAddress &local = {},
-            const NetworkRoute &route = {});
+            const NetworkRoute &route = {}, quint32 activeRemote = 1);
   void request(const QByteArray &method, const QByteArray &path,
                const QByteArray &body, const QByteArray &contentType,
-               double timeout);
+               double timeout, std::optional<quint32> rtpTime = {});
   void encrypt(const QByteArray &shared);
   void abort();
   bool busy() const { return pending_; }
@@ -44,6 +50,7 @@ private:
   QTimer timer_;
   QByteArray wire_, plain_, identity_, session_;
   uint32_t cseq_ = 0;
+  quint32 activeRemote_ = 1;
   bool pending_ = false, closed_ = true;
   std::unique_ptr<HapRecords> records_;
 };

@@ -2,6 +2,7 @@
 #include "PtpClock.h"
 #include "ReceiverEndpoint.h"
 #include "RtspClient.h"
+#include "DacpServer.h"
 #include "audio/CaptureStream.h"
 #include <array>
 #include <deque>
@@ -17,6 +18,8 @@ void validateGroup(const ReceiverInfo &left, const ReceiverInfo &right);
 struct SessionEnvironment {
   // Tests replace only PTP's OS service; production always uses PtpClock.
   std::function<void()> startClock, stopClock;
+  // Controlled receivers exercise the real TCP server without LAN publication.
+  bool advertiseRemote = true;
 };
 class AirPlaySession : public QObject {
   Q_OBJECT
@@ -67,6 +70,8 @@ private:
   void feedback(int index);
   void keepAlive();
   void dispatchVolume();
+  void prepared();
+  void remoteVolume(const QString &action, double value);
   void finishStop();
   bool allReady() const;
   bool allStopped() const;
@@ -80,6 +85,9 @@ private:
   audio::CaptureStream stream_;
   std::vector<std::unique_ptr<Peer>> peers_;
   PtpClock clock_;
+  DacpServer remote_{this};
+  QTimer remoteDeadline_;
+  bool remoteReady_ = false;
   QTimer settle_, poll_, teardown_, keepAlive_;
   QElapsedTimer elapsed_;
   State state_ = State::Preparing;
@@ -89,12 +97,14 @@ private:
   uint64_t clockId_ = 0, counter_ = 0, sentFrames_ = 0, retransmitted_ = 0,
            expired_ = 0;
   uint32_t firstRtp_ = 0;
+  quint32 activeRemote_ = 0;
   uint16_t firstSequence_ = 0;
   qint64 started_ = 0, lastInput_ = 0, lastStats_ = 0, nextSync_ = 0;
   int64_t audible_ = 0, anchorWall_ = 0;
   uint64_t seenFrames_ = 0;
   std::deque<int16_t> pcm_;
   double leftPeak_ = 0, rightPeak_ = 0, volume_ = 0;
+  double restoreVolume_ = -30;
   bool volumePending_ = false, firstSync_ = true;
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   struct RateDiagnostics {

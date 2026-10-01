@@ -20,6 +20,7 @@ struct NetworkRoute {
   QHostAddress local;
   static NetworkRoute resolve(const NetworkBinding &);
   void validate() const;
+  void bindInterface(qintptr descriptor) const;
   void bind(QAbstractSocket &, quint16 port = 0,
             bool receiveMulticast = false) const;
 };

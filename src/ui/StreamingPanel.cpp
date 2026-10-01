@@ -243,11 +243,16 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   connect(&session_, &app::SessionController::volumeApplied, this,
           [this](double db) {
             volumePending_ = false;
-            if (!mute_->isChecked()) {
+            {
+              QSignalBlocker blocker(mute_);
+              mute_->setChecked(db <= -144);
+            }
+            if (db > -144) {
               QSignalBlocker blocker(volume_);
               volume_->setValue(db);
               restoreVolume_ = db;
             }
+            volume_->setEnabled(streaming_ && !mute_->isChecked());
             applyVolume_->setEnabled(streaming_ && !mute_->isChecked());
             mute_->setEnabled(streaming_);
           });

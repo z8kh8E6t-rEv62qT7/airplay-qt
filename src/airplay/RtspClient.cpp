@@ -157,7 +157,7 @@ QVariant plistDecode(const QByteArray &data) {
   int count = 0;
   return fromPlist(root.get(), 0, count);
 }
-std::optional<RtspResponse> parseResponse(QByteArray &data) {
+std::optional<ControlMessage> parseControlMessage(QByteArray &data) {
   const auto end = data.indexOf("\r\n\r\n");
   if (end < 0) {
     if (data.size() > 16384)
@@ -170,14 +170,12 @@ std::optional<RtspResponse> parseResponse(QByteArray &data) {
   for (auto &line : lines)
     if (line.endsWith('\r'))
       line.chop(1);
-  auto status = lines.takeFirst().split(' ');
-  if (status.size() < 2 || (status[0] != "RTSP/1.0" &&
-                            status[0] != "HTTP/1.1" && status[0] != "HTTP/1.0"))
-    throw Error("RTSP 状态行无效");
+  const auto first = lines.takeFirst();
+  for (const auto &line : lines)
+    for (char c : line)
+      if ((uint8_t(c) < 32 && c != '\t') || uint8_t(c) == 127)
+        throw Error("控制消息包含无效字符");
   bool valid = false;
-  int code = status[1].toInt(&valid);
-  if (!valid || code < 100 || code > 999)
-    throw Error("RTSP 状态码无效");
   QMap<QByteArray, QByteArray> headers;
   for (const auto &line : lines) {
     const auto separator = line.indexOf(':');
@@ -203,9 +201,23 @@ std::optional<RtspResponse> parseResponse(QByteArray &data) {
   const auto total = end + 4 + length;
   if (data.size() < total)
     return {};
-  RtspResponse response{code, headers, data.mid(end + 4, length)};
+  ControlMessage response{first, headers, data.mid(end + 4, length)};
   data.remove(0, total);
   return response;
+}
+std::optional<RtspResponse> parseResponse(QByteArray &data) {
+  auto message = parseControlMessage(data);
+  if (!message)
+    return {};
+  const auto status = message->line.split(' ');
+  if (status.size() < 2 || (status[0] != "RTSP/1.0" &&
+                          status[0] != "HTTP/1.1" && status[0] != "HTTP/1.0"))
+    throw Error("RTSP 状态行无效");
+  bool valid = false;
+  const int code = status[1].toInt(&valid);
+  if (!valid || code < 100 || code > 999)
+    throw Error("RTSP 状态码无效");
+  return RtspResponse{code, message->headers, message->body};
 }
 RtspClient::RtspClient(QObject *parent) : QObject(parent) {
   socket_.setReadBufferSize(1048576 + 32768);
@@ -229,9 +241,11 @@ RtspClient::RtspClient(QObject *parent) : QObject(parent) {
 }
 void RtspClient::open(const QHostAddress &host, quint16 port,
                       const QString &identity, double timeout,
-                      const QHostAddress &local, const NetworkRoute &route) {
+                      const QHostAddress &local, const NetworkRoute &route,
+                      quint32 activeRemote) {
   abort();
   identity_ = identity.toLatin1();
+  activeRemote_ = activeRemote;
   cseq_ = 0;
   session_.clear();
   closed_ = false;
@@ -251,7 +265,7 @@ void RtspClient::open(const QHostAddress &host, quint16 port,
 }
 void RtspClient::request(const QByteArray &method, const QByteArray &path,
                          const QByteArray &body, const QByteArray &type,
-                         double timeout) {
+                         double timeout, std::optional<quint32> rtpTime) {
   if (closed_ || pending_ || !connected() || cseq_ == UINT32_MAX ||
       body.size() > 1048576)
     throw Error("RTSP 请求状态无效");
@@ -259,12 +273,14 @@ void RtspClient::request(const QByteArray &method, const QByteArray &path,
   QByteArray packet =
       method + " " + path + " RTSP/1.0\r\nCSeq: " + QByteArray::number(cseq_) +
       "\r\nUser-Agent: AirPlay/550.10\r\nDACP-ID: " + identity_ +
-      "\r\nActive-Remote: 1\r\nContent-Length: " +
+      "\r\nActive-Remote: " + QByteArray::number(activeRemote_) + "\r\nContent-Length: " +
       QByteArray::number(body.size()) + "\r\n";
   if (!session_.isEmpty())
     packet += "Session: " + session_ + "\r\n";
   if (!type.isEmpty())
     packet += "Content-Type: " + type + "\r\n";
+  if (rtpTime)
+    packet += "RTP-Info: rtptime=" + QByteArray::number(*rtpTime) + "\r\n";
   if (path == "/pair-setup")
     packet += "X-Apple-HKP: 4\r\n";
   packet += "\r\n";
@@ -304,15 +320,7 @@ void RtspClient::receive() {
     if (wire_.size() > 1048576 + 32768)
       throw Error("RTSP 接收缓冲超限");
     if (records_) {
-      while (wire_.size() >= 2) {
-        const int length = uint8_t(wire_[0]) + (uint8_t(wire_[1]) << 8);
-        if (length < 1 || length > 1024)
-          throw Error("HAP 记录长度无效");
-        if (wire_.size() < length + 18)
-          break;
-        plain_ += records_->decode(wire_.left(2), wire_.mid(2, length + 16));
-        wire_.remove(0, length + 18);
-      }
+      plain_ += records_->decodeAvailable(wire_);
     } else {
       plain_ += wire_;
       wire_.clear();

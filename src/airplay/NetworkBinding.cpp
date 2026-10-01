@@ -109,22 +109,30 @@ void NetworkRoute::bind(QAbstractSocket &socket, quint16 port,
     socket.abort();
     throw Error("绑定本地地址失败：" + error);
   }
+  try {
+    bindInterface(socket.socketDescriptor());
+  } catch (...) {
+    socket.abort();
+    throw;
+  }
+}
+void NetworkRoute::bindInterface(qintptr descriptor) const {
+  validate();
   if (binding.automatic())
     return;
 #ifdef Q_OS_WIN
   const DWORD option = htonl(index);
   const int result =
-      setsockopt(SOCKET(socket.socketDescriptor()), IPPROTO_IP, IP_UNICAST_IF,
+      setsockopt(SOCKET(descriptor), IPPROTO_IP, IP_UNICAST_IF,
                  reinterpret_cast<const char *>(&option), sizeof(option));
   const auto error = QString::number(WSAGetLastError());
 #else
   const int option = int(index);
-  const int result = setsockopt(int(socket.socketDescriptor()), IPPROTO_IP,
+  const int result = setsockopt(int(descriptor), IPPROTO_IP,
                                 IP_BOUND_IF, &option, sizeof(option));
   const auto error = QString::fromLocal8Bit(std::strerror(errno));
 #endif
   if (result != 0) {
-    socket.abort();
     throw Error("绑定发送网卡失败：" + error);
   }
 }

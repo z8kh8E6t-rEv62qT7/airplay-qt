@@ -32,6 +32,7 @@ public:
   ~HapRecords();
   QByteArray encode(const QByteArray &plain);
   QByteArray decode(const QByteArray &size, const QByteArray &cipher);
+  QByteArray decodeAvailable(QByteArray &wire);
   uint64_t tx = 0, rx = 0;
 
 private:

@@ -1,5 +1,31 @@
 # AirPlayQt
 
+## 最新完整 macOS 包（2026-09-30，外部音量修复版）
+
+已通过 `package-macos` 生成 `dist/macos-arm64/AirPlayQt.app`、`AirPlayQt.vst3`、`AirPlayQt-macos-arm64.zip`、`SHA256SUMS` 和 `verification.txt`。两个 bundle 分别内置运行依赖，可独立使用；arm64、macOS 27+，CLI 关闭，ad-hoc 签名，未公证。
+
+打包门禁通过：CTest 10/10、打包副本 validator 47/47、原生宿主加载/卸载与窗口重开、Qt 自建/借用/不兼容/缺少平台插件检查、中文及空格路径迁移、运行时包内依赖加载、签名及 ZIP 解压复核。未安装插件或自动播放。新 HomePod 外部音量、灯光和真实 DAW 场景仍需实机验收；此前用户确认的播放结果属于历史版本，Claude 审查仍为上线门槛。以下各节保留对应任务当时的构建/交付记录。
+
+## HomePod 外部音量与事件应答（2026-09-30）
+
+独立应用和 VST3 共用新的控制实现。原来事件 socket 的数据被直接丢弃；现在在现有临时配对基础上派生独立 Events 密钥，增量验证 HAP 记录、解析请求并加密应答。事件通道与 RTSP 使用独立计数器；完整 `POST /command` 在传输层确认收到，不执行暂停、切歌或其他未实现的操作。日志记录设备地址、事件类型和应答码，不记录密钥或原始事件正文。损坏记录、超限消息、认证失败、连接断开仍使整组停止。
+
+发送端发布 `iTunes_Ctrl_<DACP-ID>._dacp._tcp.local`，用唯一主机名只公布本次发送源 IPv4；监听、回复和发布遵守发送网卡选择。仅当前选定接收端且持有本会话 Active-Remote 值的连接可操作。支持绝对设备音量、百分比音量、音量查询、静音切换以及纯加减命令；纯加减每次 **1 dB**，后续曲线不在本次范围内。请求和回显以绝对音量合并到最新值，已确认的相同值不重新发送，旧的在途音量确认不覆盖新目标；两台确认后更新 Qt 显示及静音状态。暂停、播放、切歌请求不改变发送意图。
+
+开始时发布固定 `AirPlayQt / 实时音频` 信息：DMAP 附带与音频一致的 RTP 时间戳，并通过 `/command` 发布发送源、Now Playing、空的播放操作能力列表、播放状态和客户端信息。不提供封面、虚构时长或配置项。**按用户选择，播放信息被拒绝时停止整组并报“播放信息／外部控制未就绪”，不会忽略错误继续播放。** 正常停止在有空闲控制连接时发布 Stopped，再在既有清理期限内 TEARDOWN；断线时保留原始故障。
+
+仍使用现有临时配对，不新增正式配对或持久凭据。应用和插件各会话身份、控制监听器与密钥独立；停止、重连和卸载清理旧状态。配置与 VST3 状态仍为版本 2，CLI 关闭。本轮只生成 arm64、macOS 27+ 开发版，依赖本机 Homebrew，不运行 `package-macos`、不更新 dist/ZIP、不安装插件、不自动向 HomePod 播放。
+
+```sh
+cmake --preset macos-release -DBUILD_TESTING=ON -DAIRPLAY_CLI_TEST=OFF
+cmake --build --preset macos-release
+ctest --preset macos-release --output-on-failure
+```
+
+验证覆盖：实际 Bonjour 服务与 IPv4 解析、加密事件跨 TCP/HAP 分片、30 秒事件应答期限、认证失败整组停止、播放信息拒绝、绝对/相对音量、查询、连续调整和回传去重、静音恢复、过期令牌/畸形请求拒绝，以及原有协议、采集、VST3 自动重连与原生窗口生命周期回归。结果见 `build/macos-release/volume-verification.md`。实际 HomePod 顶部 ±、手机滑块、灯光及原 988 字节事件内容仍需用户用新版实机确认；受控测试不能替代该验收。Windows 编译/实机、真实 DAW 操作及 Claude 三维审查未执行，Claude 审查仍为上线门槛。
+
+协议依据：[Apple DNS-SD SDK](https://developer.apple.com/documentation/dnssd)、[Windows DNS 服务注册 API](https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsserviceregister)、[AirPlay 事件及 MediaRemote 参考实现](https://github.com/music-assistant/airplay-cli/blob/main/src/ap2_mrp.c)、[DACP 音量属性参考实现](https://github.com/owntone/owntone-server/blob/master/src/httpd_dacp.c)。实现不链接这些参考项目，不新增第三方运行依赖；播放信息格式的 HTTP 成功不等于实机显示成功。
+
 ## 指定网卡发送与发现（2026-09-30）
 
 独立应用和 VST3 的“发送网卡”可选“自动（系统路由）”或具体“网卡名 · IPv4”。指定后，发现限定所选网卡，RTSP、事件连接、音频、控制及 PTP 均绑定该网卡；源地址或网卡失效时停止，不自动改用其他网卡。只有停止状态允许切换；宿主暂停后的自动重连继续使用原绑定。刷新网卡保留原选择，不可用时明确标记。网络状态检查在网络／控制线程执行，不进入音频回调。

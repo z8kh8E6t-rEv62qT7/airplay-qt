@@ -252,6 +252,19 @@ QByteArray HapRecords::decode(const QByteArray &size,
     ++rx;
   return result;
 }
+QByteArray HapRecords::decodeAvailable(QByteArray &wire) {
+  QByteArray plain;
+  while (wire.size() >= 2) {
+    const int length = uint8_t(wire[0]) + (uint8_t(wire[1]) << 8);
+    if (length < 1 || length > 1024)
+      throw Error("HAP 记录长度无效");
+    if (wire.size() < length + 18)
+      break;
+    plain += decode(wire.left(2), wire.mid(2, length + 16));
+    wire.remove(0, length + 18);
+  }
+  return plain;
+}
 QByteArray alac(std::span<const int16_t> samples) {
   if (samples.empty() || samples.size() % 2 || samples.size() > 704)
     throw Error("ALAC 必须包含 1..352 个立体声帧");
