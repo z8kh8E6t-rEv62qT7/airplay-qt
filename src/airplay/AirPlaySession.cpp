@@ -678,6 +678,8 @@ void AirPlaySession::poll() {
           p->history[sequence % 1024] = {sequence, packet};
         }
         ++counter_;
+        if (telemetryEnabled_)
+          ++telemetryPackets_;
         sentFrames_ += 352;
       }
     }
@@ -685,7 +687,8 @@ void AirPlaySession::poll() {
       emit telemetry(leftPeak_, rightPeak_,
                      double(stream_.queue->queuedFrames() + pcm_.size() / 2) /
                          44100,
-                     counter_, retransmitted_, expired_, telemetryRevision_);
+                     telemetryPackets_, retransmitted_, expired_,
+                     telemetryRevision_);
       leftPeak_ = rightPeak_ = 0;
       lastStats_ = now;
     }
@@ -721,7 +724,8 @@ void AirPlaySession::feedback(int index) {
       const auto seq = uint16_t(first + i);
       const auto &packet = p.history[seq % 1024];
       if (packet.bytes.isEmpty() || packet.sequence != seq) {
-        ++expired_;
+        if (telemetryEnabled_)
+          ++expired_;
         continue;
       }
       QByteArray response = QByteArray::fromHex("80d6");
@@ -730,7 +734,8 @@ void AirPlaySession::feedback(int index) {
       if (p.control.writeDatagram(response, p.host, datagram.senderPort()) !=
           response.size())
         throw Error(i18n::text(i18n::Id::RetransmissionFailed));
-      ++retransmitted_;
+      if (telemetryEnabled_)
+        ++retransmitted_;
     }
   }
   if (p.control.hasPendingDatagrams())

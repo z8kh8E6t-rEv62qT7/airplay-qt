@@ -85,6 +85,87 @@ struct SessionFixture {
 class ProtocolTests : public QObject {
   Q_OBJECT
 private slots:
+  void pausedTelemetryCountsOnlyEnabledIntervals_data() {
+    QTest::addColumn<bool>("stereo");
+    QTest::newRow("single") << false;
+    QTest::newRow("stereo") << true;
+  }
+  void pausedTelemetryCountsOnlyEnabledIntervals() {
+    QFETCH(bool, stereo);
+    SessionFixture f;
+    QList<Receiver *> receivers{&f.left};
+    if (stereo)
+      receivers.append(&f.right);
+    else
+      f.endpoints.removeLast();
+    // Feed exact packet-sized blocks, leaving room for telemetry waits without
+    // turning the deliberately idle input into a transport timeout.
+    f.timing.late = 1;
+    f.timing.inputTimeout = 5;
+    f.stream = {std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
+                audio::format(16), audio::format(16), 352};
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
+    connect(&session, &AirPlaySession::startCapture, &session,
+            &AirPlaySession::captureStarted);
+    QSignalSpy telemetry(&session, &AirPlaySession::telemetry);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    QVERIFY(telemetry.isValid() && done.isValid());
+    session.setTelemetryEnabled(false, 1);
+    session.start();
+    std::array<int16_t, 352> samples{};
+    quint64 countedPackets = 0, countedFeedback = 0;
+    for (int phase = 0; phase < 5; ++phase) {
+      const bool enabled = phase % 2 != 0;
+      const quint64 revision = phase + 1;
+      session.setTelemetryEnabled(enabled, revision);
+      telemetry.clear();
+      for (int i = 0; i < 8; ++i)
+        QVERIFY(f.stream.queue->push(samples.data(), samples.data()));
+      for (auto *receiver : receivers) {
+        QTRY_COMPARE(receiver->packets.size(), (phase + 1) * 8);
+        const auto first = uint16_t(readBe(receiver->packets.first(), 2, 2));
+        // The valid response also confirms the preceding expired request has
+        // been processed before changing the telemetry gate.
+        receiver->retransmit(uint16_t(first - 1), 1);
+        receiver->retransmit(first, 1);
+      }
+      for (auto *receiver : receivers) {
+        QTRY_COMPARE(receiver->retransmits.size(), phase + 1);
+        QCOMPARE(receiver->retransmits.last().mid(4), receiver->packets.first());
+      }
+      if (enabled) {
+        countedPackets += 8;
+        countedFeedback += receivers.size();
+        QTRY_VERIFY(!telemetry.isEmpty() &&
+                    telemetry.last()[3].toULongLong() == countedPackets &&
+                    telemetry.last()[4].toULongLong() == countedFeedback &&
+                    telemetry.last()[5].toULongLong() == countedFeedback);
+        QCOMPARE(telemetry.last()[6].toULongLong(), revision);
+      } else {
+        QVERIFY(telemetry.isEmpty());
+      }
+      QVERIFY(done.isEmpty());
+    }
+    session.setTelemetryEnabled(true, 6);
+    QTRY_VERIFY(!telemetry.isEmpty());
+    QCOMPARE(telemetry.first()[3].toULongLong(), countedPackets);
+    QCOMPARE(telemetry.first()[4].toULongLong(), countedFeedback);
+    QCOMPARE(telemetry.first()[5].toULongLong(), countedFeedback);
+    for (auto *receiver : receivers) {
+      const auto first = uint16_t(readBe(receiver->packets.first(), 2, 2));
+      const auto firstRtp = uint32_t(readBe(receiver->packets.first(), 4, 4));
+      for (int i = 0; i < receiver->packets.size(); ++i) {
+        const auto &packet = receiver->packets[i];
+        QCOMPARE(readBe(packet, 2, 2), uint64_t(uint16_t(first + i)));
+        QCOMPARE(readBe(packet, 4, 4), uint64_t(uint32_t(firstRtp + i * 352)));
+        QCOMPARE(packet.right(8), nonce(uint64_t(i)).mid(4));
+      }
+    }
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(done.first()[1].toInt(), int(SessionEnd::Stopped));
+  }
   void pausedTelemetryPreservesTransportAndDiagnostics() {
     SessionFixture f;
     f.l.fill(16384);
@@ -133,8 +214,8 @@ private slots:
     QCOMPARE(telemetry.first()[0].toDouble(), 0.);
     QCOMPARE(telemetry.first()[1].toDouble(), 0.);
     QVERIFY(telemetry.first()[3].toULongLong() > packets);
-    QCOMPARE(telemetry.first()[4].toULongLong(), quint64(1));
-    QCOMPARE(telemetry.first()[5].toULongLong(), quint64(1));
+    QCOMPARE(telemetry.first()[4].toULongLong(), quint64(0));
+    QCOMPARE(telemetry.first()[5].toULongLong(), quint64(0));
     QCOMPARE(telemetry.first()[6].toULongLong(), quint64(4));
 
     session.setTelemetryEnabled(false, 5);

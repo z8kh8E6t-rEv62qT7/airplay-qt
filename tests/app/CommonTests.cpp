@@ -124,8 +124,18 @@ private slots:
                     {[] {}, [] {}, false});
       QTRY_VERIFY(receiver.packets.size() > 20);
       QVERIFY(telemetry.isEmpty());
+      producer.stop();
+      QTRY_COMPARE(stream.queue->queuedFrames(), uint64_t(0));
+      QTRY_COMPARE(receiver.packets.size(),
+                   qsizetype(stream.queue->capturedFrames() / 352));
       session.setTelemetryEnabled(true);
       QTRY_VERIFY(!telemetry.isEmpty());
+      // Each new session starts at zero, even if it sent packets while paused.
+      QCOMPARE(telemetry.first()[3].toULongLong(), quint64(0));
+      QCOMPARE(telemetry.first()[4].toULongLong(), quint64(0));
+      QCOMPARE(telemetry.first()[5].toULongLong(), quint64(0));
+      producer.start(4);
+      QTRY_VERIFY(telemetry.last()[3].toULongLong() > 0);
       telemetry.clear();
       // Leave old telemetry queued while the network thread keeps polling.
       QTest::qSleep(150);

@@ -100,6 +100,8 @@ private:
   QHostAddress local_;
   uint64_t clockId_ = 0, counter_ = 0, sentFrames_ = 0, retransmitted_ = 0,
            expired_ = 0;
+  // Display statistics exclude paused intervals; counter_ remains the nonce.
+  uint64_t telemetryPackets_ = 0;
   uint32_t firstRtp_ = 0;
   quint32 activeRemote_ = 0;
   uint16_t firstSequence_ = 0;

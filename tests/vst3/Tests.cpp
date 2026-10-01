@@ -475,9 +475,22 @@ private slots:
       QTRY_VERIFY_WITH_TIMEOUT(receiver.packets.size() > packets + 3, 4000);
       QVERIFY(receiver.teardowns >= 1);
       if (!panel) {
+        QTRY_VERIFY_WITH_TIMEOUT(receiver.packets.size() > packets + 40, 2000);
+        const auto receivedWhileClosed = receiver.packets.size() - packets;
         panel = runtime.open(processor->state(), unavailableDiscovery());
         QVERIFY(panel->findChild<QPushButton *>("stop")->isEnabled());
         QVERIFY(!panel->findChild<QPushButton *>("pauseDisplay")->isChecked());
+        QTRY_COMPARE(panel->findChild<QProgressBar *>("leftLevel")->value(), 125);
+        const auto statistics = panel->findChild<QLabel *>("statistics")->text();
+        bool valid = false;
+        const auto counted = statistics.section("Packets/receiver ", 1, 1)
+                                 .section(' ', 0, 0)
+                                 .toULongLong(&valid);
+        QVERIFY(valid);
+        // Wait for live telemetry above: the initial zero label alone cannot
+        // prove that packets sent with the editor closed were excluded.
+        QVERIFY(counted > 0);
+        QVERIFY(counted < quint64(receivedWhileClosed));
       }
       if (scenario == "resume") {
         auto *pauseDisplay = panel->findChild<QPushButton *>("pauseDisplay");
