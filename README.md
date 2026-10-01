@@ -4,6 +4,8 @@ Stream live audio to an AirPlay receiver or an existing AirPlay stereo pair from
 
 Built with C++20 and Qt Widgets for Windows x64 and macOS.
 
+![AirPlayQt main window](doc/readme/gui.png)
+
 ## Features
 
 - **Standalone capture:** ASIO inputs on Windows; Core Audio inputs and output-device auto loopback on macOS.
@@ -25,6 +27,10 @@ Sending requires **44.1 kHz** audio. AirPlayQt does not resample; it converts in
 The VST3 plugin keeps local audio passing through and reports zero local latency; remote playback has its own buffering delay. Closing the plugin editor leaves sending active. A streaming instance can reconnect once if valid host audio resumes within five seconds of suspension.
 
 On macOS, allow microphone access for input devices, system audio recording for auto loopback, and local network access for AirPlay.
+
+> **macOS audio capture:** Please use a loopback virtual audio device. **Loopback by Rogue Amoeba** has been tested; **BlackHole** has not been tested. In Loopback, connect the audio inputs to the output channels. AirPlayQt's built-in **auto loopback** may produce audio distortion.
+>
+> **Windows audio capture:** Please install an ASIO-compatible virtual audio device, such as **VB-Audio Matrix**, and connect the audio inputs to the outputs in its routing configuration, similarly to Loopback on macOS.
 
 Auto loopback captures applications playing through the selected output device using native Core Audio taps; no virtual audio driver is required. Local playback of the tapped audio is muted while capture runs and resumes when capture stops. Selecting a device alone does not mute it. AirPlayQt does not change the system default output, device volume, or sample rate. Set the output device to **44.1 kHz** in **Audio MIDI Setup** before starting. Multi-stream output channels are listed in device stream order; choose two distinct channels. Devices with fewer than two channels are listed but cannot start a stereo session. Device removal or format changes stop sending; select the device again before restarting. Any native cleanup failure is reported and must be retried before switching capture devices.
 
