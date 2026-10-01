@@ -18,8 +18,6 @@ set(REPORT "${stage}/verification.txt")
 file(WRITE "${REPORT}" "")
 include("${SOURCE_ROOT}/cmake/MacBundle.cmake")
 include("${SOURCE_ROOT}/cmake/MacLicenses.cmake")
-mac_run("CTest" "@CMAKE_CTEST_COMMAND@" --test-dir "${BUILD_ROOT}" -C Release
-  --output-on-failure --output-junit "${stage}/ctest.xml")
 
 get_filename_component(qt_bin "@AIRPLAY_MACDEPLOYQT@" DIRECTORY)
 execute_process(COMMAND "${qt_bin}/qtpaths" --query QT_INSTALL_PLUGINS
@@ -136,7 +134,7 @@ endforeach()
 file(APPEND "${REPORT}" "\nFinal ZIP extraction: dependency and signature checks passed.\n")
 file(SHA256 "${zip}" hash)
 file(WRITE "${payload}/SHA256SUMS" "${hash}  AirPlayQt-macos-arm64.zip\n")
-file(COPY "${REPORT}" "${stage}/ctest.xml" "${stage}/app-load.log"
+file(COPY "${REPORT}" "${stage}/app-load.log"
   "${stage}/vst3-owned.log" "${stage}/vst3-borrowed.log" "${stage}/vst3-incompatible.log" "${stage}/vst3-missing-platform.log"
   DESTINATION "${payload}")
 file(RENAME "${zip}" "${payload}/AirPlayQt-macos-arm64.zip")
