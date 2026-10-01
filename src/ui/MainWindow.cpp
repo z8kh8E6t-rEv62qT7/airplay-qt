@@ -66,11 +66,6 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   connect(streaming_, &StreamingPanel::startRequested, this, [this] {
     try {
       const auto endpoints = streaming_->endpoints();
-      if (streaming_->discoveryMode()) {
-        const auto selection = streaming_->receiverSelection();
-        controller_.rememberReceivers(selection);
-        streaming_->setRememberedReceivers(selection);
-      }
       app::Settings settings;
       settings.driverId = driver_->currentData().toString();
       settings.left =
@@ -78,7 +73,13 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
       settings.right =
           right_->currentIndex() < 0 ? -1 : right_->currentData().toInt();
       settings.timing = streaming_->timing();
-      controller_.start(settings, endpoints);
+      settings.networkBinding = streaming_->networkBinding();
+      const auto selection =
+          streaming_->discoveryMode()
+              ? std::optional(streaming_->receiverSelection())
+              : std::nullopt;
+      controller_.start(settings, endpoints, true, selection);
+      streaming_->setRememberedReceivers(controller_.rememberedReceivers());
     } catch (const std::exception &e) {
       streaming_->showError(QString::fromUtf8(e.what()));
     }
@@ -88,6 +89,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
       return;
     try {
       saved_ = controller_.initialize();
+      streaming_->setNetworkBinding(saved_.networkBinding);
       for (const auto &driver : controller_.drivers())
         driver_->addItem(driver.name, driver.id);
       streaming_->setTiming(saved_.timing);

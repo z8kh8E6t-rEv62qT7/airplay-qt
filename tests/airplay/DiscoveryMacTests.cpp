@@ -6,6 +6,7 @@
 using namespace airplay;
 namespace {
 struct Request {
+  uint32_t interfaceIndex = 0;
   int pipe[2];
   DNSServiceBrowseReply browse = nullptr;
   DNSServiceResolveReply resolve = nullptr;
@@ -27,34 +28,37 @@ struct FakeDiscovery {
   bool failResolve = false;
   FakeDiscovery() {
     current = this;
-    api.browse = [](DNSServiceRef *out, DNSServiceFlags, uint32_t, const char *,
-                    const char *, DNSServiceBrowseReply callback,
+    api.browse = [](DNSServiceRef *out, DNSServiceFlags, uint32_t index,
+                    const char *, const char *, DNSServiceBrowseReply callback,
                     void *context) -> DNSServiceErrorType {
       auto *r = new Request;
+      r->interfaceIndex = index;
       r->browse = callback;
       r->context = context;
       current->requests.push_back(r);
       *out = reinterpret_cast<DNSServiceRef>(r);
       return 0;
     };
-    api.resolve = [](DNSServiceRef *out, DNSServiceFlags, uint32_t,
+    api.resolve = [](DNSServiceRef *out, DNSServiceFlags, uint32_t index,
                      const char *, const char *, const char *,
                      DNSServiceResolveReply callback,
                      void *context) -> DNSServiceErrorType {
       if (current->failResolve)
         return kDNSServiceErr_Unknown;
       auto *r = new Request;
+      r->interfaceIndex = index;
       r->resolve = callback;
       r->context = context;
       current->requests.push_back(r);
       *out = reinterpret_cast<DNSServiceRef>(r);
       return 0;
     };
-    api.address = [](DNSServiceRef *out, DNSServiceFlags, uint32_t,
+    api.address = [](DNSServiceRef *out, DNSServiceFlags, uint32_t index,
                      DNSServiceProtocol, const char *,
                      DNSServiceGetAddrInfoReply callback,
                      void *context) -> DNSServiceErrorType {
       auto *r = new Request;
+      r->interfaceIndex = index;
       r->address = callback;
       r->context = context;
       current->requests.push_back(r);
@@ -73,8 +77,9 @@ struct FakeDiscovery {
   }
   void browse(const char *name = "Speaker") {
     auto *r = requests.front();
-    r->browse(nullptr, kDNSServiceFlagsAdd, 1, 0, name, "_airplay._tcp",
-              "local.", r->context);
+    r->browse(nullptr, kDNSServiceFlagsAdd,
+              r->interfaceIndex ? r->interfaceIndex : 1, 0, name,
+              "_airplay._tcp", "local.", r->context);
   }
   void resolved() {
     auto *r = requests.back();
@@ -97,6 +102,31 @@ struct FakeDiscovery {
 class DiscoveryMacTests : public QObject {
   Q_OBJECT
 private slots:
+  void scopedDiscoveryAndRefresh() {
+    const auto choices = NetworkBinding::available();
+    QVERIFY(!choices.isEmpty());
+    const auto binding = choices.first();
+    const auto index = NetworkRoute::resolve(binding).index;
+    FakeDiscovery f;
+    ReceiverDiscovery d(nullptr, f.api);
+    QSignalSpy found(&d, &ReceiverDiscovery::found);
+    d.refresh(binding);
+    QCOMPARE(f.requests.front()->interfaceIndex, index);
+    f.browse();
+    f.flush();
+    QCOMPARE(f.requests.back()->interfaceIndex, index);
+    f.resolved();
+    f.flush();
+    QCOMPARE(f.requests.back()->interfaceIndex, index);
+    f.addressed();
+    d.refresh(); // Discard a queued result from the previous interface.
+    f.flush();
+    QCOMPARE(found.size(), 0);
+    QCOMPARE(f.requests.front()->interfaceIndex, 0u);
+    d.refresh({"missing-airplayqt", "192.0.2.1"});
+    QVERIFY(f.requests.empty());
+    QVERIFY(!d.busy());
+  }
   void resolveAndDeduplicate() {
     FakeDiscovery f;
     ReceiverDiscovery d(nullptr, f.api);

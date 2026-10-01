@@ -2,6 +2,7 @@
 #include "airplay/ReceiverDiscovery.h"
 #include "app/SessionController.h"
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -19,6 +20,8 @@ public:
       app::SessionController &, QWidget *parent = nullptr,
       const airplay::DiscoveryApi & = airplay::defaultDiscoveryApi());
   app::Timing timing() const;
+  airplay::NetworkBinding networkBinding() const;
+  void setNetworkBinding(const airplay::NetworkBinding &);
   QList<airplay::ReceiverEndpoint> endpoints() const;
   bool discoveryMode() const;
   QList<app::ReceiverSelection> receiverSelection() const;
@@ -40,9 +43,15 @@ signals:
   void stopRequested();
   void discoveryIdle();
   void timingChanged();
+  void networkBindingChanged();
 
 private:
   void updateTargets();
+  void refreshNetworks();
+  void clearDiscoveredReceivers();
+  void restartDiscovery();
+  QComboBox *network_;
+  QPushButton *refreshNetwork_;
   void scan();
   void restoreReceivers();
   airplay::ReceiverDiscovery discovery_;
@@ -57,6 +66,7 @@ private:
   QCheckBox *mute_;
   QPlainTextEdit *log_;
   std::array<QDoubleSpinBox *, 13> timings_{};
+  bool discoveryStarted_ = false;
   bool busy_ = false, closing_ = false, streaming_ = false,
        volumePending_ = false, recoveryPending_ = false;
   double restoreVolume_ = 0;

@@ -112,9 +112,19 @@ struct AirPlaySession::Peer {
 };
 AirPlaySession::AirPlaySession(app::Timing timing, audio::CaptureStream stream,
                                QList<ReceiverEndpoint> endpoints,
-                               QObject *parent, SessionEnvironment environment)
+                               QObject *parent, SessionEnvironment environment,
+                               NetworkRoute route)
     : QObject(parent), timing_(timing), environment_(std::move(environment)),
-      endpoints_(std::move(endpoints)), stream_(std::move(stream)) {
+      route_(std::move(route)), endpoints_(std::move(endpoints)),
+      stream_(std::move(stream)) {
+  networkCheck_.setInterval(250);
+  connect(&networkCheck_, &QTimer::timeout, this, [this] {
+    try {
+      route_.validate();
+    } catch (const std::exception &e) {
+      fail(e);
+    }
+  });
   settle_.setSingleShot(true);
   teardown_.setSingleShot(true);
   poll_.setInterval(1);
@@ -166,6 +176,12 @@ void AirPlaySession::start() {
     if (!stream_.queue)
       throw Error("采集队列未准备");
     validateEndpoints(endpoints_);
+    route_.validate();
+    if (!route_.binding.automatic()) {
+      networkCheck_.start();
+      emit log("发送网络：" + route_.binding.interfaceName + " · " +
+               route_.binding.ipv4);
+    }
     clockId_ =
         (readBe(randomBytes(8), 0, 8) & 0x7fffffffffffffffULL) | (1ULL << 62);
     identity_ = QString::number(clockId_, 16).toUpper().rightJustified(16, '0');
@@ -228,10 +244,10 @@ void AirPlaySession::start() {
         }
       });
     }
-    // The first TCP connection determines the outgoing interface without a
-    // route probe socket.
+    // Automatic mode lets the first TCP connection select the source.
+    // Explicit mode binds before connecting and shares the frozen route.
     peers_[0]->rtsp.open(peers_[0]->host, endpoints_[0].port, identity_,
-                         timing_.connectTimeout);
+                         timing_.connectTimeout, {}, route_);
   } catch (const std::exception &e) {
     fail(e);
   }
@@ -244,7 +260,7 @@ void AirPlaySession::opened(int index) {
     local_ = p.rtsp.localAddress();
     for (size_t i = 1; i < peers_.size(); ++i)
       peers_[i]->rtsp.open(peers_[i]->host, endpoints_[qsizetype(i)].port,
-                           identity_, timing_.connectTimeout, local_);
+                           identity_, timing_.connectTimeout, local_, route_);
   }
   p.rtsp.request("GET", "/info", {}, {}, timing_.requestTimeout);
 }
@@ -271,7 +287,7 @@ void AirPlaySession::setupGroup() {
   if (environment_.startClock)
     environment_.startClock();
   else
-    clock_.start(local_, hosts, clockId_, timing_);
+    clock_.start(local_, hosts, clockId_, timing_, route_);
   if (state_ != State::Connecting)
     return;
   for (auto &pointer : peers_) {
@@ -365,7 +381,9 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     const auto eventPort =
         port(dictionary(plistDecode(body)).value("eventPort"));
     p.step = Step::Event;
-    if (!p.event.bind(local_, 0))
+    if (!route_.binding.automatic())
+      route_.bind(p.event);
+    else if (!p.event.bind(local_, 0))
       throw Error("事件套接字绑定失败");
     p.eventTimeout.start(int(std::ceil(timing_.connectTimeout * 1000)));
     p.event.connectToHost(p.host, eventPort);
@@ -444,8 +462,11 @@ void AirPlaySession::eventConnected(int index) {
     return;
   p.eventTimeout.stop();
   p.event.setSocketOption(QAbstractSocket::LowDelayOption, 1);
-  if (!p.data.bind(local_, 0, QUdpSocket::DontShareAddress) ||
-      !p.control.bind(local_, 0, QUdpSocket::DontShareAddress))
+  if (!route_.binding.automatic()) {
+    route_.bind(p.data);
+    route_.bind(p.control);
+  } else if (!p.data.bind(local_, 0, QUdpSocket::DontShareAddress) ||
+             !p.control.bind(local_, 0, QUdpSocket::DontShareAddress))
     throw Error("音频 UDP 绑定失败");
   p.step = Peer::Step::Record;
   request(p, "RECORD");
@@ -711,8 +732,19 @@ void AirPlaySession::keepAlive() {
   }
 }
 void AirPlaySession::stop(const QString &error, SessionEnd reason) {
-  if (state_ == State::Stopping || state_ == State::Stopped ||
-      state_ == State::Error)
+  networkCheck_.stop();
+  if (state_ == State::Stopping) {
+    // A real fault during host-interruption cleanup must not remain classified
+    // as a resumable interruption. Keep the first real failure if one exists.
+    if (!error.isEmpty() && error_.isEmpty()) {
+      error_ = error;
+      endReason_ = SessionEnd::Failure;
+      emit status("停止中：" + error);
+      emit log("停止中：" + error);
+    }
+    return;
+  }
+  if (state_ == State::Stopped || state_ == State::Error)
     return;
   error_ = error;
   endReason_ = error.isEmpty() ? reason : SessionEnd::Failure;

@@ -12,7 +12,7 @@ struct ReceiverDiscovery::State {
   ReceiverDiscovery &owner;
   explicit State(ReceiverDiscovery &, DiscoveryApi);
   ~State();
-  void refresh();
+  void refresh(const NetworkBinding &);
   void cancel();
   bool busy() const;
   struct Bridge;
@@ -27,6 +27,8 @@ struct ReceiverDiscovery::State {
   void pump();
   void cancelOperations();
   void drained();
+  NetworkBinding binding_;
+  uint selectedIndex_ = 0;
   DiscoveryApi api_;
   std::shared_ptr<Bridge> bridge_;
   std::shared_ptr<Operation> browse_;
@@ -77,7 +79,8 @@ ReceiverDiscovery::State::~State() {
 bool ReceiverDiscovery::State::busy() const {
   return bool(browse_) || !resolving_.isEmpty();
 }
-void ReceiverDiscovery::State::refresh() {
+void ReceiverDiscovery::State::refresh(const NetworkBinding &binding) {
+  binding_ = binding;
   restart_ = true;
   scanning_ = false;
   deadline_.stop();
@@ -129,6 +132,15 @@ void ReceiverDiscovery::State::drained() {
 }
 void ReceiverDiscovery::State::begin() {
   restart_ = failed_ = false;
+  try {
+    selectedIndex_ = NetworkRoute::resolve(binding_).index;
+  } catch (const std::exception &e) {
+    scanning_ = false;
+    failed_ = true;
+    emit owner.status(QString::fromUtf8(e.what()));
+    emit owner.idle();
+    return;
+  }
   scanning_ = true;
   ++generation_;
   endpoints_.clear();
@@ -138,7 +150,7 @@ void ReceiverDiscovery::State::begin() {
   op->generation = generation_;
   op->query = L"_airplay._tcp.local";
   op->browse.Version = DNS_QUERY_REQUEST_VERSION1;
-  op->browse.InterfaceIndex = 0;
+  op->browse.InterfaceIndex = selectedIndex_;
   op->browse.QueryName = op->query.c_str();
   op->browse.pBrowseCallback = &ReceiverDiscovery::State::browsed;
   op->browse.pQueryContext = op.get();
@@ -240,7 +252,7 @@ void ReceiverDiscovery::State::pump() {
     op->generation = generation_;
     op->query = pending_.takeFirst().toStdWString();
     op->resolve.Version = DNS_QUERY_REQUEST_VERSION1;
-    op->resolve.InterfaceIndex = 0;
+    op->resolve.InterfaceIndex = selectedIndex_;
     op->resolve.QueryName = op->query.data();
     op->resolve.pResolveCompletionCallback =
         &ReceiverDiscovery::State::resolved;
@@ -320,7 +332,9 @@ const DiscoveryApi &defaultDiscoveryApi() {
 ReceiverDiscovery::ReceiverDiscovery(QObject *parent, const DiscoveryApi &api)
     : QObject(parent), state_(std::make_unique<State>(*this, api)) {}
 ReceiverDiscovery::~ReceiverDiscovery() = default;
-void ReceiverDiscovery::refresh() { state_->refresh(); }
+void ReceiverDiscovery::refresh(const NetworkBinding &binding) {
+  state_->refresh(binding);
+}
 void ReceiverDiscovery::cancel() { state_->cancel(); }
 bool ReceiverDiscovery::busy() const { return state_->busy(); }
 } // namespace airplay

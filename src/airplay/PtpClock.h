@@ -1,5 +1,6 @@
 #pragma once
 #include "Crypto.h"
+#include "NetworkBinding.h"
 #include "app/Settings.h"
 #include <QElapsedTimer>
 #include <QHostAddress>
@@ -18,7 +19,8 @@ class PtpClock : public QObject {
 public:
   explicit PtpClock(QObject *parent = nullptr);
   void start(const QHostAddress &local, const QList<QHostAddress> &hosts,
-             uint64_t identity, const app::Timing &timing);
+             uint64_t identity, const app::Timing &timing,
+             const NetworkRoute &route = {});
   void stop();
 signals:
   void failed(QString error);
@@ -33,6 +35,7 @@ private:
   QElapsedTimer elapsed_;
   QList<QHostAddress> hosts_;
   app::Timing timing_;
+  NetworkRoute route_;
   uint64_t identity_ = 0;
   uint16_t sequence_ = 0;
   qint64 nextSync_ = 0, nextAnnounce_ = 0;

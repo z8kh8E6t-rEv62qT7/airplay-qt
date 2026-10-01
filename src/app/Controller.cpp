@@ -37,8 +37,8 @@ Settings Controller::initialize() {
   try {
     return settings_.load();
   } catch (const std::exception &e) {
-    emit error(QString::fromUtf8(e.what()) +
-               "\n原配置不会被覆盖。请修复或移走 AirPlayQt.json 后重启。");
+    emit error(QString::fromUtf8(e.what()) + "\n原配置不会被覆盖。请删除 " +
+               Settings::path() + " 后重启。");
     return {};
   }
 }
@@ -68,11 +68,23 @@ void Controller::controlPanel() {
     emit error(QString::fromUtf8(e.what()));
   }
 }
-void Controller::start(const Settings &settings,
-                       const QList<airplay::ReceiverEndpoint> &endpoints,
-                       bool saveSettings) {
+void Controller::start(
+    const Settings &settings, const QList<airplay::ReceiverEndpoint> &endpoints,
+    bool saveSettings,
+    const std::optional<QList<ReceiverSelection>> &selection) {
   if (busy())
     return;
+  try {
+    airplay::validateEndpoints(endpoints);
+    airplay::NetworkRoute::resolve(settings.networkBinding);
+    if (const auto error = settings.validate(); !error.isEmpty())
+      throw airplay::Error(error);
+    if (saveSettings)
+      settings_.saveStart(settings, selection);
+  } catch (const std::exception &e) {
+    emit error(QString::fromUtf8(e.what()));
+    return;
+  }
 #ifdef Q_OS_MACOS
   const QMicrophonePermission permission;
   const auto permissionStatus = qApp->checkPermission(permission);
@@ -86,14 +98,13 @@ void Controller::start(const Settings &settings,
     emit busyChanged(true);
     qApp->requestPermission(
         permission, this,
-        [this, settings, endpoints, revision,
-         saveSettings](const QPermission &result) {
+        [this, settings, endpoints, revision](const QPermission &result) {
           if (!permissionPending_ || revision != permissionRevision_)
             return;
           permissionPending_ = false;
           emit busyChanged(false);
           if (result.status() == Qt::PermissionStatus::Granted)
-            start(settings, endpoints, saveSettings);
+            start(settings, endpoints, false);
           else
             emit error("音频输入权限被拒绝。");
         });
@@ -112,9 +123,8 @@ void Controller::start(const Settings &settings,
 #ifdef Q_OS_WIN
     emit session_.log("采集计时：已申请 1 ms 精度，并禁止忽略计时精度请求。");
 #endif
-    if (saveSettings && settings_.writable())
-      settings_.saveInput(settings);
-    session_.start(settings.timing, stream, endpoints);
+    session_.start(settings.timing, stream, endpoints, {},
+                   airplay::NetworkRoute::resolve(settings.networkBinding));
   } catch (const std::exception &e) {
     stopCapture();
     emit error(QString::fromUtf8(e.what()));

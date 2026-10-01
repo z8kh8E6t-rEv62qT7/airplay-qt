@@ -13,15 +13,17 @@ public:
   explicit Controller(QObject *parent = nullptr);
   ~Controller() override;
   Settings initialize();
-  void rememberReceivers(const QList<ReceiverSelection> &value) {
-    settings_.rememberReceivers(value);
+  const QList<ReceiverSelection> &rememberedReceivers() const {
+    return settings_.receivers();
   }
   QList<audio::DriverInfo> drivers() const { return drivers_; }
   void selectDriver(const QString &id, void *window);
   void controlPanel();
-  void start(const Settings &settings,
-             const QList<airplay::ReceiverEndpoint> &endpoints,
-             bool saveSettings = true);
+  void start(
+      const Settings &settings,
+      const QList<airplay::ReceiverEndpoint> &endpoints,
+      bool saveSettings = true,
+      const std::optional<QList<ReceiverSelection>> &selection = std::nullopt);
   void stop();
   void volume(double db);
   bool busy() const { return permissionPending_ || session_.busy(); }

@@ -1,8 +1,10 @@
 #pragma once
+#include "airplay/NetworkBinding.h"
 #include <QJsonObject>
 #include <QList>
 #include <QString>
 #include <array>
+#include <optional>
 
 namespace app {
 struct Timing {
@@ -28,6 +30,7 @@ struct Settings {
   QString driverId;
   int left = 0, right = 1; // SDK indices, GUI displays index + 1.
   Timing timing;
+  airplay::NetworkBinding networkBinding;
   QList<ReceiverSelection> receiverSelection;
   QString validate() const;
   QJsonObject json() const;
@@ -42,8 +45,9 @@ class SettingsStore {
 public:
   explicit SettingsStore(QString path = {}) : path_(std::move(path)) {}
   Settings load();
-  void rememberReceivers(const QList<ReceiverSelection> &);
-  void saveInput(Settings);
+  void saveStart(
+      Settings,
+      const std::optional<QList<ReceiverSelection>> &selection = std::nullopt);
   const QList<ReceiverSelection> &receivers() const {
     return value_.receiverSelection;
   }

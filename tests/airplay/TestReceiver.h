@@ -95,6 +95,7 @@ public:
   QList<double> volumes;
   QVariantMap sessionSetup;
   QList<QByteArray> packets, retransmits;
+  QHostAddress eventSource, dataSource, controlSource;
   quint16 clientControl = 0;
   explicit Receiver(QString identity) : id(std::move(identity)) {
     if (!server.listen(QHostAddress::LocalHost, 0) ||
@@ -122,16 +123,22 @@ public:
     });
     connect(&eventServer, &QTcpServer::newConnection, this, [this] {
       auto *client = eventServer.nextPendingConnection();
+      eventSource = client->peerAddress();
       client->setParent(this);
       connect(client, &QTcpSocket::disconnected, client, &QObject::deleteLater);
     });
     connect(&data, &QUdpSocket::readyRead, this, [this] {
-      while (data.hasPendingDatagrams())
-        packets.append(data.receiveDatagram().data());
+      while (data.hasPendingDatagrams()) {
+        const auto datagram = data.receiveDatagram();
+        dataSource = datagram.senderAddress();
+        packets.append(datagram.data());
+      }
     });
     connect(&control, &QUdpSocket::readyRead, this, [this] {
       while (control.hasPendingDatagrams()) {
-        const auto packet = control.receiveDatagram().data();
+        const auto datagram = control.receiveDatagram();
+        controlSource = datagram.senderAddress();
+        const auto packet = datagram.data();
         if (packet.size() > 1 && uint8_t(packet[1]) == 0xd6)
           retransmits.append(packet);
       }

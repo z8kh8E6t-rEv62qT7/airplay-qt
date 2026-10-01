@@ -77,6 +77,8 @@ struct PluginRuntime::Instance {
   bool attached = false, timer = false;
   HostRecovery recovery;
   app::Timing requestTiming;
+  airplay::NetworkBinding requestBinding;
+  airplay::NetworkRoute requestRoute;
   QList<airplay::ReceiverEndpoint> requestTargets;
   uint64_t stopRevision = 0, timingRevision = 0;
   explicit Instance(PluginRuntime &owner, std::shared_ptr<PluginState> value)
@@ -138,9 +140,11 @@ struct PluginRuntime::Instance {
     release();
   }
   void start(const app::Timing &timing,
-             const QList<airplay::ReceiverEndpoint> &endpoints) {
+             const QList<airplay::ReceiverEndpoint> &endpoints,
+             const airplay::NetworkBinding &binding) {
     if (session.busy() || recovery.active())
       return;
+    requestBinding = binding;
     requestTiming = timing;
     requestTargets = endpoints;
     recovery.start();
@@ -148,6 +152,12 @@ struct PluginRuntime::Instance {
   }
   void begin(bool reconnect) {
     try {
+      if (const auto error = state->configurationError(); !error.isEmpty())
+        throw airplay::Error(error);
+      if (reconnect)
+        requestRoute.validate();
+      else
+        requestRoute = airplay::NetworkRoute::resolve(requestBinding);
       if (!state->processorAlive.load())
         throw airplay::Error("音频组件已卸载。");
       if (runtime.sender_ && runtime.sender_ != state->id)
@@ -169,8 +179,8 @@ struct PluginRuntime::Instance {
         panel->setRecoveryPending(false);
       if (reconnect)
         emit session.log("宿主已恢复，自动重建 AirPlay 会话（一次）");
-      session.start(requestTiming, stream, requestTargets,
-                    runtime.environment_);
+      session.start(requestTiming, stream, requestTargets, runtime.environment_,
+                    requestRoute);
     } catch (const std::exception &e) {
       cancel(QString::fromUtf8(e.what()));
     }
@@ -179,7 +189,14 @@ struct PluginRuntime::Instance {
     const auto stop = state->stopRevision.load();
     const auto timing = state->timingRevision.load();
     if (!state->processorAlive.load() || stop != stopRevision)
-      cancel();
+      cancel(state->configurationError());
+    if (recovery.waiting() && !requestBinding.automatic()) {
+      try {
+        requestRoute.validate();
+      } catch (const std::exception &e) {
+        cancel(QString::fromUtf8(e.what()));
+      }
+    }
     if (stop != stopRevision && panel)
       panel->clearReceiverSelection();
     stopRevision = stop;
@@ -205,10 +222,14 @@ struct PluginRuntime::Instance {
     }
     if (panel) {
       panel->setRecoveryPending(recovery.waiting());
-      if (timing != timingRevision)
+      if (timing != timingRevision) {
         panel->setTiming(state->timing());
+        panel->setNetworkBinding(state->networkBinding());
+      }
       panel->setUnavailable(state->processorAlive.load()
-                                ? state->input.unavailable()
+                                ? (state->configurationError().isEmpty()
+                                       ? state->input.unavailable()
+                                       : state->configurationError())
                                 : "音频组件已卸载。");
       if (!attached && !panel->discoveryBusy())
         panel.reset();
@@ -354,12 +375,19 @@ PluginRuntime::open(const std::shared_ptr<PluginState> &state,
   instance->attached = true;
   auto *panel = instance->panel.get();
   panel->setTiming(state->timing());
-  panel->setUnavailable(state->input.unavailable());
+  panel->setNetworkBinding(state->networkBinding());
+  panel->setUnavailable(state->configurationError().isEmpty()
+                            ? state->input.unavailable()
+                            : state->configurationError());
   panel->setRecoveryPending(instance->recovery.waiting());
   QObject::connect(panel, &ui::StreamingPanel::startRequested,
                    &instance->session, [target = instance.get(), panel] {
-                     target->start(panel->timing(), panel->endpoints());
+                     target->start(panel->timing(), panel->endpoints(),
+                                   panel->networkBinding());
                    });
+  QObject::connect(
+      panel, &ui::StreamingPanel::networkBindingChanged, &instance->session,
+      [state, panel] { state->setNetworkBinding(panel->networkBinding()); });
   QObject::connect(panel, &ui::StreamingPanel::timingChanged,
                    &instance->session,
                    [state, panel] { state->setTiming(panel->timing()); });

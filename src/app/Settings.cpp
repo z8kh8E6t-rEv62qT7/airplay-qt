@@ -43,6 +43,8 @@ QString Timing::validate() const {
   return {};
 }
 QString Settings::validate() const {
+  if (const auto error = networkBinding.validate(); !error.isEmpty())
+    return error;
   if (receiverSelection.size() > 2)
     return "保存的接收端最多为两台";
   QList<airplay::ReceiverEndpoint> endpoints;
@@ -72,16 +74,22 @@ QJsonObject Settings::json() const {
   QJsonObject times;
   for (const auto &f : timingFields)
     times.insert(f.key, timing.*(f.member));
-  return {{"version", 1},    {"driverId", driverId},
-          {"left", left},    {"right", right},
-          {"timing", times}, {"receiverSelection", selection}};
+  return {{"version", 2},
+          {"networkBinding", networkBinding.json()},
+          {"driverId", driverId},
+          {"left", left},
+          {"right", right},
+          {"timing", times},
+          {"receiverSelection", selection}};
 }
 Settings Settings::fromJson(const QJsonObject &object) {
-  if (object.value("version") != QJsonValue(1) ||
+  if (object.value("version") != QJsonValue(2) ||
       !object.value("driverId").isString() ||
       !object.value("timing").isObject())
     fail("配置结构或版本无效");
   Settings settings;
+  settings.networkBinding =
+      airplay::NetworkBinding::fromJson(object.value("networkBinding"));
   if (object.contains("receiverSelection")) {
     if (!object.value("receiverSelection").isArray())
       fail("保存的接收端列表无效");
@@ -160,18 +168,13 @@ Settings SettingsStore::load() {
 }
 void SettingsStore::commit(const Settings &value) {
   if (!writable_)
-    fail("原配置无效，禁止覆盖；请修复配置后重新启动。");
+    fail("原配置无效，禁止覆盖；请删除 " + path() + " 后重新启动。");
   value.save(path());
   value_ = value;
 }
-void SettingsStore::rememberReceivers(
-    const QList<ReceiverSelection> &receivers) {
-  auto next = value_;
-  next.receiverSelection = receivers;
-  commit(next);
-}
-void SettingsStore::saveInput(Settings value) {
-  value.receiverSelection = value_.receiverSelection;
+void SettingsStore::saveStart(
+    Settings value, const std::optional<QList<ReceiverSelection>> &selection) {
+  value.receiverSelection = selection ? *selection : value_.receiverSelection;
   commit(value);
 }
 } // namespace app

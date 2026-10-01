@@ -1,5 +1,6 @@
 #pragma once
 #include "Crypto.h"
+#include "NetworkBinding.h"
 #include <QTcpSocket>
 #include <QTimer>
 #include <QVariant>
@@ -19,7 +20,8 @@ class RtspClient : public QObject {
 public:
   explicit RtspClient(QObject *parent = nullptr);
   void open(const QHostAddress &host, quint16 port, const QString &identity,
-            double timeout, const QHostAddress &local = {});
+            double timeout, const QHostAddress &local = {},
+            const NetworkRoute &route = {});
   void request(const QByteArray &method, const QByteArray &path,
                const QByteArray &body, const QByteArray &contentType,
                double timeout);

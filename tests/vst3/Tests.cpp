@@ -314,8 +314,8 @@ private slots:
     QTest::addColumn<QString>("scenario");
     for (const auto *name :
          {"resume", "closed-editor", "manual-stop", "bypass", "state-load",
-          "format", "offline", "timeout", "reconnect-failure", "repeat-pause",
-          "stop-reconnect", "unload", "competing"})
+          "invalid-state", "format", "offline", "timeout", "reconnect-failure",
+          "repeat-pause", "stop-reconnect", "unload", "competing"})
       QTest::newRow(name) << QString::fromLatin1(name);
   }
   void runtimeRecovery() {
@@ -351,6 +351,13 @@ private slots:
     timing.requestTimeout = .3;
     timing.teardownTimeout = .1;
     panel->setTiming(timing);
+    airplay::NetworkBinding loopback;
+    for (const auto &binding : airplay::NetworkBinding::available())
+      if (binding.ipv4 == "127.0.0.1")
+        loopback = binding;
+    QVERIFY(!loopback.automatic());
+    processor->state()->setNetworkBinding(loopback);
+    panel->setNetworkBinding(loopback);
     panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
     panel->findChild<QLineEdit *>("manualFirst")
         ->setText(QString("127.0.0.1:%1").arg(receiver.port()));
@@ -412,6 +419,10 @@ private slots:
       panel->findChild<QPushButton *>("stop")->click();
     if (scenario == "bypass")
       processor->state()->input.setBypass(true);
+    if (scenario == "invalid-state") {
+      MemoryStream invalid;
+      QCOMPARE(processor->setState(&invalid), kResultFalse);
+    }
     if (scenario == "state-load") {
       MemoryStream saved;
       QCOMPARE(processor->getState(&saved), kResultOk);
@@ -452,6 +463,8 @@ private slots:
         panel = runtime.open(processor->state(), unavailableDiscovery());
         QVERIFY(panel->findChild<QPushButton *>("stop")->isEnabled());
       }
+      QCOMPARE(panel->networkBinding(), loopback);
+      QCOMPARE(receiver.dataSource, QHostAddress(loopback.ipv4));
     } else if (scenario == "reconnect-failure" || scenario == "repeat-pause" ||
                scenario == "stop-reconnect") {
       QTRY_COMPARE_WITH_TIMEOUT(receiver.connections, 2, 4000);
@@ -501,6 +514,7 @@ private slots:
     vst3::SavedState expected;
     expected.timing.lead = .125;
     expected.bypass = true;
+    expected.networkBinding = {"en-test", "192.0.2.10"};
     MemoryStream valid;
     QVERIFY(vst3::writeState(&valid, expected));
     const QByteArray bytes(valid.getData(), int(valid.getSize()));
@@ -520,6 +534,19 @@ private slots:
     QVERIFY(vst3::readState(&valid, actual));
     QCOMPARE(actual.timing.lead, .125);
     QVERIFY(actual.bypass);
+    QCOMPARE(actual.networkBinding, expected.networkBinding);
+    auto old = bytes;
+    old[4] = 1;
+    MemoryStream legacy;
+    int32 legacyWritten = 0;
+    legacy.write(old.data(), old.size(), &legacyWritten);
+    legacy.seek(0, IBStream::kIBSeekSet, nullptr);
+    vst3::Processor processor;
+    QCOMPARE(processor.setState(&legacy), kResultFalse);
+    QVERIFY(processor.state()->invalidConfiguration.load());
+    QVERIFY(processor.state()->configurationError().contains("重新添加"));
+    MemoryStream rejectedSave;
+    QCOMPARE(processor.getState(&rejectedSave), kResultFalse);
     for (const int offset : {0, 4, 8, 116}) {
       auto changed = bytes;
       changed[offset] = char(255);
@@ -591,20 +618,36 @@ private slots:
       timing.lead = .75;
       panel->setTiming(timing);
       emit panel->timingChanged();
+      const airplay::NetworkBinding binding{"unavailable-test", "192.0.2.10"};
+      panel->setNetworkBinding(binding);
+      emit panel->networkBindingChanged();
       runtime.close(processor.state()->id);
       panel = runtime.open(processor.state(), api);
       QCOMPARE(panel->timing().lead, .75);
+      QCOMPARE(panel->networkBinding(), binding);
       panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
       panel->findChild<QLineEdit *>("manualFirst")->setText("127.0.0.1:7000");
       MemoryStream saved;
       QCOMPARE(processor.getState(&saved), kResultOk);
       saved.seek(0, IBStream::kIBSeekSet, nullptr);
+      panel->setNetworkBinding({});
+      emit panel->networkBindingChanged();
       QCOMPARE(processor.setState(&saved), kResultOk);
       runtime.pump();
+      QCOMPARE(panel->networkBinding(), binding);
       QVERIFY(panel->findChild<QLineEdit *>("manualFirst")->text().isEmpty());
       QVERIFY(!panel->findChild<QPushButton *>("start")->isEnabled());
       QVERIFY(panel->grab().save(QCoreApplication::applicationDirPath() +
                                  "/VstStreamingPanel.png"));
+      MemoryStream broken;
+      QCOMPARE(processor.setState(&broken), kResultFalse);
+      runtime.pump();
+      runtime.close(processor.state()->id);
+      panel = runtime.open(processor.state(), api);
+      QVERIFY(panel->findChild<QLabel *>("receiverSummary")
+                  ->text()
+                  .contains("重新添加"));
+      QVERIFY(!panel->findChild<QPushButton *>("start")->isEnabled());
       runtime.close(processor.state()->id);
 #ifdef Q_OS_WIN
       QCOMPARE(GetPriorityClass(GetCurrentProcess()), priority);

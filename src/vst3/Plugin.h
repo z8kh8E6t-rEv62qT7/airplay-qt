@@ -59,6 +59,7 @@ public:
   Steinberg::IPlugView *PLUGIN_API createView(Steinberg::FIDString) override;
 
 private:
+  bool invalidComponentState_ = false;
   std::shared_ptr<PluginState> state_;
 };
 } // namespace vst3

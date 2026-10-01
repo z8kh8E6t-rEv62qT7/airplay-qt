@@ -34,7 +34,7 @@ public:
   Q_ENUM(State)
   AirPlaySession(app::Timing timing, audio::CaptureStream stream,
                  QList<ReceiverEndpoint> endpoints, QObject *parent = nullptr,
-                 SessionEnvironment environment = {});
+                 SessionEnvironment environment = {}, NetworkRoute route = {});
   ~AirPlaySession() override;
   void start();
   void captureStarted();
@@ -74,6 +74,8 @@ private:
   void fail(const std::exception &error);
   app::Timing timing_;
   SessionEnvironment environment_;
+  NetworkRoute route_;
+  QTimer networkCheck_;
   QList<ReceiverEndpoint> endpoints_;
   audio::CaptureStream stream_;
   std::vector<std::unique_ptr<Peer>> peers_;

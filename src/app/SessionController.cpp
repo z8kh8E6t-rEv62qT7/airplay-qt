@@ -54,7 +54,8 @@ void SessionController::shutdown() {
 }
 void SessionController::start(const Timing &timing, audio::CaptureStream stream,
                               const QList<airplay::ReceiverEndpoint> &endpoints,
-                              airplay::SessionEnvironment environment) {
+                              airplay::SessionEnvironment environment,
+                              airplay::NetworkRoute route) {
   if (busy_)
     return;
   airplay::validateEndpoints(endpoints);
@@ -70,9 +71,10 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
   if (timing.lead < .5)
     emit log("播放提前量较低，接收端可能晚到；不保证零延迟。");
   QMetaObject::invokeMethod(worker_, [this, context = network_, timing, stream,
-                                      endpoints, generation, environment] {
+                                      endpoints, generation, environment,
+                                      route] {
     auto *session = new airplay::AirPlaySession(timing, stream, endpoints,
-                                                worker_, environment);
+                                                worker_, environment, route);
     context->session = session;
     // Every delivery is tagged; events from a prior session cannot update a
     // replacement session or reopen its producer gate.

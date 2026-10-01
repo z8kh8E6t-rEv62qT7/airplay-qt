@@ -112,6 +112,20 @@ struct FakeDns {
 class DiscoveryTests : public QObject {
   Q_OBJECT
 private slots:
+  void scopedDiscovery() {
+    const auto choices = NetworkBinding::available();
+    QVERIFY(!choices.isEmpty());
+    const auto index = NetworkRoute::resolve(choices.first()).index;
+    FakeDns fake;
+    ReceiverDiscovery discovery(nullptr, fake.api());
+    discovery.refresh(choices.first());
+    QCOMPARE(fake.browse.InterfaceIndex, index);
+    fake.advertise({"Speaker"});
+    QTRY_COMPARE(fake.requests.size(), 1);
+    QCOMPARE(fake.requests.first().request.InterfaceIndex, index);
+    discovery.cancel();
+    QTRY_VERIFY(!discovery.busy());
+  }
   void incrementalDedupAndInvalidResults() {
     FakeDns dns;
     ReceiverDiscovery discovery(nullptr, dns.api());
@@ -125,8 +139,7 @@ private slots:
     dns.finish(0, "same name", "192.168.8.9", 7001);
     QTRY_COMPARE(found.size(), 1);
     QCOMPARE(dns.requests.size(), 4);
-    QCOMPARE(found[0][1].toString(),
-             QString("192.168.8.9:7001"));
+    QCOMPARE(found[0][1].toString(), QString("192.168.8.9:7001"));
     dns.finish(0, "same name", "192.168.8.10");
     dns.finish(0, "alias", "192.168.8.9", 7001);
     dns.finish(0, "IPv6 only", "");

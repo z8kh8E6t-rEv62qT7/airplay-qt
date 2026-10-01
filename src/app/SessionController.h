@@ -12,7 +12,8 @@ public:
   void shutdown();
   void start(const Timing &, audio::CaptureStream,
              const QList<airplay::ReceiverEndpoint> &,
-             airplay::SessionEnvironment environment = {});
+             airplay::SessionEnvironment environment = {},
+             airplay::NetworkRoute route = {});
   void captureStarted();
   void stop(const QString &reason = {},
             airplay::SessionEnd end = airplay::SessionEnd::Stopped);

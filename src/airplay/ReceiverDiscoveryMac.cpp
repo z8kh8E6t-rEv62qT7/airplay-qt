@@ -63,6 +63,7 @@ struct ReceiverDiscovery::State {
   DiscoveryApi api;
   QTimer deadline;
   quint64 generation = 0;
+  uint selectedIndex = 0;
   std::shared_ptr<Operation> browse;
   QList<std::shared_ptr<Operation>> resolving;
   QList<Service> pending;
@@ -125,6 +126,8 @@ struct ReceiverDiscovery::State {
       op.post([error](Operation &o) { o.owner.failed(o, error); });
       return;
     }
+    if (op.owner.selectedIndex && interface != op.owner.selectedIndex)
+      return;
     if (!(flags & kDNSServiceFlagsAdd) || !name || !type || !domain)
       return;
     Service service{name, type, domain, interface};
@@ -153,6 +156,8 @@ struct ReceiverDiscovery::State {
     if (op.complete)
       return;
     op.complete = true;
+    if (op.owner.selectedIndex)
+      interface = op.owner.selectedIndex;
     const QByteArray hostname = host ? host : "";
     op.post([error, hostname, port, interface](Operation &o) {
       if (error || hostname.isEmpty() || !port) {
@@ -234,15 +239,22 @@ struct ReceiverDiscovery::State {
       }
     }
   }
-  void refresh() {
+  void refresh(const NetworkBinding &binding) {
     clear();
     seen.clear();
     endpoints.clear();
     emit object.cleared();
+    try {
+      selectedIndex = NetworkRoute::resolve(binding).index;
+    } catch (const std::exception &e) {
+      emit object.status(QString::fromUtf8(e.what()));
+      emit object.idle();
+      return;
+    }
     auto op = std::make_shared<Operation>(*this);
     browse = op;
-    const auto error = api.browse(&op->ref, 0, 0, "_airplay._tcp", "local.",
-                                  browsed, op.get());
+    const auto error = api.browse(&op->ref, 0, selectedIndex, "_airplay._tcp",
+                                  "local.", browsed, op.get());
     if (error) {
       failed(*op, error);
       return;
@@ -264,7 +276,9 @@ const DiscoveryApi &defaultDiscoveryApi() {
 ReceiverDiscovery::ReceiverDiscovery(QObject *parent, const DiscoveryApi &api)
     : QObject(parent), state_(std::make_unique<State>(*this, api)) {}
 ReceiverDiscovery::~ReceiverDiscovery() = default;
-void ReceiverDiscovery::refresh() { state_->refresh(); }
+void ReceiverDiscovery::refresh(const NetworkBinding &binding) {
+  state_->refresh(binding);
+}
 void ReceiverDiscovery::cancel() { state_->cancel(); }
 bool ReceiverDiscovery::busy() const {
   return bool(state_->browse) || !state_->resolving.isEmpty();

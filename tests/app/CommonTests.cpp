@@ -9,6 +9,51 @@
 class CommonAppTests : public QObject {
   Q_OBJECT
 private slots:
+  void networkConfigurationAndUi() {
+    app::Settings settings;
+    settings.networkBinding = {"en-test", "192.0.2.10"};
+    auto json = settings.json();
+    QCOMPARE(json["version"].toInt(), 2);
+    QCOMPARE(app::Settings::fromJson(json).networkBinding,
+             settings.networkBinding);
+    json["version"] = 1;
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
+    json["version"] = 2;
+    json.remove("networkBinding");
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
+    QTemporaryDir dir;
+    app::SettingsStore store(dir.filePath("config.json"));
+    store.load();
+    QList<app::ReceiverSelection> selection{{"L", "192.0.2.1:7000"}};
+    store.saveStart(settings, selection);
+    QCOMPARE(app::Settings::load(dir.filePath("config.json")).networkBinding,
+             settings.networkBinding);
+    auto invalid = settings;
+    invalid.networkBinding.ipv4 = "invalid";
+    QVERIFY_THROWS_EXCEPTION(
+        std::runtime_error,
+        store.saveStart(invalid, QList<app::ReceiverSelection>{}));
+    QCOMPARE(app::Settings::load(dir.filePath("config.json")).receiverSelection,
+             selection);
+    app::SessionController session;
+    ui::StreamingPanel panel(session);
+    panel.setNetworkBinding(settings.networkBinding);
+    QCOMPARE(panel.networkBinding(), settings.networkBinding);
+    auto *combo = panel.findChild<QComboBox *>("networkBinding");
+    QVERIFY(combo->currentText().contains("不可用"));
+    auto *refresh = panel.findChild<QPushButton *>("refreshNetwork");
+    refresh->click();
+    QCOMPARE(panel.networkBinding(), settings.networkBinding);
+    panel.setRecoveryPending(true);
+    QVERIFY(!combo->isEnabled() && !refresh->isEnabled());
+    panel.setRecoveryPending(false);
+    QVERIFY(combo->isEnabled() && refresh->isEnabled());
+    QSignalSpy changes(&panel, &ui::StreamingPanel::networkBindingChanged);
+    combo->setCurrentIndex(0);
+    QCOMPARE(changes.size(), 1);
+    QVERIFY(panel.networkBinding().automatic());
+    panel.cancelDiscovery();
+  }
   void discoverySortsNumericAddressAndPortWithoutLosingSelection() {
     app::SessionController session;
     ui::StreamingPanel panel(session);
@@ -41,15 +86,17 @@ private slots:
     const auto path = dir.filePath("AirPlayQt.json");
     app::SettingsStore store(path);
     QVERIFY(!store.writable());
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, store.rememberReceivers({}));
+    QVERIFY_THROWS_EXCEPTION(
+        std::runtime_error,
+        store.saveStart({}, QList<app::ReceiverSelection>{}));
     QCOMPARE(store.load().receiverSelection.size(), 0);
     const QList<app::ReceiverSelection> pair{{"L", "192.0.2.1:7000"},
                                              {"R", "192.0.2.2:7001"}};
-    store.rememberReceivers(pair);
+    store.saveStart({}, pair);
     QCOMPARE(app::Settings::load(path).receiverSelection, pair);
     app::Settings inputs;
     inputs.driverId = "new-input";
-    store.saveInput(
+    store.saveStart(
         inputs); // A manual-mode start cannot clear discovery memory.
     QCOMPARE(app::Settings::load(path).receiverSelection, pair);
     QCOMPARE(app::Settings::load(path).driverId, inputs.driverId);
@@ -67,25 +114,27 @@ private slots:
       QVERIFY_THROWS_EXCEPTION(std::runtime_error,
                                app::Settings::fromJson(bad));
     }
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
-                             store.rememberReceivers({pair[0], pair[0]}));
     QVERIFY_THROWS_EXCEPTION(
         std::runtime_error,
-        store.rememberReceivers({pair[0], pair[1], pair[0]}));
+        store.saveStart({}, QList<app::ReceiverSelection>{pair[0], pair[0]}));
+    QVERIFY_THROWS_EXCEPTION(
+        std::runtime_error,
+        store.saveStart(
+            {}, QList<app::ReceiverSelection>{pair[0], pair[1], pair[0]}));
     QCOMPARE(app::Settings::load(path).receiverSelection, pair);
     QFile corrupt(path);
     QVERIFY(corrupt.open(QIODevice::WriteOnly));
     corrupt.write("{broken");
     corrupt.close();
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, store.load());
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, store.rememberReceivers(pair));
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, store.saveInput(inputs));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error, store.saveStart({}, pair));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error, store.saveStart(inputs));
     QVERIFY(corrupt.open(QIODevice::ReadOnly));
     QCOMPARE(corrupt.readAll(), QByteArray("{broken"));
     app::SettingsStore unwritable(dir.filePath("missing/config.json"));
     unwritable.load();
     QVERIFY_THROWS_EXCEPTION(std::runtime_error,
-                             unwritable.rememberReceivers(pair));
+                             unwritable.saveStart({}, pair));
     QVERIFY(unwritable.receivers().isEmpty());
   }
   void restoreCompleteSelectionAndUserOverride() {
@@ -248,7 +297,7 @@ private slots:
     json["left"] = 1.5;
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
     json = app::Settings{}.json();
-    json["version"] = 2;
+    json["version"] = 1;
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
     json = app::Settings{}.json();
     json["timing"] = QJsonObject{};

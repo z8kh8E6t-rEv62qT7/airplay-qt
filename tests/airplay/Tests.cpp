@@ -4,10 +4,18 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkDatagram>
+#include <QNetworkProxy>
 #include <QRegularExpression>
 #include <QTcpServer>
 #include <QtTest>
 #include <openssl/bn.h>
+#ifdef Q_OS_WIN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 
 using namespace airplay;
 namespace {
@@ -70,6 +78,160 @@ struct SessionFixture {
 class ProtocolTests : public QObject {
   Q_OBJECT
 private slots:
+  void networkBindingAndNativeSockets() {
+    QVERIFY(NetworkBinding{}.json().isNull());
+    QVERIFY(NetworkBinding::fromJson(QJsonValue(QJsonValue::Null)).automatic());
+    for (const auto value :
+         {QJsonValue(QJsonValue::Undefined), QJsonValue(true),
+          QJsonValue(QJsonObject{}),
+          QJsonValue(QJsonObject{{"interfaceName", "x"}, {"ipv4", "127.1"}})})
+      QVERIFY_THROWS_EXCEPTION(Error, NetworkBinding::fromJson(value));
+    QVERIFY_THROWS_EXCEPTION(
+        Error, NetworkRoute::resolve({"missing-airplayqt", "192.0.2.1"}));
+    const auto choices = NetworkBinding::available();
+    const auto it =
+        std::find_if(choices.begin(), choices.end(),
+                     [](const auto &v) { return v.ipv4 == "127.0.0.1"; });
+    QVERIFY(it != choices.end());
+    const auto route = NetworkRoute::resolve(*it);
+    QCOMPARE(NetworkBinding::fromJson(it->json()), *it);
+    auto stale = route;
+    ++stale.index;
+    QVERIFY_THROWS_EXCEPTION(Error, stale.validate());
+    stale = route;
+    stale.local = QHostAddress("192.0.2.250");
+    QVERIFY_THROWS_EXCEPTION(Error, stale.validate());
+    auto checkOption = [&](QAbstractSocket &socket) {
+#ifdef Q_OS_WIN
+      DWORD actual = 0;
+      int size = sizeof(actual);
+      QCOMPARE(getsockopt(SOCKET(socket.socketDescriptor()), IPPROTO_IP,
+                          IP_UNICAST_IF, reinterpret_cast<char *>(&actual),
+                          &size),
+               0);
+      QCOMPARE(ntohl(actual), route.index);
+#else
+      int actual = 0;
+      socklen_t size = sizeof(actual);
+      QCOMPARE(getsockopt(int(socket.socketDescriptor()), IPPROTO_IP,
+                          IP_BOUND_IF, &actual, &size),
+               0);
+      QCOMPARE(uint(actual), route.index);
+#endif
+      QCOMPARE(socket.proxy().type(), QNetworkProxy::NoProxy);
+    };
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QTcpSocket tcp;
+    route.bind(tcp);
+    checkOption(tcp);
+    tcp.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QTRY_VERIFY(server.hasPendingConnections());
+    std::unique_ptr<QTcpSocket> accepted(server.nextPendingConnection());
+    QCOMPARE(accepted->peerAddress(), route.local);
+    QUdpSocket udp, receiver;
+    QVERIFY(receiver.bind(QHostAddress::LocalHost, 0));
+    route.bind(udp);
+    checkOption(udp);
+    QCOMPARE(udp.writeDatagram("test", QHostAddress::LocalHost,
+                               receiver.localPort()),
+             4);
+    QTRY_VERIFY(receiver.hasPendingDatagrams());
+    QCOMPARE(receiver.receiveDatagram().senderAddress(), route.local);
+    QUdpSocket multicastReceiver;
+    route.bind(multicastReceiver, 0, true);
+    checkOption(multicastReceiver);
+    QNetworkDatagram packet("ptp-source", QHostAddress::LocalHost,
+                            receiver.localPort());
+    packet.setSender(route.local, multicastReceiver.localPort());
+    QCOMPARE(multicastReceiver.writeDatagram(packet), 10);
+    QTRY_VERIFY(receiver.hasPendingDatagrams());
+    QCOMPARE(receiver.receiveDatagram().senderAddress(), route.local);
+    QUdpSocket collision;
+    QVERIFY_THROWS_EXCEPTION(Error, route.bind(collision, udp.localPort()));
+    QCOMPARE(collision.state(), QAbstractSocket::UnconnectedState);
+  }
+  void boundSession() {
+    NetworkBinding binding;
+    for (const auto &v : NetworkBinding::available())
+      if (v.ipv4 == "127.0.0.1")
+        binding = v;
+    QVERIFY(!binding.automatic());
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment, NetworkRoute::resolve(binding));
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        f.left.packets.size() >= 4 && f.right.packets.size() >= 4, 4000);
+    QCOMPARE(f.left.socket->peerAddress(), QHostAddress(binding.ipv4));
+    QCOMPARE(f.right.socket->peerAddress(), QHostAddress(binding.ipv4));
+    for (const auto *receiver : {&f.left, &f.right}) {
+      QCOMPARE(receiver->eventSource, QHostAddress(binding.ipv4));
+      QCOMPARE(receiver->dataSource, QHostAddress(binding.ipv4));
+      QTRY_COMPARE(receiver->controlSource, QHostAddress(binding.ipv4));
+    }
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+    QVERIFY(done[0][0].toString().isEmpty());
+  }
+  void boundPtpNative() {
+    NetworkBinding binding;
+    for (const auto &v : NetworkBinding::available())
+      if (v.ipv4 == "127.0.0.1")
+        binding = v;
+    QVERIFY(!binding.automatic());
+    QUdpSocket eventProbe, generalProbe;
+    if (!eventProbe.bind(QHostAddress::AnyIPv4, 319,
+                         QUdpSocket::DontShareAddress) ||
+        !generalProbe.bind(QHostAddress::AnyIPv4, 320,
+                           QUdpSocket::DontShareAddress))
+      QSKIP("PTP 319/320 occupied by another process; native PTP success path "
+            "not verified");
+    eventProbe.close();
+    generalProbe.close();
+    PtpClock clock;
+    QSignalSpy errors(&clock, &PtpClock::failed);
+    clock.start(QHostAddress(binding.ipv4), {QHostAddress::LocalHost}, 42,
+                app::Timing{}, NetworkRoute::resolve(binding));
+    QTest::qWait(150);
+    QCOMPARE(errors.size(), 0);
+    clock.stop();
+    // The real PTP sockets must release both fixed ports on stop.
+    QUdpSocket event, general;
+    QVERIFY(
+        event.bind(QHostAddress::AnyIPv4, 319, QUdpSocket::DontShareAddress));
+    QVERIFY(
+        general.bind(QHostAddress::AnyIPv4, 320, QUdpSocket::DontShareAddress));
+  }
+  void failureDuringInterruptionCleanup() {
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY_WITH_TIMEOUT(f.left.packets.size() >= 4, 4000);
+    session.stop({}, SessionEnd::HostInterrupted);
+    session.stop("指定网卡已失效");
+    session.stop("后续故障");
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(done[0][0].toString(), QString("指定网卡已失效"));
+    QCOMPARE(done[0][1].toInt(), int(SessionEnd::Failure));
+  }
+  void invalidBindingNeverConnects() {
+    SessionFixture f;
+    AirPlaySession session(
+        f.timing, f.stream, f.endpoints, nullptr, f.environment,
+        {{"missing-airplayqt", "192.0.2.1"}, 1, QHostAddress("192.0.2.1")});
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(done[0][1].toInt(), int(SessionEnd::Failure));
+    QVERIFY(done[0][0].toString().contains("网卡"));
+    QVERIFY(!f.left.socket && !f.right.socket);
+  }
   void endpointValidation() {
     QCOMPARE(parseReceiverEndpoint("192.168.8.9").text(),
              QString("192.168.8.9:7000"));

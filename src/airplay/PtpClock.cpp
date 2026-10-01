@@ -75,8 +75,10 @@ PtpClock::PtpClock(QObject *parent) : QObject(parent) {
 }
 void PtpClock::start(const QHostAddress &local,
                      const QList<QHostAddress> &hosts, uint64_t id,
-                     const app::Timing &timing) {
+                     const app::Timing &timing, const NetworkRoute &route) {
   stop();
+  route_ = route;
+  route_.validate();
   hosts_ = hosts;
   identity_ = id;
   timing_ = timing;
@@ -86,13 +88,17 @@ void PtpClock::start(const QHostAddress &local,
     for (const auto &address : iface.addressEntries())
       if (address.ip() == local)
         selected = iface;
+  if (!route.binding.automatic())
+    selected = QNetworkInterface::interfaceFromIndex(int(route.index));
   if (!selected.isValid())
     throw Error("无法确定 PTP 本地网卡");
   try {
     for (auto [socket, port] :
          {std::pair{&event_, 319}, std::pair{&general_, 320}}) {
-      if (!socket->bind(QHostAddress::AnyIPv4, quint16(port),
-                        QUdpSocket::DontShareAddress))
+      if (!route.binding.automatic())
+        route.bind(*socket, quint16(port), true);
+      else if (!socket->bind(QHostAddress::AnyIPv4, quint16(port),
+                             QUdpSocket::DontShareAddress))
         throw Error(QString("PTP UDP %1 绑定失败：%2")
                         .arg(port)
                         .arg(socket->errorString()));
@@ -119,9 +125,13 @@ void PtpClock::stop() {
 void PtpClock::send(QUdpSocket &socket, quint16 port, const QByteArray &packet,
                     const QHostAddress &host) {
   for (const auto &receiver : hosts_)
-    if (host.isNull() || receiver == host)
-      if (socket.writeDatagram(packet, receiver, port) != packet.size())
+    if (host.isNull() || receiver == host) {
+      QNetworkDatagram datagram(packet, receiver, port);
+      if (!route_.binding.automatic())
+        datagram.setSender(route_.local, socket.localPort());
+      if (socket.writeDatagram(datagram) != packet.size())
         throw Error("PTP 发送失败：" + socket.errorString());
+    }
 }
 void PtpClock::tick() {
   if (!active_)

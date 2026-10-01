@@ -1,4 +1,5 @@
 #pragma once
+#include "NetworkBinding.h"
 #include "ReceiverEndpoint.h"
 #include <QObject>
 #include <memory>
@@ -11,7 +12,7 @@ public:
   explicit ReceiverDiscovery(QObject *parent = nullptr,
                              const DiscoveryApi &api = defaultDiscoveryApi());
   ~ReceiverDiscovery() override;
-  void refresh();
+  void refresh(const NetworkBinding &binding = {});
   void cancel();
   bool busy() const;
 signals:

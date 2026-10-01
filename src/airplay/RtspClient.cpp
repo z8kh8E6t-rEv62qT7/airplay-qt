@@ -229,13 +229,20 @@ RtspClient::RtspClient(QObject *parent) : QObject(parent) {
 }
 void RtspClient::open(const QHostAddress &host, quint16 port,
                       const QString &identity, double timeout,
-                      const QHostAddress &local) {
+                      const QHostAddress &local, const NetworkRoute &route) {
   abort();
   identity_ = identity.toLatin1();
   cseq_ = 0;
   session_.clear();
   closed_ = false;
-  if (!local.isNull() && !socket_.bind(local, 0)) {
+  if (!route.binding.automatic()) {
+    try {
+      route.bind(socket_);
+    } catch (const std::exception &e) {
+      fail(QString::fromUtf8(e.what()));
+      return;
+    }
+  } else if (!local.isNull() && !socket_.bind(local, 0)) {
     fail(socket_.errorString());
     return;
   }

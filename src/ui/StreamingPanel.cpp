@@ -24,6 +24,15 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   title_->setStyleSheet("font-size: 22px; font-weight: 600; padding: 8px 0;");
   layout->addWidget(title_);
   layout->addWidget(new QLabel("44.1 kHz / 16-bit / 双声道 · 不重采样"));
+  auto *networkRow = new QHBoxLayout;
+  networkRow->addWidget(new QLabel("发送网卡"));
+  network_ = new QComboBox;
+  network_->setObjectName("networkBinding");
+  refreshNetwork_ = new QPushButton("刷新网卡");
+  refreshNetwork_->setObjectName("refreshNetwork");
+  networkRow->addWidget(network_, 1);
+  networkRow->addWidget(refreshNetwork_);
+  layout->addLayout(networkRow);
   receiverModes_ = new QTabWidget;
   receiverModes_->setObjectName("receiverModes");
   auto *discovered = new QWidget;
@@ -139,12 +148,8 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   log_->setReadOnly(true);
   log_->setMaximumBlockCount(1000);
   layout->addWidget(log_, 1);
-  connect(&discovery_, &airplay::ReceiverDiscovery::cleared, this, [this] {
-    QSignalBlocker block(receivers_);
-    receivers_->clear();
-    restoreReceiversAllowed_ = true;
-    updateTargets();
-  });
+  connect(&discovery_, &airplay::ReceiverDiscovery::cleared, this,
+          &StreamingPanel::clearDiscoveredReceivers);
   connect(&discovery_, &airplay::ReceiverDiscovery::status, discoveryStatus_,
           &QLabel::setText);
   connect(&discovery_, &airplay::ReceiverDiscovery::found, this,
@@ -208,6 +213,16 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   for (auto *field : {manualFirst_, manualSecond_})
     connect(field, &QLineEdit::textChanged, this,
             &StreamingPanel::updateTargets);
+  refreshNetworks();
+  connect(network_, &QComboBox::currentIndexChanged, this, [this] {
+    emit networkBindingChanged();
+    restartDiscovery();
+  });
+  connect(refreshNetwork_, &QPushButton::clicked, this, [this] {
+    refreshNetworks();
+    updateTargets();
+    scan();
+  });
   updateTargets();
   connect(&session_, &app::SessionController::status, state_, &QLabel::setText);
   connect(&session_, &app::SessionController::log, this,
@@ -264,6 +279,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     mute_->setChecked(false);
     volumePending_ = false;
     try {
+      airplay::NetworkRoute::resolve(networkBinding());
       endpoints(); // Validate before canceling discovery and notifying
                    // consumers.
       discovery_.cancel();
@@ -304,6 +320,36 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   volume_->setEnabled(streaming_ && !mute_->isChecked());
   applyVolume_->setEnabled(streaming_ && !mute_->isChecked());
   mute_->setEnabled(streaming_);
+}
+airplay::NetworkBinding StreamingPanel::networkBinding() const {
+  return {network_->currentData(Qt::UserRole).toString(),
+          network_->currentData(Qt::UserRole + 1).toString()};
+}
+void StreamingPanel::refreshNetworks() { setNetworkBinding(networkBinding()); }
+void StreamingPanel::setNetworkBinding(const airplay::NetworkBinding &value) {
+  const auto previous = networkBinding();
+  QSignalBlocker block(network_);
+  network_->clear();
+  network_->addItem("自动（系统路由）", QString{});
+  int selected = 0;
+  for (const auto &binding : airplay::NetworkBinding::available()) {
+    network_->addItem(binding.interfaceName + " · " + binding.ipv4,
+                      binding.interfaceName);
+    const int row = network_->count() - 1;
+    network_->setItemData(row, binding.ipv4, Qt::UserRole + 1);
+    if (binding == value)
+      selected = row;
+  }
+  if (!value.automatic() && !selected) {
+    network_->addItem(value.interfaceName + " · " + value.ipv4 + "（不可用）",
+                      value.interfaceName);
+    selected = network_->count() - 1;
+    network_->setItemData(selected, value.ipv4, Qt::UserRole + 1);
+  }
+  network_->setCurrentIndex(selected);
+  updateTargets();
+  if (discoveryStarted_ && previous != value)
+    restartDiscovery();
 }
 QList<airplay::ReceiverEndpoint> StreamingPanel::endpoints() const {
   QList<airplay::ReceiverEndpoint> result;
@@ -367,6 +413,7 @@ void StreamingPanel::restoreReceivers() {
 }
 void StreamingPanel::updateTargets() {
   try {
+    airplay::NetworkRoute::resolve(networkBinding());
     const auto selected = endpoints();
     QStringList addresses;
     for (const auto &endpoint : selected)
@@ -386,10 +433,21 @@ void StreamingPanel::updateTargets() {
     start_->setEnabled(false);
   }
 }
+void StreamingPanel::clearDiscoveredReceivers() {
+  QSignalBlocker block(receivers_);
+  receivers_->clear();
+  restoreReceiversAllowed_ = true;
+  updateTargets();
+}
+void StreamingPanel::restartDiscovery() {
+  discovery_.cancel();
+  clearDiscoveredReceivers();
+  scan();
+}
 void StreamingPanel::scan() {
   if (!busy_ && !recoveryPending_ && !closing_ &&
       receiverModes_->currentIndex() == 0)
-    discovery_.refresh();
+    discovery_.refresh(networkBinding());
 }
 app::Timing StreamingPanel::timing() const {
   app::Timing value;
@@ -401,6 +459,8 @@ void StreamingPanel::setBusy(bool busy) {
   busy_ = busy;
   const bool engaged = busy || recoveryPending_;
   receiverModes_->setEnabled(!engaged);
+  network_->setEnabled(!engaged);
+  refreshNetwork_->setEnabled(!engaged);
   defaults_->setEnabled(!engaged);
   for (auto *field : timings_)
     field->setEnabled(!engaged);
@@ -445,6 +505,7 @@ void StreamingPanel::cancelDiscovery() {
   updateTargets();
 }
 void StreamingPanel::beginDiscovery() {
+  discoveryStarted_ = true;
   closing_ = false;
   scan();
 }

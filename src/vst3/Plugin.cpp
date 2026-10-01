@@ -1,6 +1,6 @@
 #include "Plugin.h"
-#include "PluginRuntime.h"
 #include "PluginEditor.h"
+#include "PluginRuntime.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include <cmath>
 #include <cstring>
@@ -111,7 +111,10 @@ tresult PLUGIN_API Processor::process(ProcessData &data) {
   return kResultOk;
 }
 tresult PLUGIN_API Processor::getState(IBStream *stream) {
-  return writeState(stream, {state_->timing(), state_->input.bypass()})
+  if (state_->invalidConfiguration.load())
+    return kResultFalse;
+  return writeState(stream, {state_->timing(), state_->input.bypass(),
+                             state_->networkBinding()})
              ? kResultOk
              : kResultFalse;
 }
@@ -119,8 +122,12 @@ tresult PLUGIN_API Processor::setState(IBStream *stream) {
   state_->input.stateLoad();
   ++state_->stopRevision;
   SavedState value;
-  if (!readState(stream, value))
+  if (!readState(stream, value)) {
+    state_->invalidConfiguration = true;
     return kResultFalse;
+  }
+  state_->invalidConfiguration = false;
+  state_->setNetworkBinding(value.networkBinding);
   state_->setTiming(value.timing);
   state_->input.setBypass(value.bypass);
   return kResultOk;
@@ -169,14 +176,24 @@ tresult PLUGIN_API EditController::notify(IMessage *message) {
     if (message->getAttributes()->getInt("id", id) != kResultOk || id <= 0)
       return kInvalidArgument;
     state_ = PluginState::find(uint64_t(id));
+    if (state_ && invalidComponentState_) {
+      state_->invalidConfiguration = true;
+      ++state_->stopRevision;
+    }
     return state_ ? kResultOk : kResultFalse;
   }
   return Steinberg::Vst::EditController::notify(message);
 }
 tresult PLUGIN_API EditController::setComponentState(IBStream *stream) {
   SavedState value;
-  if (!readState(stream, value))
+  invalidComponentState_ = !readState(stream, value);
+  if (invalidComponentState_) {
+    if (state_) {
+      state_->invalidConfiguration = true;
+      ++state_->stopRevision;
+    }
     return kResultFalse;
+  }
   setParamNormalized(bypassId, value.bypass ? 1 : 0);
   return kResultOk;
 }

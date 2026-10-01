@@ -36,7 +36,7 @@ endif()
 add_library(airplay_core STATIC
   src/app/Settings.cpp
   src/audio/PcmConverter.cpp src/app/SessionController.cpp
-  src/airplay/Crypto.cpp src/airplay/RtspClient.cpp
+  src/airplay/Crypto.cpp src/airplay/RtspClient.cpp src/airplay/NetworkBinding.cpp
   src/airplay/ReceiverEndpoint.cpp src/airplay/ReceiverDiscovery.h
   src/airplay/PtpClock.cpp src/airplay/AirPlaySession.cpp)
 target_include_directories(airplay_core PUBLIC src)
@@ -47,7 +47,7 @@ target_link_libraries(airplay_core PUBLIC Qt6::Core Qt6::Network OpenSSL::Crypto
 if(WIN32)
   target_sources(airplay_core PRIVATE src/airplay/ReceiverDiscoveryWindows.cpp)
   target_compile_definitions(airplay_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(airplay_core PUBLIC ole32 advapi32 winmm dnsapi)
+  target_link_libraries(airplay_core PUBLIC ole32 advapi32 winmm dnsapi ws2_32)
 else()
   target_sources(airplay_core PRIVATE src/airplay/ReceiverDiscoveryMac.cpp)
   target_link_libraries(airplay_core PRIVATE "-framework CoreFoundation")
