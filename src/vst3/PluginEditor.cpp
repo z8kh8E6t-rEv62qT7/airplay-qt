@@ -142,10 +142,6 @@ private:
     auto font = QApplication::font();
     font.setPointSizeF(font.pointSizeF() * ratio);
     panel_->setFont(font);
-    if (auto *title = panel_->findChild<QLabel *>("streamingTitle"))
-      title->setStyleSheet(
-          QString("font-size: %1px; font-weight: 600; padding: 8px 0;")
-              .arg(22 * ratio));
   }
   void detachPanel() {
     if (panel_) {

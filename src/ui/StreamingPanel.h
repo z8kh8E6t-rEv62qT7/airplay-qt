@@ -81,7 +81,7 @@ private:
   QListWidget *receivers_;
   QLineEdit *manualFirst_, *manualSecond_;
   QPushButton *refresh_, *start_, *stop_, *defaults_, *applyVolume_;
-  QLabel *title_, *targets_, *discoveryStatus_, *state_, *group_, *stats_;
+  QLabel *targets_, *discoveryStatus_, *state_, *group_, *stats_;
   QProgressBar *leftLevel_, *rightLevel_;
   QDoubleSpinBox *volume_;
   QCheckBox *mute_;

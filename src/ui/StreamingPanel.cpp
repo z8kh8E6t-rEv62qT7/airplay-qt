@@ -20,15 +20,12 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     : QWidget(parent), discovery_(this, std::move(discoveryApi)),
       session_(session) {
   auto *layout = new QVBoxLayout(this);
-  title_ = label(i18n::text(i18n::Id::AudioInputAirPlayReceivers));
-  title_->setObjectName("streamingTitle");
-  title_->setStyleSheet("font-size: 22px; font-weight: 600; padding: 8px 0;");
-  auto *titleRow = new QHBoxLayout;
-  titleRow->addWidget(title_, 1);
+  auto *languageRow = new QHBoxLayout;
+  languageRow->addStretch();
   languageButton_ = new QPushButton;
   languageButton_->setObjectName("languageToggle");
-  titleRow->addWidget(languageButton_);
-  layout->addLayout(titleRow);
+  languageRow->addWidget(languageButton_);
+  layout->addLayout(languageRow);
   connect(languageButton_, &QPushButton::clicked, this, [this] {
     setLanguage(language() == i18n::Language::English
                     ? i18n::Language::Chinese
@@ -504,10 +501,6 @@ void StreamingPanel::updateTargets() {
     QStringList addresses;
     for (const auto &endpoint : selected)
       addresses.append(endpoint.text());
-    bindText(title_, "text",
-             selected.size() == 1
-                 ? i18n::text(i18n::Id::AudioInputSingleAirPlayReceiver)
-                 : i18n::text(i18n::Id::AudioInputAirPlayStereoPair));
     bindText(targets_, "text",
              addresses.join(" + ") + (unavailable_.isEmpty()
                                           ? i18n::Message{}
@@ -515,7 +508,6 @@ void StreamingPanel::updateTargets() {
     start_->setEnabled(!busy_ && !recoveryPending_ && !closing_ &&
                        unavailable_.isEmpty());
   } catch (const std::exception &e) {
-    bindText(title_, "text", i18n::text(i18n::Id::AudioInputAirPlayReceivers));
     bindText(targets_, "text",
              i18n::fromException(e) + (unavailable_.isEmpty()
                                            ? i18n::Message{}
