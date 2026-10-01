@@ -1,5 +1,6 @@
 #pragma once
 #include "InputCapture.h"
+#include "app/Message.h"
 namespace audio {
 struct CoreAudioApi;
 const CoreAudioApi &defaultCoreAudioApi();
@@ -13,8 +14,8 @@ public:
   void controlPanel() override;
   CaptureStream prepare(int, int, double) override;
   void start() override;
-  QString stop() noexcept override;
-  QString close() noexcept override;
+  i18n::Message stop() noexcept override;
+  i18n::Message close() noexcept override;
 
 private:
   struct State;

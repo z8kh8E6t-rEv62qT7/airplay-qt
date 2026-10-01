@@ -1,4 +1,4 @@
-"""Generate fixtures by calling the unchanged PoC; no devices or networking."""
+"""Generate protocol fixtures from the PoC without device or network access."""
 import importlib.util
 import json
 from pathlib import Path

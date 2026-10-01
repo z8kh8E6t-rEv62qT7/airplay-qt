@@ -1,3 +1,4 @@
+#include "TestComponentHandler.h"
 #include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include "vst3/Plugin.h"
@@ -49,8 +50,9 @@ QObject *objectOfClass(QObject *root, const char *name) {
   return nullptr;
 }
 bool businessTypesUnregistered() {
-  for (const char *name : {"airplay::ReceiverEndpoint", "app::Timing",
-                           "QList<airplay::ReceiverEndpoint>"})
+  for (const char *name :
+       {"airplay::ReceiverEndpoint", "app::Timing",
+        "QList<airplay::ReceiverEndpoint>", "i18n::Message", "i18n::Language"})
     if (QMetaType::fromName(name).isValid())
       return false;
   return true;
@@ -126,6 +128,7 @@ int main(int argc, char **argv) {
     id originalDelegate = [NSApp delegate];
     NSMenu *originalMainMenu = [NSApp mainMenu];
     HostApplication host;
+    TestComponentHandler handler;
     const auto bundlePath =
         QFileInfo(QString::fromLocal8Bit(argv[1])).absoluteFilePath();
     for (int cycle = 0; cycle < 5; ++cycle) {
@@ -167,6 +170,7 @@ int main(int argc, char **argv) {
       auto controller = owned(rawController);
       REQUIRE(component->initialize(&host) == kResultOk);
       REQUIRE(controller->initialize(&host) == kResultOk);
+      REQUIRE(controller->setComponentHandler(&handler) == kResultOk);
       FUnknownPtr<IConnectionPoint> pc(component), cc(controller);
       REQUIRE(pc->connect(cc) == kResultOk);
       REQUIRE(cc->connect(pc) == kResultOk);
@@ -183,7 +187,8 @@ int main(int argc, char **argv) {
         REQUIRE(view->attached([window contentView], kPlatformTypeNSView) ==
                 kResultOk);
         QWidget *widget = embedded([window contentView]);
-        REQUIRE((incompatible || missingPlatform) ? !widget : widget != nullptr);
+        REQUIRE((incompatible || missingPlatform) ? !widget
+                                                  : widget != nullptr);
         ViewRect rect{0, 0, 900, 880};
         REQUIRE(view->onSize(&rect) == kResultOk);
         REQUIRE(view->onFocus(true) == kResultOk);
@@ -194,13 +199,26 @@ int main(int argc, char **argv) {
         REQUIRE(after.getWidth() == 900 && after.getHeight() == 880);
         if (widget)
           REQUIRE(widget->width() == 900 && widget->height() == 880);
-        if (widget)
+        if (widget) {
           REQUIRE(exercisePanel(widget) == 0);
+          auto *toggle = widget->findChild<QPushButton *>("languageToggle");
+          auto *start = widget->findChild<QPushButton *>("start");
+          REQUIRE(toggle && start);
+          REQUIRE(start->text() ==
+                  (reopen == 0 ? QString("Start") : QString("开始")));
+          const auto dirty = handler.dirtyCalls;
+          toggle->click();
+          REQUIRE(handler.dirtyCalls == dirty + 1 &&
+                  handler.parameterCalls == 0);
+          REQUIRE(start->text() ==
+                  (reopen == 0 ? QString("开始") : QString("Start")));
+        }
         pump();
-        if (widget && cycle == 0 && reopen == 0)
+        if (widget && cycle == 0)
           REQUIRE(widget->grab().save(
               QFileInfo(QString::fromLocal8Bit(argv[0])).absolutePath() +
-              "/VstEmbedded-" + argv[2] + ".png"));
+              "/VstEmbedded-" + argv[2] +
+              (reopen == 0 ? "-zh.png" : "-en.png")));
         scale = nullptr;
         REQUIRE(view->removed() == kResultOk);
         REQUIRE([[window contentView] subviews].count == 0);

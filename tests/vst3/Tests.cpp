@@ -387,6 +387,16 @@ private slots:
     panel->findChild<QPushButton *>("start")->click();
     QTRY_VERIFY_WITH_TIMEOUT(receiver.packets.size() > 3, 4000);
     QCOMPARE(receiver.connections, 1);
+    const auto beforeSwitch = receiver.packets.size();
+    const auto stopRevision = processor->state()->stopRevision.load();
+    const auto timingRevision = processor->state()->timingRevision.load();
+    panel->setLanguage(i18n::Language::Chinese);
+    runtime.pump();
+    QTRY_VERIFY_WITH_TIMEOUT(receiver.packets.size() > beforeSwitch + 3, 1000);
+    QCOMPARE(receiver.connections, 1);
+    QCOMPARE(processor->state()->stopRevision.load(), stopRevision);
+    QCOMPARE(processor->state()->timingRevision.load(), timingRevision);
+    panel->setLanguage(i18n::Language::English);
     const auto id = processor->state()->id;
     paused = true;
     processor->setProcessing(false);
@@ -409,7 +419,7 @@ private slots:
       second->findChild<QPushButton *>("start")->click();
       const auto labels = second->findChildren<QLabel *>();
       QVERIFY(std::any_of(labels.begin(), labels.end(), [](auto *value) {
-        return value->text().contains("另一个 AirPlayQt");
+        return value->text().contains("Another AirPlayQt");
       }));
       runtime.close(other.state()->id);
     }
@@ -514,6 +524,7 @@ private slots:
     vst3::SavedState expected;
     expected.timing.lead = .125;
     expected.bypass = true;
+    expected.language = i18n::Language::Chinese;
     expected.networkBinding = {"en-test", "192.0.2.10"};
     MemoryStream valid;
     QVERIFY(vst3::writeState(&valid, expected));
@@ -526,8 +537,10 @@ private slots:
       truncated.seek(0, IBStream::kIBSeekSet, nullptr);
       vst3::SavedState result;
       result.timing.lead = 1.5;
+      result.language = i18n::Language::English;
       QVERIFY(!vst3::readState(&truncated, result));
       QCOMPARE(result.timing.lead, 1.5);
+      QCOMPARE(result.language, i18n::Language::English);
     }
     valid.seek(0, IBStream::kIBSeekSet, nullptr);
     vst3::SavedState actual;
@@ -535,8 +548,9 @@ private slots:
     QCOMPARE(actual.timing.lead, .125);
     QVERIFY(actual.bypass);
     QCOMPARE(actual.networkBinding, expected.networkBinding);
+    QCOMPARE(actual.language, i18n::Language::Chinese);
     auto old = bytes;
-    old[4] = 1;
+    old[4] = 2;
     MemoryStream legacy;
     int32 legacyWritten = 0;
     legacy.write(old.data(), old.size(), &legacyWritten);
@@ -544,10 +558,13 @@ private slots:
     vst3::Processor processor;
     QCOMPARE(processor.setState(&legacy), kResultFalse);
     QVERIFY(processor.state()->invalidConfiguration.load());
-    QVERIFY(processor.state()->configurationError().contains("重新添加"));
+    QVERIFY(processor.state()->configurationError().render().contains(
+        "add it again"));
+    processor.state()->setLanguage(i18n::Language::Chinese);
+    QVERIFY(processor.state()->invalidConfiguration.load());
     MemoryStream rejectedSave;
     QCOMPARE(processor.getState(&rejectedSave), kResultFalse);
-    for (const int offset : {0, 4, 8, 116}) {
+    for (const int offset : {0, 4, 8, 116, int(bytes.size()) - 4}) {
       auto changed = bytes;
       changed[offset] = char(255);
       MemoryStream corrupt;
@@ -614,6 +631,14 @@ private slots:
       auto &runtime = vst3::PluginRuntime::acquire(window);
       const auto api = unavailableDiscovery();
       auto *panel = runtime.open(processor.state(), api);
+      vst3::Processor otherProcessor;
+      auto *otherPanel = runtime.open(otherProcessor.state(), api);
+      auto *toggle = panel->findChild<QPushButton *>("languageToggle");
+      QVERIFY(toggle);
+      toggle->click();
+      QCOMPARE(processor.state()->language(), i18n::Language::Chinese);
+      QCOMPARE(otherPanel->language(), i18n::Language::English);
+      runtime.close(otherProcessor.state()->id);
       auto timing = panel->timing();
       timing.lead = .75;
       panel->setTiming(timing);
@@ -623,6 +648,7 @@ private slots:
       emit panel->networkBindingChanged();
       runtime.close(processor.state()->id);
       panel = runtime.open(processor.state(), api);
+      QCOMPARE(panel->language(), i18n::Language::Chinese);
       QCOMPARE(panel->timing().lead, .75);
       QCOMPARE(panel->networkBinding(), binding);
       panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
@@ -630,11 +656,15 @@ private slots:
       MemoryStream saved;
       QCOMPARE(processor.getState(&saved), kResultOk);
       saved.seek(0, IBStream::kIBSeekSet, nullptr);
+      panel->setLanguage(i18n::Language::English);
       panel->setNetworkBinding({});
       emit panel->networkBindingChanged();
+      QSignalSpy languageEdits(panel, &ui::StreamingPanel::languageChanged);
       QCOMPARE(processor.setState(&saved), kResultOk);
       runtime.pump();
+      QVERIFY(languageEdits.isEmpty());
       QCOMPARE(panel->networkBinding(), binding);
+      QCOMPARE(panel->language(), i18n::Language::Chinese);
       QVERIFY(panel->findChild<QLineEdit *>("manualFirst")->text().isEmpty());
       QVERIFY(!panel->findChild<QPushButton *>("start")->isEnabled());
       QVERIFY(panel->grab().save(QCoreApplication::applicationDirPath() +
@@ -722,7 +752,7 @@ private slots:
       two->findChild<QPushButton *>("start")->click();
       const auto labels = two->findChildren<QLabel *>();
       QVERIFY(std::any_of(labels.begin(), labels.end(), [](auto *label) {
-        return label->text().contains("另一个 AirPlayQt");
+        return label->text().contains("Another AirPlayQt");
       }));
       runtime.close(first.state()->id);
       one = runtime.open(first.state(), api);

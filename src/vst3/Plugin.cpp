@@ -114,7 +114,7 @@ tresult PLUGIN_API Processor::getState(IBStream *stream) {
   if (state_->invalidConfiguration.load())
     return kResultFalse;
   return writeState(stream, {state_->timing(), state_->input.bypass(),
-                             state_->networkBinding()})
+                             state_->networkBinding(), state_->language()})
              ? kResultOk
              : kResultFalse;
 }
@@ -129,6 +129,7 @@ tresult PLUGIN_API Processor::setState(IBStream *stream) {
   state_->invalidConfiguration = false;
   state_->setNetworkBinding(value.networkBinding);
   state_->setTiming(value.timing);
+  state_->setLanguage(value.language);
   state_->input.setBypass(value.bypass);
   return kResultOk;
 }
@@ -200,6 +201,8 @@ tresult PLUGIN_API EditController::setComponentState(IBStream *stream) {
 IPlugView *PLUGIN_API EditController::createView(FIDString name) {
   if (!name || std::strcmp(name, ViewType::kEditor) != 0)
     return nullptr;
-  return createEditor(state_);
+  return createEditor(state_, [controller = IPtr<EditController>(this)] {
+    controller->setDirty(true);
+  });
 }
 } // namespace vst3

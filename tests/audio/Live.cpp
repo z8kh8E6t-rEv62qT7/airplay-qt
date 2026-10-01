@@ -66,20 +66,21 @@ int main(int argc, char **argv) {
                          volumePhase = VolumePhase::Done;
                      });
     QObject::connect(&controller, &app::Controller::log, &application,
-                     [](const QString &text) {
-                       std::fprintf(stdout, "%s\n", text.toUtf8().constData());
+                     [](const i18n::Message &text) {
+                       std::fprintf(stdout, "%s\n",
+                                    text.render().toUtf8().constData());
                        std::fflush(stdout);
                      });
     QObject::connect(&controller, &app::Controller::group, &application,
-                     [](const QString &text) {
+                     [](const i18n::Message &text) {
                        std::fprintf(stdout, "GROUP %s\n",
-                                    text.toUtf8().constData());
+                                    text.render().toUtf8().constData());
                        std::fflush(stdout);
                      });
     QObject::connect(&controller, &app::Controller::error, &application,
-                     [&](const QString &text) {
+                     [&](const i18n::Message &text) {
                        std::fprintf(stderr, "ERROR %s\n",
-                                    text.toUtf8().constData());
+                                    text.render().toUtf8().constData());
                        result = 1;
                        if (!controller.busy())
                          application.exit(result);

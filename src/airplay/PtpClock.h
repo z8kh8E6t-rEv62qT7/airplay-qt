@@ -1,6 +1,7 @@
 #pragma once
 #include "Crypto.h"
 #include "NetworkBinding.h"
+#include "app/Message.h"
 #include "app/Settings.h"
 #include <QElapsedTimer>
 #include <QHostAddress>
@@ -23,7 +24,7 @@ public:
              const NetworkRoute &route = {});
   void stop();
 signals:
-  void failed(QString error);
+  void failed(QJsonArray error);
 
 private:
   void tick();

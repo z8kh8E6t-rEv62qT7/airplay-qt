@@ -1,5 +1,6 @@
 #include "NetworkBinding.h"
 #include "Crypto.h"
+#include "app/Message.h"
 #include <QJsonObject>
 #include <QNetworkProxy>
 #include <algorithm>
@@ -14,7 +15,7 @@
 #endif
 
 namespace airplay {
-QString NetworkBinding::validate() const {
+i18n::Message NetworkBinding::validate() const {
   if (automatic())
     return {};
   const QHostAddress address(ipv4);
@@ -23,7 +24,7 @@ QString NetworkBinding::validate() const {
       address.protocol() != QAbstractSocket::IPv4Protocol ||
       address.toString() != ipv4 || address == QHostAddress::AnyIPv4 ||
       address.isMulticast() || address == QHostAddress::Broadcast)
-    return "网卡绑定结构无效";
+    return i18n::text(i18n::Id::InvalidNetworkBindingStructure);
   return {};
 }
 QJsonValue NetworkBinding::json() const {
@@ -39,11 +40,12 @@ NetworkBinding NetworkBinding::fromJson(const QJsonValue &value) {
   const auto object = value.toObject();
   if (!value.isObject() || !object.value("interfaceName").isString() ||
       !object.value("ipv4").isString())
-    throw Error("缺少或无效的 networkBinding 配置");
+    throw Error(
+        i18n::text(i18n::Id::MissingOrInvalidNetworkBindingConfiguration));
   NetworkBinding result{object["interfaceName"].toString(),
                         object["ipv4"].toString()};
   if (result.automatic())
-    throw Error("自动网络绑定须为 null");
+    throw Error(i18n::text(i18n::Id::AutomaticNetworkBindingMustBeNull));
   if (const auto error = result.validate(); !error.isEmpty())
     throw Error(error);
   return result;
@@ -94,8 +96,10 @@ void NetworkRoute::validate() const {
       !index || !iface.isValid() || uint(iface.index()) != index ||
       !iface.flags().testFlag(QNetworkInterface::IsUp) ||
       !iface.flags().testFlag(QNetworkInterface::IsRunning) || !found)
-    throw Error("指定网卡或 IPv4 不可用：" + binding.interfaceName + " · " +
-                binding.ipv4 + "；请停止后重新选择，不会切换其他网卡。");
+    throw Error(
+        i18n::text(i18n::Id::SelectedNetworkInterfaceOrIPvIsUnavailable) +
+        binding.interfaceName + " · " + binding.ipv4 +
+        i18n::text(i18n::Id::StopAndSelectItAgainNoOther));
 }
 void NetworkRoute::bind(QAbstractSocket &socket, quint16 port,
                         bool multicast) const {
@@ -107,7 +111,7 @@ void NetworkRoute::bind(QAbstractSocket &socket, quint16 port,
   if (!socket.bind(address, port, QAbstractSocket::DontShareAddress)) {
     const auto error = socket.errorString();
     socket.abort();
-    throw Error("绑定本地地址失败：" + error);
+    throw Error(i18n::text(i18n::Id::LocalAddressBindingFailed) + error);
   }
   try {
     bindInterface(socket.socketDescriptor());
@@ -128,12 +132,12 @@ void NetworkRoute::bindInterface(qintptr descriptor) const {
   const auto error = QString::number(WSAGetLastError());
 #else
   const int option = int(index);
-  const int result = setsockopt(int(descriptor), IPPROTO_IP,
-                                IP_BOUND_IF, &option, sizeof(option));
+  const int result = setsockopt(int(descriptor), IPPROTO_IP, IP_BOUND_IF,
+                                &option, sizeof(option));
   const auto error = QString::fromLocal8Bit(std::strerror(errno));
 #endif
   if (result != 0) {
-    throw Error("绑定发送网卡失败：" + error);
+    throw Error(i18n::text(i18n::Id::SendingInterfaceBindingFailed) + error);
   }
 }
 } // namespace airplay

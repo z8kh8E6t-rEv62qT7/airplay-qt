@@ -2,6 +2,7 @@
 #include "SessionController.h"
 #include "Settings.h"
 #include "airplay/ReceiverEndpoint.h"
+#include "app/Message.h"
 #include "audio/InputCapture.h"
 #include <QObject>
 #include <QThread>
@@ -13,6 +14,7 @@ public:
   explicit Controller(QObject *parent = nullptr);
   ~Controller() override;
   Settings initialize();
+  void saveLanguage(i18n::Language);
   const QList<ReceiverSelection> &rememberedReceivers() const {
     return settings_.receivers();
   }
@@ -30,10 +32,10 @@ public:
   SessionController &session() { return session_; }
 signals:
   void channels(QList<audio::ChannelInfo> channels);
-  void status(QString text);
-  void log(QString text);
-  void group(QString text);
-  void error(QString text);
+  void status(QJsonArray text);
+  void log(QJsonArray text);
+  void group(QJsonArray text);
+  void error(QJsonArray text);
   void busyChanged(bool busy);
   void streamingChanged(bool streaming);
   void volumeApplied(double db);

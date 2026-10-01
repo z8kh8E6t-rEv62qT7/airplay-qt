@@ -188,8 +188,7 @@ void checkOutput(const QString &prefix) {
 }
 } // namespace
 
-// One-shot diagnostic only: VASIO-32 ASIO inputs 31/32, no AirPlay or GUI
-// change.
+// Record VASIO-32 inputs 31/32 and callback diagnostics.
 int main(int argc, char **argv) {
   static_assert(std::endian::native == std::endian::little);
   QApplication application(argc, argv);
@@ -234,7 +233,8 @@ int main(int argc, char **argv) {
       if (!format.floating || format.bytes != 4 || format.bigEndian)
         fail("This diagnostic requires native little-endian Float32 inputs");
       std::printf("INPUT %d: %s, ASIO type %ld\n", i + 1,
-                  channels[i].name.toUtf8().constData(), channels[i].type);
+                  channels[i].name.render().toUtf8().constData(),
+                  channels[i].type);
     }
     auto stream = capture.prepare(30, 31, 1.);
     std::printf("TIMER request_ms=1 ignore_timer_resolution_disabled=1\n");
@@ -259,7 +259,7 @@ int main(int argc, char **argv) {
     int result = 0;
     const auto stopCapture = [&] {
       if (const auto error = capture.stop(); !error.isEmpty()) {
-        std::fprintf(stderr, "ERROR %s\n", error.toUtf8().constData());
+        std::fprintf(stderr, "ERROR %s\n", error.render().toUtf8().constData());
         result = 1;
       }
     };

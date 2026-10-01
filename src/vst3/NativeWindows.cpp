@@ -1,6 +1,7 @@
 #include "NativeEditor.h"
 #include "NativeRuntime.h"
 #include "airplay/Crypto.h"
+#include "app/Message.h"
 #include "pluginterfaces/gui/iplugview.h"
 #include <QWidget>
 #include <QWindow>
@@ -57,19 +58,22 @@ NativeRuntime::NativeRuntime(std::function<void()> tick)
                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                           reinterpret_cast<LPCWSTR>(&State::dispatch),
                           &state_->module))
-    throw airplay::Error("读取插件模块句柄失败。");
+    throw airplay::Error(
+        i18n::text(i18n::Id::FailedToGetThePluginModuleHandle));
   WNDCLASSW type{};
   type.lpfnWndProc = State::dispatch;
   type.hInstance = state_->module;
   type.lpszClassName = dispatcherClass;
   if (!RegisterClassW(&type))
-    throw airplay::Error("注册插件事件派发窗口失败。");
+    throw airplay::Error(
+        i18n::text(i18n::Id::FailedToRegisterThePluginEventDispatch));
   state_->registered = true;
   state_->window =
       CreateWindowExW(0, dispatcherClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
                       nullptr, state_->module, state_.get());
   if (!state_->window || !SetTimer(state_->window, 1, 10, nullptr))
-    throw airplay::Error("创建插件事件派发窗口或计时器失败。");
+    throw airplay::Error(
+        i18n::text(i18n::Id::FailedToCreateThePluginDispatchWindow));
 }
 NativeRuntime::~NativeRuntime() = default;
 bool NativeRuntime::validParentThread(void *parent) {
@@ -88,7 +92,8 @@ void NativeRuntime::invoke(const std::function<void()> &callback) {
 }
 void beginSessionTiming() {
   if (timeBeginPeriod(1) != TIMERR_NOERROR)
-    throw airplay::Error("申请 1 ms 计时精度失败。");
+    throw airplay::Error(
+        i18n::text(i18n::Id::FailedToRequestMsTimerResolution));
 }
 bool endSessionTiming() { return timeEndPeriod(1) == TIMERR_NOERROR; }
 struct NativeEditor::State {
@@ -107,7 +112,7 @@ NativeEditor::NativeEditor(void *parent, QWidget *widget, const QString &error)
   if (widget) {
     state_->foreign.reset(QWindow::fromWinId(reinterpret_cast<WId>(parent)));
     if (!state_->foreign)
-      throw airplay::Error("Qt 无法嵌入宿主 HWND。");
+      throw airplay::Error(i18n::text(i18n::Id::QtCouldNotEmbedIntoTheHost));
     state_->widget = widget;
     widget->windowHandle()->setParent(state_->foreign.get());
   } else {
@@ -117,7 +122,8 @@ NativeEditor::NativeEditor(void *parent, QWidget *widget, const QString &error)
         600, 140, static_cast<HWND>(parent), nullptr, GetModuleHandleW(nullptr),
         nullptr);
     if (!state_->error)
-      throw airplay::Error("无法创建编辑器错误提示。");
+      throw airplay::Error(
+          i18n::text(i18n::Id::FailedToCreateTheEditorErrorDisplay));
   }
 }
 NativeEditor::~NativeEditor() = default;

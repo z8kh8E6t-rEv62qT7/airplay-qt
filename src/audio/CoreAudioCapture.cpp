@@ -1,5 +1,6 @@
 #include "CoreAudioCapture.h"
 #include "CoreAudioApi.h"
+#include "app/Message.h"
 #include <QDebug>
 #include <QDesktopServices>
 #include <QTimer>
@@ -12,12 +13,10 @@
 namespace audio {
 namespace {
 constexpr size_t packetFrames = 352;
-void check(OSStatus status, const char *operation) {
+void check(OSStatus status, const i18n::Message &operation) {
   if (status != noErr)
-    throw std::runtime_error(QString("Core Audio %1 失败（%2）")
-                                 .arg(operation)
-                                 .arg(status)
-                                 .toStdString());
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::CoreAudioFailed).arg(operation).arg(status));
 }
 AudioObjectPropertyAddress
 address(AudioObjectPropertySelector selector,
@@ -29,24 +28,29 @@ T property(const CoreAudioApi &api, AudioObjectID object,
            AudioObjectPropertyAddress key) {
   T value{};
   UInt32 bytes = sizeof(value);
-  check(api.get(object, &key, 0, nullptr, &bytes, &value), "读取属性");
+  check(api.get(object, &key, 0, nullptr, &bytes, &value),
+        i18n::text(i18n::Id::ReadProperty));
   if (bytes != sizeof(value))
-    throw std::runtime_error("Core Audio 属性长度无效");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::InvalidCoreAudioPropertyLength));
   return value;
 }
 template <class T>
 std::vector<T> list(const CoreAudioApi &api, AudioObjectID object,
                     AudioObjectPropertyAddress key) {
   UInt32 bytes = 0;
-  check(api.size(object, &key, 0, nullptr, &bytes), "读取属性大小");
+  check(api.size(object, &key, 0, nullptr, &bytes),
+        i18n::text(i18n::Id::ReadPropertySize));
   if (bytes > 1024 * 1024 || bytes % sizeof(T))
-    throw std::runtime_error("Core Audio 属性列表长度无效");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::InvalidCoreAudioPropertyListLength));
   std::vector<T> values(bytes / sizeof(T));
   if (bytes) {
     check(api.get(object, &key, 0, nullptr, &bytes, values.data()),
-          "读取属性列表");
+          i18n::text(i18n::Id::ReadPropertyList));
     if (bytes > values.size() * sizeof(T) || bytes % sizeof(T))
-      throw std::runtime_error("Core Audio 属性列表已变化");
+      throw i18n::MessageError(
+          i18n::text(i18n::Id::CoreAudioPropertyListChanged));
     values.resize(bytes / sizeof(T));
   }
   return values;
@@ -93,7 +97,8 @@ Layout layout(const CoreAudioApi &api, AudioDeviceID device) {
         f.mBytesPerFrame !=
             (f.mBitsPerChannel / 8) * (planar ? 1 : f.mChannelsPerFrame) ||
         f.mBytesPerPacket != f.mBytesPerFrame || f.mSampleRate != 44100)
-      throw std::runtime_error("输入必须为 44.1 kHz、支持的紧凑 PCM 格式");
+      throw i18n::MessageError(
+          i18n::text(i18n::Id::InputMustUseKHzAndASupported));
     const PcmFormat pcm{int(f.mBitsPerChannel / 8), int(f.mBitsPerChannel), big,
                         floating};
     for (UInt32 n = 0; n < (planar ? f.mChannelsPerFrame : 1); ++n)
@@ -101,7 +106,7 @@ Layout layout(const CoreAudioApi &api, AudioDeviceID device) {
           {planar ? 1u : f.mChannelsPerFrame, pcm, f.mBytesPerFrame});
     result.channels += int(f.mChannelsPerFrame);
     if (result.channels > 256)
-      throw std::runtime_error("输入声道数超过 256");
+      throw i18n::MessageError(i18n::text(i18n::Id::InputChannelCountExceeds));
   }
   return result;
 }
@@ -138,7 +143,8 @@ struct CoreAudioCapture::State {
     return noErr;
   }
   void listen(AudioObjectID object, AudioObjectPropertyAddress key) {
-    check(api.listen(object, &key, changedProperty, this), "监听设备变化");
+    check(api.listen(object, &key, changedProperty, this),
+          i18n::text(i18n::Id::ObserveDeviceChanges));
     listeners.emplace_back(object, key);
   }
   static OSStatus process(AudioObjectID, const AudioTimeStamp *,
@@ -249,7 +255,7 @@ QList<DriverInfo> CoreAudioCapture::enumerate(const CoreAudioApi &api) {
 }
 QList<ChannelInfo> CoreAudioCapture::open(const QString &uid, void *) {
   if (const auto error = close(); !error.isEmpty())
-    throw std::runtime_error(error.toStdString());
+    throw i18n::MessageError(error);
   auto &s = *state_;
   for (const auto device :
        list<AudioDeviceID>(s.api, kAudioObjectSystemObject,
@@ -266,38 +272,42 @@ QList<ChannelInfo> CoreAudioCapture::open(const QString &uid, void *) {
           s.api, stream, address(kAudioStreamPropertyVirtualFormat));
       if (f.mChannelsPerFrame > 256 ||
           channels.size() + f.mChannelsPerFrame > 256)
-        throw std::runtime_error("输入声道数无效");
+        throw i18n::MessageError(
+            i18n::text(i18n::Id::InvalidInputChannelCount));
       for (UInt32 n = 0; n < f.mChannelsPerFrame; ++n)
         channels.append({int(channels.size()),
-                         QString("输入 %1").arg(channels.size() + 1),
+                         i18n::text(i18n::Id::Input).arg(channels.size() + 1),
                          long(f.mBitsPerChannel)});
     }
     if (channels.isEmpty())
-      throw std::runtime_error("设备没有输入声道");
+      throw i18n::MessageError(i18n::text(i18n::Id::DeviceHasNoInputChannels));
     s.device = device;
     return channels;
   }
-  throw std::runtime_error("输入设备不可用");
+  throw i18n::MessageError(i18n::text(i18n::Id::InputDeviceUnavailable));
 }
 void CoreAudioCapture::controlPanel() {
   if (!QDesktopServices::openUrl(QUrl::fromLocalFile(
           "/System/Applications/Utilities/Audio MIDI Setup.app")))
-    throw std::runtime_error("无法打开音频 MIDI 设置");
+    throw i18n::MessageError(i18n::text(i18n::Id::CannotOpenAudioMIDISetup));
 }
 CaptureStream CoreAudioCapture::prepare(int left, int right, double backlog) {
   if (const auto error = stop(); !error.isEmpty())
-    throw std::runtime_error(error.toStdString());
+    throw i18n::MessageError(error);
   auto &s = *state_;
   if (s.device == kAudioObjectUnknown || left < 0 || right < 0 ||
       left == right || !std::isfinite(backlog) || backlog < .01 || backlog > 1)
-    throw std::runtime_error("输入设备、声道或积压设置无效");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::InvalidInputDeviceChannelsOrBacklogSetting));
   const auto rate = property<Float64>(
       s.api, s.device, address(kAudioDevicePropertyNominalSampleRate));
   if (rate != 44100)
-    throw std::runtime_error("输入设备采样率必须为 44.1 kHz");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::InputDeviceSampleRateMustBeKHz));
   s.format = layout(s.api, s.device);
   if (left >= s.format.channels || right >= s.format.channels)
-    throw std::runtime_error("输入声道已失效");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::InputChannelsAreNoLongerValid));
   for (size_t c = 0; c < 2; ++c) {
     size_t index = c ? right : left;
     for (size_t b = 0; b < s.format.buffers.size(); ++b) {
@@ -325,14 +335,17 @@ CaptureStream CoreAudioCapture::prepare(int left, int right, double backlog) {
                                kAudioDevicePropertyScopeInput));
     for (auto stream : s.format.streams)
       s.listen(stream, address(kAudioStreamPropertyVirtualFormat));
-    check(s.api.create(s.device, State::process, &s, &s.proc), "创建输入回调");
+    check(s.api.create(s.device, State::process, &s, &s.proc),
+          i18n::text(i18n::Id::CreateInputCallback));
     if (!s.proc)
-      throw std::runtime_error("Core Audio 未返回输入回调");
+      throw i18n::MessageError(
+          i18n::text(i18n::Id::CoreAudioDidNotReturnAnInput));
     if (property<Float64>(s.api, s.device,
                           address(kAudioDevicePropertyNominalSampleRate)) !=
             44100 ||
         s.changed.load())
-      throw std::runtime_error("准备期间输入设备格式发生变化");
+      throw i18n::MessageError(
+          i18n::text(i18n::Id::InputDeviceFormatChangedDuringPreparation));
     s.health.start();
   } catch (...) {
     stop();
@@ -343,33 +356,36 @@ CaptureStream CoreAudioCapture::prepare(int left, int right, double backlog) {
 void CoreAudioCapture::start() {
   auto &s = *state_;
   if (!s.proc || s.running || s.changed.load())
-    throw std::runtime_error("输入尚未准备或设备已变化");
+    throw i18n::MessageError(i18n::text(i18n::Id::InputIsNotReadyOrTheDevice));
   s.accepting = true;
   const auto result = s.api.start(s.device, s.proc);
   if (result != noErr) {
     s.accepting = false;
-    check(result, "启动输入");
+    check(result, i18n::text(i18n::Id::StartInput));
   }
   s.running = true;
 }
-QString CoreAudioCapture::stop() noexcept {
+i18n::Message CoreAudioCapture::stop() noexcept {
   auto &s = *state_;
   s.accepting = false;
   s.health.stop();
-  QStringList errors;
+  i18n::Message errors;
   if (s.running) {
     const auto result = s.api.stop(s.device, s.proc);
     if (result == noErr || result == kAudioHardwareBadDeviceError)
       s.running = false;
     else
-      errors.append(QString("停止 Core Audio 失败（%1）").arg(result));
+      errors = errors + (errors.isEmpty() ? "" : "\n") +
+               i18n::text(i18n::Id::FailedToStopCoreAudio).arg(result);
   }
   if (s.proc && !s.running) {
     const auto result = s.api.destroy(s.device, s.proc);
     if (result == noErr || result == kAudioHardwareBadDeviceError)
       s.proc = nullptr;
     else
-      errors.append(QString("释放 Core Audio 回调失败（%1）").arg(result));
+      errors =
+          errors + (errors.isEmpty() ? "" : "\n") +
+          i18n::text(i18n::Id::FailedToReleaseCoreAudioCallback).arg(result);
   }
   for (auto it = s.listeners.begin(); it != s.listeners.end();) {
     const auto result =
@@ -377,7 +393,9 @@ QString CoreAudioCapture::stop() noexcept {
     if (result == noErr || result == kAudioHardwareBadObjectError)
       it = s.listeners.erase(it);
     else {
-      errors.append(QString("释放 Core Audio 监听失败（%1）").arg(result));
+      errors =
+          errors + (errors.isEmpty() ? "" : "\n") +
+          i18n::text(i18n::Id::FailedToRemoveCoreAudioListener).arg(result);
       ++it;
     }
   }
@@ -385,9 +403,9 @@ QString CoreAudioCapture::stop() noexcept {
     s.queue.reset();
     s.filled = 0;
   }
-  return errors.join("；");
+  return errors;
 }
-QString CoreAudioCapture::close() noexcept {
+i18n::Message CoreAudioCapture::close() noexcept {
   const auto error = stop();
   if (error.isEmpty())
     state_->device = kAudioObjectUnknown;

@@ -1,5 +1,6 @@
 #pragma once
 #include "InputCapture.h"
+#include "app/Message.h"
 #include <QList>
 #include <QString>
 #include <memory>
@@ -41,8 +42,8 @@ public:
   void setTrace(CaptureTrace *trace);
   void start();
   // Empty on success. Cleanup never throws; callers surface any timer error.
-  QString stop() noexcept;
-  QString close() noexcept;
+  i18n::Message stop() noexcept;
+  i18n::Message close() noexcept;
 
 private:
   // Tests inject an IASIO implementation; no registry registration is required.

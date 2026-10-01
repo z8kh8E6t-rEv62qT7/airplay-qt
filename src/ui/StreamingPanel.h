@@ -8,9 +8,11 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTabWidget>
+#include <QVBoxLayout>
 
 namespace ui {
 class StreamingPanel : public QWidget {
@@ -19,6 +21,12 @@ public:
   explicit StreamingPanel(
       app::SessionController &, QWidget *parent = nullptr,
       const airplay::DiscoveryApi & = airplay::defaultDiscoveryApi());
+  i18n::Language language() const { return session_.language(); }
+  void setLanguage(i18n::Language);
+  // Bind display-only properties; updating a translation never recreates
+  // controls.
+  void bindText(QObject *, const char *property, const i18n::Message &);
+  void addInputWidget(QWidget *widget) { inputLayout_->addWidget(widget); }
   app::Timing timing() const;
   airplay::NetworkBinding networkBinding() const;
   void setNetworkBinding(const airplay::NetworkBinding &);
@@ -32,13 +40,14 @@ public:
   void cancelDiscovery();
   bool discoveryBusy() const { return discovery_.busy(); }
   void drainDiscovery();
-  void setUnavailable(const QString &reason);
-  void showError(const QString &);
-  void appendLog(const QString &);
+  void setUnavailable(const i18n::Message &reason);
+  void showError(const i18n::Message &);
+  void appendLog(const i18n::Message &);
   void setRecoveryPending(bool);
   Q_SLOT void setBusy(bool);
 signals:
   // UI-thread notifications; consumers read typed values synchronously.
+  void languageChanged();
   void startRequested();
   void stopRequested();
   void discoveryIdle();
@@ -46,6 +55,18 @@ signals:
   void networkBindingChanged();
 
 private:
+  struct TextBinding {
+    QPointer<QObject> target;
+    QByteArray property;
+    i18n::Message message;
+  };
+  QList<TextBinding> textBindings_;
+  QLabel *label(const i18n::Message &);
+  QPushButton *button(const i18n::Message &);
+  void retranslate();
+  QPushButton *languageButton_;
+  QTabWidget *timingTabs_;
+  QVBoxLayout *inputLayout_;
   void updateTargets();
   void refreshNetworks();
   void clearDiscoveredReceivers();
@@ -70,7 +91,7 @@ private:
   bool busy_ = false, closing_ = false, streaming_ = false,
        volumePending_ = false, recoveryPending_ = false;
   double restoreVolume_ = 0;
-  QString unavailable_;
+  i18n::Message unavailable_;
   QList<app::ReceiverSelection> rememberedReceivers_;
   bool restoreReceiversAllowed_ = true;
 };

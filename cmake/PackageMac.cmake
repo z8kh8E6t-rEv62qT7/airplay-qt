@@ -13,5 +13,5 @@ add_custom_target(package-macos
     "-DVALIDATOR=$<TARGET_FILE:validator>" "-DCONFIG=$<CONFIG>"
     -P "${PROJECT_BINARY_DIR}/PackageMacRun.cmake"
   DEPENDS AirPlayQt AirPlayQtVst3 test_vst3_module test_macos_app validator
-    test_airplay test_discovery test_coreaudio test_vst3 test_common_app
+    test_airplay test_discovery test_coreaudio test_vst3 test_common_app test_app
   USES_TERMINAL VERBATIM)

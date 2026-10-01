@@ -1,6 +1,7 @@
 #pragma once
 #include "NetworkBinding.h"
 #include "ReceiverEndpoint.h"
+#include "app/Message.h"
 #include <QObject>
 #include <memory>
 namespace airplay {
@@ -19,7 +20,7 @@ signals:
   void cleared();
   // Canonical IPv4:port text keeps plugin-owned types out of Qt's registry.
   void found(QString name, QString endpoint);
-  void status(QString text);
+  void status(QJsonArray text);
   void idle();
 
 private:

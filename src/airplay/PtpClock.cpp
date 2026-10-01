@@ -1,4 +1,5 @@
 #include "PtpClock.h"
+#include "app/Message.h"
 #include <QNetworkDatagram>
 #include <QNetworkInterface>
 #include <cmath>
@@ -19,7 +20,7 @@ int64_t wallNs() {
 #else
   timespec stamp{};
   if (clock_gettime(CLOCK_REALTIME, &stamp) != 0)
-    throw Error("无法读取系统时钟");
+    throw Error(i18n::text(i18n::Id::CannotReadTheSystemClock));
   return int64_t(stamp.tv_sec) * 1000000000 + stamp.tv_nsec;
 #endif
 }
@@ -91,7 +92,7 @@ void PtpClock::start(const QHostAddress &local,
   if (!route.binding.automatic())
     selected = QNetworkInterface::interfaceFromIndex(int(route.index));
   if (!selected.isValid())
-    throw Error("无法确定 PTP 本地网卡");
+    throw Error(i18n::text(i18n::Id::CannotDetermineTheLocalPTPInterface));
   try {
     for (auto [socket, port] :
          {std::pair{&event_, 319}, std::pair{&general_, 320}}) {
@@ -99,12 +100,13 @@ void PtpClock::start(const QHostAddress &local,
         route.bind(*socket, quint16(port), true);
       else if (!socket->bind(QHostAddress::AnyIPv4, quint16(port),
                              QUdpSocket::DontShareAddress))
-        throw Error(QString("PTP UDP %1 绑定失败：%2")
+        throw Error(i18n::text(i18n::Id::PTPUDPBindingFailed)
                         .arg(port)
                         .arg(socket->errorString()));
       socket->setMulticastInterface(selected);
       if (!socket->joinMulticastGroup(QHostAddress("224.0.1.129"), selected))
-        throw Error("PTP 加入组播失败：" + socket->errorString());
+        throw Error(i18n::text(i18n::Id::PTPMulticastJoinFailed) +
+                    socket->errorString());
     }
     active_ = true;
     elapsed_.start();
@@ -130,7 +132,7 @@ void PtpClock::send(QUdpSocket &socket, quint16 port, const QByteArray &packet,
       if (!route_.binding.automatic())
         datagram.setSender(route_.local, socket.localPort());
       if (socket.writeDatagram(datagram) != packet.size())
-        throw Error("PTP 发送失败：" + socket.errorString());
+        throw Error(i18n::text(i18n::Id::PTPSendFailed) + socket.errorString());
     }
 }
 void PtpClock::tick() {
@@ -176,7 +178,7 @@ void PtpClock::tick() {
     }
   } catch (const std::exception &error) {
     stop();
-    emit failed(QString::fromUtf8(error.what()));
+    emit failed(i18n::fromException(error));
   }
 }
 void PtpClock::receive(QUdpSocket &socket) {
@@ -232,7 +234,7 @@ void PtpClock::receive(QUdpSocket &socket) {
       QTimer::singleShot(0, this, [this, &socket] { receive(socket); });
   } catch (const std::exception &error) {
     stop();
-    emit failed(QString::fromUtf8(error.what()));
+    emit failed(i18n::fromException(error));
   }
 }
 } // namespace airplay

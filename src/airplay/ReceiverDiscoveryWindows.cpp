@@ -1,5 +1,6 @@
 #include "DiscoveryApi.h"
 #include "ReceiverDiscovery.h"
+#include "app/Message.h"
 #include <QMetaObject>
 #include <QSet>
 #include <QTimer>
@@ -108,7 +109,7 @@ void ReceiverDiscovery::State::cancelOperations() {
       op->cancelRequested = false;
       failed_ = true;
       emit owner.status(
-          QString("发现取消失败（%1），等待原生请求结束；可使用手动模式。")
+          i18n::text(i18n::Id::DiscoveryCancellationFailedWaitingForTheNative)
               .arg(result));
     }
   };
@@ -126,8 +127,9 @@ void ReceiverDiscovery::State::drained() {
   if (!failed_)
     emit owner.status(
         endpoints_.isEmpty()
-            ? "扫描结束，未发现可用 IPv4 接收端；可刷新或使用手动模式。"
-            : QString("扫描结束，找到 %1 台接收端。").arg(endpoints_.size()));
+            ? i18n::text(i18n::Id::ScanCompleteNoUsableIPvReceiversFound)
+            : i18n::text(i18n::Id::ScanCompleteFoundReceiverS)
+                  .arg(endpoints_.size()));
   emit owner.idle();
 }
 void ReceiverDiscovery::State::begin() {
@@ -137,7 +139,7 @@ void ReceiverDiscovery::State::begin() {
   } catch (const std::exception &e) {
     scanning_ = false;
     failed_ = true;
-    emit owner.status(QString::fromUtf8(e.what()));
+    emit owner.status(i18n::fromException(e));
     emit owner.idle();
     return;
   }
@@ -156,7 +158,8 @@ void ReceiverDiscovery::State::begin() {
   op->browse.pQueryContext = op.get();
   browse_ = op;
   op->nativeLease = op;
-  emit owner.status("扫描中（10 秒）…请选择一台或两台接收端。");
+  emit owner.status(
+      i18n::text(i18n::Id::ScanningSecondsSelectOneOrTwoReceivers));
   deadline_.start();
   const auto result = api_.browse(&op->browse, &op->cancel);
   if (result != DNS_REQUEST_PENDING) {
@@ -166,7 +169,8 @@ void ReceiverDiscovery::State::begin() {
     failed_ = true;
     deadline_.stop();
     emit owner.status(
-        QString("设备发现失败（%1）；请刷新或使用手动模式。").arg(result));
+        i18n::text(i18n::Id::DeviceDiscoveryFailedRefreshOrUseManual)
+            .arg(result));
     drained();
   }
 }
@@ -234,13 +238,14 @@ void ReceiverDiscovery::State::browseResult(
   if (status != ERROR_SUCCESS) {
     failed_ = true;
     emit owner.status(
-        QString("发现查询失败（%1）；可使用手动模式。").arg(status));
+        i18n::text(i18n::Id::DiscoveryQueryFailedManualModeIsAvailable)
+            .arg(status));
     cancel();
     return;
   }
   if (limit)
     emit owner.status(
-        "候选服务达到 128 个上限，忽略其余服务；最多同时解析 4 个。");
+        i18n::text(i18n::Id::TheLimitOfCandidateServicesWasReached));
   pending_.append(names);
   pump();
 }
@@ -264,7 +269,8 @@ void ReceiverDiscovery::State::pump() {
       op->nativeLease.reset();
       resolving_.removeOne(op);
       emit owner.status(
-          QString("服务解析启动失败（%1），继续扫描。").arg(result));
+          i18n::text(i18n::Id::ServiceResolutionCouldNotStartContinuingThe)
+              .arg(result));
     }
   }
 }
@@ -316,10 +322,12 @@ void ReceiverDiscovery::State::resolveResult(
                            endpoint.text());
         }
       } catch (const std::exception &) {
-        emit owner.status("已忽略无有效 IPv4 地址或端口的服务，继续扫描。");
+        emit owner.status(i18n::text(i18n::Id::IgnoredAServiceWithNoValidIPv));
       }
     } else if (result != ERROR_CANCELLED)
-      emit owner.status(QString("服务解析失败（%1），继续扫描。").arg(result));
+      emit owner.status(
+          i18n::text(i18n::Id::ServiceResolutionFailedContinuingTheScan)
+              .arg(result));
     pump();
   }
   drained();

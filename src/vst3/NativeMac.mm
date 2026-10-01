@@ -1,6 +1,7 @@
 #include "NativeEditor.h"
 #include "NativeRuntime.h"
 #include "airplay/Crypto.h"
+#include "app/Message.h"
 #include "pluginterfaces/gui/iplugview.h"
 #import <Cocoa/Cocoa.h>
 #include <QWidget>
@@ -34,7 +35,7 @@ NativeRuntime::NativeRuntime(std::function<void()> tick)
       },
       &context);
   if (!state_->timer)
-    throw airplay::Error("创建插件事件计时器失败");
+    throw airplay::Error(i18n::text(i18n::Id::FailedToCreatePluginEventTimer));
   CFRunLoopAddTimer(CFRunLoopGetMain(), state_->timer, kCFRunLoopCommonModes);
 }
 NativeRuntime::~NativeRuntime() = default;
@@ -66,7 +67,7 @@ struct NativeEditor::State {
 NativeEditor::NativeEditor(void *parent, QWidget *widget, const QString &error)
     : state_(std::make_unique<State>()) {
   if (!NativeRuntime::validParentThread(parent))
-    throw airplay::Error("编辑器需要主线程 NSView");
+    throw airplay::Error(i18n::text(i18n::Id::EditorRequiresAnNSViewOnTheMain));
   state_->parent = (NSView *)parent;
   if (widget)
     state_->view = (NSView *)widget->winId();

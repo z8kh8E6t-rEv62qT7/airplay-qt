@@ -1,8 +1,9 @@
 #pragma once
+#include "DacpServer.h"
 #include "PtpClock.h"
 #include "ReceiverEndpoint.h"
 #include "RtspClient.h"
-#include "DacpServer.h"
+#include "app/Message.h"
 #include "audio/CaptureStream.h"
 #include <array>
 #include <deque>
@@ -41,19 +42,20 @@ public:
   ~AirPlaySession() override;
   void start();
   void captureStarted();
-  void stop(const QString &error = {}, SessionEnd reason = SessionEnd::Stopped);
+  void stop(const i18n::Message &error = {},
+            SessionEnd reason = SessionEnd::Stopped);
   void volume(double db);
 signals:
-  void status(QString text);
+  void status(QJsonArray text);
   void streamingChanged(bool active);
-  void log(QString text);
-  void group(QString text);
+  void log(QJsonArray text);
+  void group(QJsonArray text);
   void startCapture();
   void stopCapture();
   void volumeApplied(double db);
   void telemetry(double left, double right, double backlog, quint64 packets,
                  quint64 retransmitted, quint64 expired);
-  void finished(QString error, int reason);
+  void finished(QJsonArray error, int reason);
 
 private:
   struct Peer;
@@ -75,7 +77,7 @@ private:
   void finishStop();
   bool allReady() const;
   bool allStopped() const;
-  void setState(State state, const QString &text);
+  void setState(State state, const i18n::Message &text);
   void fail(const std::exception &error);
   app::Timing timing_;
   SessionEnvironment environment_;
@@ -92,7 +94,8 @@ private:
   QElapsedTimer elapsed_;
   State state_ = State::Preparing;
   SessionEnd endReason_ = SessionEnd::Stopped;
-  QString error_, identity_, groupId_;
+  i18n::Message error_;
+  QString identity_, groupId_;
   QHostAddress local_;
   uint64_t clockId_ = 0, counter_ = 0, sentFrames_ = 0, retransmitted_ = 0,
            expired_ = 0;

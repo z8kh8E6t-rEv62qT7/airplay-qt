@@ -15,7 +15,7 @@ file(LOCK "${SOURCE_ROOT}/dist/.package-macos.lock" GUARD PROCESS TIMEOUT 0)
 file(REMOVE_RECURSE "${stage}")
 file(MAKE_DIRECTORY "${payload}" "${stage}/checks")
 set(REPORT "${stage}/verification.txt")
-file(WRITE "${REPORT}" "AirPlayQt macOS arm64 package verification\nMinimum macOS: 27.0\nCLI: OFF\nSigning: ad-hoc, no notarization\n")
+file(WRITE "${REPORT}" "")
 include("${SOURCE_ROOT}/cmake/MacBundle.cmake")
 include("${SOURCE_ROOT}/cmake/MacLicenses.cmake")
 mac_run("CTest" "@CMAKE_CTEST_COMMAND@" --test-dir "${BUILD_ROOT}" -C Release
@@ -42,8 +42,6 @@ mac_run("Stage app" /usr/bin/ditto "${APP}" "${app}")
 mac_run("Stage VST3" /usr/bin/ditto "${PLUGIN}" "${plugin}")
 file(MAKE_DIRECTORY "${app}/Contents/PlugIns/platforms")
 file(COPY "${cocoa}" DESTINATION "${app}/Contents/PlugIns/platforms")
-# Only Cocoa is loaded by this Widgets application. Qt's permission backend is
-# linked statically. Avoid unrelated image/SQL/TLS plugins and their dependencies.
 mac_run("Qt official deployment" "@AIRPLAY_MACDEPLOYQT@" "${app}"
   -no-plugins -no-strip -no-codesign
   "-executable=${app}/Contents/PlugIns/platforms/libqcocoa.dylib")
@@ -65,7 +63,6 @@ foreach(bundle IN ITEMS "${app}" "${plugin}")
   mac_sign("${bundle}")
 endforeach()
 
-# Different parent directories ensure the app and plugin cannot help each other.
 set(relocated_app "${stage}/checks/独立 应用/AirPlayQt.app")
 set(relocated_plugin "${stage}/checks/独立 插件/AirPlayQt.vst3")
 mac_run("Relocate app" /usr/bin/ditto "${app}" "${relocated_app}")
@@ -113,8 +110,6 @@ foreach(mode IN ITEMS owned borrowed incompatible missing-platform)
 endforeach()
 mac_run("Packaged VST3 validator" "${VALIDATOR}" "${relocated_plugin}")
 
-# Prove the package gate rejects a missing dynamic dependency and a damaged
-# signature, without changing either the build products or delivery bundles.
 set(damaged "${stage}/checks/damaged.app")
 mac_run("Stage failure checks" /usr/bin/ditto "${app}" "${damaged}")
 file(REMOVE "${damaged}/Contents/Frameworks/libcrypto.3.dylib")
@@ -131,12 +126,7 @@ if(result STREQUAL "0")
 endif()
 file(APPEND "${REPORT}" "\nNegative checks passed: missing library and damaged signature rejected.\n")
 
-file(WRITE "${payload}/README.txt" "AirPlayQt @PROJECT_VERSION@\narm64; macOS 27.0 or later.\nEach bundle includes its own runtime libraries. Homebrew is not required.\nAd-hoc signed; not notarized or Developer ID signed.\nCopy AirPlayQt.app to your preferred location. Install AirPlayQt.vst3 manually in a VST3 location if desired.\nMicrophone and Local Network permissions are required for input and receiver access.\nConfiguration: ~/.config/AirPlayQt.json\nCLI test entry is disabled.\nThird-party notices and source provenance: Contents/Resources/ThirdPartyLicenses in each bundle.\nThis software uses the FreeType project (https://freetype.org).\nUser confirmed prior hardware playback. Packaged DAW playback, long-duration sync, other machines/OS versions and Windows have not been revalidated.\nClaude review remains a go-live gate and was not run.\n")
-file(APPEND "${REPORT}" "\nUser reported real-device playback passed before packaging. No audio was sent by packaging tests.\nNot verified: packaged DAW/playback, other machines/OS versions, long-duration sync, Windows.\nClaude review remains required for go-live; not executed.\n")
-file(APPEND "${payload}/README.txt" "\nVST3: a previously streaming instance may reconnect once if valid host audio resumes within 5 seconds of suspension. Stop, bypass, state load, format changes, failures and unload cancel recovery.\nStandalone: clicking Start in discovery mode remembers names and IPv4:port endpoints. A saved pair is reselected only when both exact matches are found; playback never starts automatically.\nThe actual DAW add-plugin reproduction remains unverified.\n")
 set(zip "${stage}/AirPlayQt-macos-arm64.zip")
-file(APPEND "${payload}/README.txt" "\nConfiguration and VST3 state version: 2. Old versions are rejected without migration.\nNetwork binding: automatic system routing or a specific interface and IPv4; unavailable explicit bindings stop the session without fallback.\nHomePod controls: encrypted event replies, DACP volume control, 1 dB relative steps, and fixed AirPlayQt/live-audio metadata. Metadata rejection stops the session. Remote play/pause and track changes are not implemented.\nThe new HomePod touch controls, phone volume slider and lighting remain unverified on real hardware after this change. Previous playback confirmation does not establish these results.\n")
-file(APPEND "${REPORT}" "\nThis package includes network binding, encrypted event responses, DACP volume control and fixed live-audio metadata.\nNew HomePod touch/phone volume and lighting behavior: not verified on real hardware for this revision. Prior user-confirmed playback is historical.\n")
 mac_run("Create ZIP" /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${payload}" "${zip}")
 mac_run("Extract ZIP" /usr/bin/ditto -x -k "${zip}" "${stage}/unpacked")
 foreach(name IN ITEMS AirPlayQt.app AirPlayQt.vst3)
@@ -149,7 +139,6 @@ file(WRITE "${payload}/SHA256SUMS" "${hash}  AirPlayQt-macos-arm64.zip\n")
 file(COPY "${REPORT}" "${stage}/ctest.xml" "${stage}/app-load.log"
   "${stage}/vst3-owned.log" "${stage}/vst3-borrowed.log" "${stage}/vst3-incompatible.log" "${stage}/vst3-missing-platform.log"
   DESTINATION "${payload}")
-# Publish only validated output. Keep the prior delivery until the final rename.
 file(RENAME "${zip}" "${payload}/AirPlayQt-macos-arm64.zip")
 file(REMOVE_RECURSE "${destination}.previous")
 if(EXISTS "${destination}")

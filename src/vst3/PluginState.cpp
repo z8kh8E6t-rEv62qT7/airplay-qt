@@ -1,4 +1,5 @@
 #include "PluginState.h"
+#include "app/Message.h"
 #include <bit>
 #include <map>
 
@@ -8,7 +9,7 @@ std::mutex registryMutex;
 std::map<uint64_t, std::weak_ptr<PluginState>> registry;
 uint64_t nextId = 0;
 constexpr uint32_t magic = 0x51504156; // VAPQ, fixed little endian wire format.
-constexpr uint32_t version = 2;
+constexpr uint32_t version = 3;
 bool transfer(Steinberg::IBStream *stream, void *bytes, int count, bool write) {
   if (!stream)
     return false;
@@ -73,9 +74,13 @@ bool stateIo(Steinberg::IBStream *stream, SavedState &state, bool write) {
   if (!number(stream, bypass, write) || bypass > 1)
     return false;
   state.bypass = bypass != 0;
-  return text(stream, state.networkBinding.interfaceName, write) &&
-         text(stream, state.networkBinding.ipv4, write) &&
-         state.networkBinding.validate().isEmpty() &&
+  uint32_t language = uint32_t(state.language);
+  if (!text(stream, state.networkBinding.interfaceName, write) ||
+      !text(stream, state.networkBinding.ipv4, write) ||
+      !number(stream, language, write) || language > 1)
+    return false;
+  state.language = i18n::Language(language);
+  return state.networkBinding.validate().isEmpty() &&
          state.timing.validate().isEmpty();
 }
 } // namespace
@@ -87,7 +92,7 @@ bool readState(Steinberg::IBStream *stream, SavedState &result) {
   return true;
 }
 bool writeState(Steinberg::IBStream *stream, const SavedState &value) {
-  if (!value.timing.validate().isEmpty() ||
+  if (!i18n::valid(value.language) || !value.timing.validate().isEmpty() ||
       !value.networkBinding.validate().isEmpty())
     return false;
   auto copy = value;
@@ -108,11 +113,10 @@ PluginState::~PluginState() {
   std::lock_guard lock(registryMutex);
   registry.erase(id);
 }
-QString PluginState::configurationError() const {
+i18n::Message PluginState::configurationError() const {
   return invalidConfiguration.load()
-             ? QString("插件配置版本无效或数据损坏；请移除该实例，重新添加后保"
-                       "存工程。")
-             : QString{};
+             ? i18n::text(i18n::Id::PluginConfigurationVersionIsInvalidOrData)
+             : i18n::Message{};
 }
 airplay::NetworkBinding PluginState::networkBinding() const {
   std::lock_guard lock(mutex_);
@@ -122,6 +126,19 @@ void PluginState::setNetworkBinding(const airplay::NetworkBinding &value) {
   std::lock_guard lock(mutex_);
   networkBinding_ = value;
   ++timingRevision;
+}
+i18n::Language PluginState::language() const {
+  std::lock_guard lock(mutex_);
+  return language_;
+}
+void PluginState::setLanguage(i18n::Language value) {
+  if (!i18n::valid(value))
+    return;
+  std::lock_guard lock(mutex_);
+  if (language_ == value)
+    return;
+  language_ = value;
+  ++languageRevision;
 }
 app::Timing PluginState::timing() const {
   std::lock_guard lock(mutex_);

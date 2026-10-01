@@ -1,4 +1,5 @@
 #include "StreamingPanel.h"
+#include "app/Message.h"
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QEventLoop>
@@ -19,16 +20,28 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     : QWidget(parent), discovery_(this, std::move(discoveryApi)),
       session_(session) {
   auto *layout = new QVBoxLayout(this);
-  title_ = new QLabel("音频输入 → AirPlay 接收端");
+  title_ = label(i18n::text(i18n::Id::AudioInputAirPlayReceivers));
   title_->setObjectName("streamingTitle");
   title_->setStyleSheet("font-size: 22px; font-weight: 600; padding: 8px 0;");
-  layout->addWidget(title_);
-  layout->addWidget(new QLabel("44.1 kHz / 16-bit / 双声道 · 不重采样"));
+  auto *titleRow = new QHBoxLayout;
+  titleRow->addWidget(title_, 1);
+  languageButton_ = new QPushButton;
+  languageButton_->setObjectName("languageToggle");
+  titleRow->addWidget(languageButton_);
+  layout->addLayout(titleRow);
+  connect(languageButton_, &QPushButton::clicked, this, [this] {
+    setLanguage(language() == i18n::Language::English
+                    ? i18n::Language::Chinese
+                    : i18n::Language::English);
+  });
+  layout->addWidget(label(i18n::text(i18n::Id::KHzBitStereoNoResampling)));
+  inputLayout_ = new QVBoxLayout;
+  layout->addLayout(inputLayout_);
   auto *networkRow = new QHBoxLayout;
-  networkRow->addWidget(new QLabel("发送网卡"));
+  networkRow->addWidget(label(i18n::text(i18n::Id::SendingInterface)));
   network_ = new QComboBox;
   network_->setObjectName("networkBinding");
-  refreshNetwork_ = new QPushButton("刷新网卡");
+  refreshNetwork_ = button(i18n::text(i18n::Id::RefreshInterfaces));
   refreshNetwork_->setObjectName("refreshNetwork");
   networkRow->addWidget(network_, 1);
   networkRow->addWidget(refreshNetwork_);
@@ -43,31 +56,36 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   receivers_->setMaximumHeight(130);
   discoveredLayout->addWidget(receivers_);
   auto *scanRow = new QHBoxLayout;
-  discoveryStatus_ = new QLabel("等待扫描");
+  discoveryStatus_ = label(i18n::text(i18n::Id::WaitingToScan));
   discoveryStatus_->setWordWrap(true);
-  refresh_ = new QPushButton("刷新");
+  refresh_ = button(i18n::text(i18n::Id::Refresh));
   refresh_->setObjectName("refreshReceivers");
   scanRow->addWidget(discoveryStatus_, 1);
   scanRow->addWidget(refresh_);
   discoveredLayout->addLayout(scanRow);
-  receiverModes_->addTab(discovered, "发现模式");
+  receiverModes_->addTab(discovered, QString{});
   auto *manual = new QWidget;
   auto *manualForm = new QFormLayout(manual);
   manualFirst_ = new QLineEdit;
   manualFirst_->setObjectName("manualFirst");
   manualSecond_ = new QLineEdit;
   manualSecond_->setObjectName("manualSecond");
-  manualFirst_->setPlaceholderText("IPv4[:端口]，省略端口使用 7000");
-  manualSecond_->setPlaceholderText("可留空；双台必须属于同一个已有立体声组");
-  manualForm->addRow("接收端 1（必填）", manualFirst_);
-  manualForm->addRow("接收端 2（可选）", manualSecond_);
-  receiverModes_->addTab(manual, "手动模式");
+  bindText(manualFirst_, "placeholderText",
+           i18n::text(i18n::Id::IPvPortDefaultsToPort));
+  bindText(manualSecond_, "placeholderText",
+           i18n::text(i18n::Id::OptionalTwoReceiversMustBelongToAn));
+  manualForm->addRow(label(i18n::text(i18n::Id::ReceiverRequired)),
+                     manualFirst_);
+  manualForm->addRow(label(i18n::text(i18n::Id::ReceiverOptional)),
+                     manualSecond_);
+  receiverModes_->addTab(manual, QString{});
   layout->addWidget(receiverModes_);
   targets_ = new QLabel;
   targets_->setWordWrap(true);
   targets_->setObjectName("receiverSummary");
   layout->addWidget(targets_);
-  auto *tabs = new QTabWidget;
+  timingTabs_ = new QTabWidget;
+  auto *tabs = timingTabs_;
   for (int page = 0; page < 2; ++page) {
     auto *widget = new QWidget;
     auto *fields = new QFormLayout(widget);
@@ -90,26 +108,24 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
         }
       });
       if (f.powerOfTwo)
-        spin->setToolTip("周期须为 1000 × 2ⁿ ms（n 为整数），例如 "
-                         "15.625、31.25、62.5、125、250、500、1000；"
-                         "具体取值受当前范围限制。");
-      fields->addRow(QString::fromUtf8(f.label), spin);
+        bindText(spin, "toolTip", i18n::text(i18n::Id::PowerOfTwoIntervalHint));
+      fields->addRow(label(f.label), spin);
     }
-    tabs->addTab(widget, page ? "高级时间设置" : "常用时间设置");
+    tabs->addTab(widget, QString{});
   }
   layout->addWidget(tabs);
-  defaults_ = new QPushButton("恢复时间默认值");
+  defaults_ = button(i18n::text(i18n::Id::ResetTimingDefaults));
   layout->addWidget(defaults_, 0, Qt::AlignRight);
   auto *controls = new QHBoxLayout;
-  start_ = new QPushButton("开始");
+  start_ = button(i18n::text(i18n::Id::Start));
   start_->setObjectName("start");
-  stop_ = new QPushButton("停止");
+  stop_ = button(i18n::text(i18n::Id::Stop));
   stop_->setObjectName("stop");
   stop_->setEnabled(false);
   controls->addWidget(start_);
   controls->addWidget(stop_);
   layout->addLayout(controls);
-  group_ = new QLabel("尚未读取接收端身份");
+  group_ = label(i18n::text(i18n::Id::ReceiverIdentityHasNotBeenRead));
   group_->setWordWrap(true);
   layout->addWidget(group_);
   auto *volumeRow = new QHBoxLayout;
@@ -117,9 +133,10 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   volume_->setRange(-144, 0);
   volume_->setDecimals(2);
   volume_->setSuffix(" dB");
-  applyVolume_ = new QPushButton("设置 HomePod 音量");
-  mute_ = new QCheckBox("静音");
-  volumeRow->addWidget(new QLabel("接收端音量"));
+  applyVolume_ = button(i18n::text(i18n::Id::SetHomePodVolume));
+  mute_ = new QCheckBox;
+  bindText(mute_, "text", i18n::text(i18n::Id::Mute));
+  volumeRow->addWidget(label(i18n::text(i18n::Id::ReceiverVolume)));
   volumeRow->addWidget(volume_);
   volumeRow->addWidget(applyVolume_);
   volumeRow->addWidget(mute_);
@@ -133,15 +150,15 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   for (auto *meter : {leftLevel_, rightLevel_}) {
     meter->setRange(0, 1000);
     meter->setValue(0);
-    meter->setFormat("静音");
+    bindText(meter, "format", i18n::text(i18n::Id::Mute));
   }
   meters->addWidget(new QLabel("L"));
   meters->addWidget(leftLevel_);
   meters->addWidget(new QLabel("R"));
   meters->addWidget(rightLevel_);
   layout->addLayout(meters);
-  state_ = new QLabel("就绪");
-  stats_ = new QLabel("积压 0 ms · 每台包数 0 · 重传 0 · 过期 0");
+  state_ = label(i18n::text(i18n::Id::Ready));
+  stats_ = label(i18n::text(i18n::Id::InitialStatistics));
   layout->addWidget(state_);
   layout->addWidget(stats_);
   log_ = new QPlainTextEdit;
@@ -150,8 +167,9 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   layout->addWidget(log_, 1);
   connect(&discovery_, &airplay::ReceiverDiscovery::cleared, this,
           &StreamingPanel::clearDiscoveredReceivers);
-  connect(&discovery_, &airplay::ReceiverDiscovery::status, discoveryStatus_,
-          &QLabel::setText);
+  connect(
+      &discovery_, &airplay::ReceiverDiscovery::status, this,
+      [this](i18n::Message text) { bindText(discoveryStatus_, "text", text); });
   connect(&discovery_, &airplay::ReceiverDiscovery::found, this,
           [this](const QString &name, const QString &endpoint) {
             const auto incoming = airplay::parseReceiverEndpoint(endpoint);
@@ -179,8 +197,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   connect(&discovery_, &airplay::ReceiverDiscovery::idle, this, [this] {
     if (restoreReceiversAllowed_ && !rememberedReceivers_.isEmpty() &&
         !closing_)
-      appendLog("上次勾选的接收端尚未全部匹配（名称、地址及端口），请刷新或手动"
-                "选择。");
+      appendLog(i18n::text(i18n::Id::NotAllSavedReceiversMatchedByName));
     if (closing_)
       emit discoveryIdle();
   });
@@ -197,8 +214,8 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
             if (checked > 2) {
               QSignalBlocker blocker(receivers_);
               changed->setCheckState(Qt::Unchecked);
-              discoveryStatus_->setText(
-                  "最多选择两台接收端；双台必须属于同一个已有立体声组。");
+              bindText(discoveryStatus_, "text",
+                       i18n::text(i18n::Id::SelectAtMostTwoReceiversBothMust));
             }
             updateTargets();
           });
@@ -224,10 +241,12 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     scan();
   });
   updateTargets();
-  connect(&session_, &app::SessionController::status, state_, &QLabel::setText);
+  connect(&session_, &app::SessionController::status, this,
+          [this](i18n::Message text) { bindText(state_, "text", text); });
   connect(&session_, &app::SessionController::log, this,
           &StreamingPanel::appendLog);
-  connect(&session_, &app::SessionController::group, group_, &QLabel::setText);
+  connect(&session_, &app::SessionController::group, this,
+          [this](i18n::Message text) { bindText(group_, "text", text); });
   connect(&session_, &app::SessionController::error, this,
           &StreamingPanel::showError);
   connect(&session_, &app::SessionController::busyChanged, this,
@@ -256,24 +275,25 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
             applyVolume_->setEnabled(streaming_ && !mute_->isChecked());
             mute_->setEnabled(streaming_);
           });
-  connect(
-      &session_, &app::SessionController::telemetry, this,
-      [this](double l, double r, double backlog, quint64 packets,
-             quint64 retransmitted, quint64 expired) {
-        for (auto [meter, value] :
-             {std::pair{leftLevel_, l}, std::pair{rightLevel_, r}}) {
-          meter->setValue(int(value * 1000));
-          meter->setFormat(
-              value > 0
-                  ? QString::number(20 * std::log10(value), 'f', 1) + " dBFS"
-                  : "静音");
-        }
-        stats_->setText(QString("积压 %1 ms · 每台包数 %2 · 重传 %3 · 过期 %4")
-                            .arg(backlog * 1000, 0, 'f', 1)
-                            .arg(packets)
-                            .arg(retransmitted)
-                            .arg(expired));
-      });
+  connect(&session_, &app::SessionController::telemetry, this,
+          [this](double l, double r, double backlog, quint64 packets,
+                 quint64 retransmitted, quint64 expired) {
+            for (auto [meter, value] :
+                 {std::pair{leftLevel_, l}, std::pair{rightLevel_, r}}) {
+              meter->setValue(int(value * 1000));
+              bindText(meter, "format",
+                       value > 0
+                           ? QString::number(20 * std::log10(value), 'f', 1) +
+                                 " dBFS"
+                           : i18n::text(i18n::Id::Mute));
+            }
+            bindText(stats_, "text",
+                     i18n::text(i18n::Id::Statistics)
+                         .arg(backlog * 1000, 0, 'f', 1)
+                         .arg(packets)
+                         .arg(retransmitted)
+                         .arg(expired));
+          });
   connect(defaults_, &QPushButton::clicked, this, [this] {
     app::Timing defaults;
     for (size_t i = 0; i < timings_.size(); ++i)
@@ -290,7 +310,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
       discovery_.cancel();
       emit startRequested();
     } catch (const std::exception &e) {
-      appendLog(QString::fromUtf8(e.what()));
+      appendLog(i18n::fromException(e));
       updateTargets();
     }
   });
@@ -309,11 +329,12 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     session_.volume(muted ? -144 : restoreVolume_);
   });
 
+  retranslate();
   setTiming(app::Timing{});
   for (const auto &text : session_.recentLog())
     appendLog(text);
-  state_->setText(session_.currentStatus());
-  group_->setText(session_.currentGroup());
+  bindText(state_, "text", session_.currentStatus());
+  bindText(group_, "text", session_.currentGroup());
   volume_->setValue(session_.currentVolume());
   restoreVolume_ = session_.restoreVolume();
   {
@@ -326,6 +347,62 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   applyVolume_->setEnabled(streaming_ && !mute_->isChecked());
   mute_->setEnabled(streaming_);
 }
+QLabel *StreamingPanel::label(const i18n::Message &text) {
+  auto *result = new QLabel;
+  bindText(result, "text", text);
+  return result;
+}
+QPushButton *StreamingPanel::button(const i18n::Message &text) {
+  auto *result = new QPushButton;
+  bindText(result, "text", text);
+  return result;
+}
+void StreamingPanel::bindText(QObject *target, const char *property,
+                              const i18n::Message &message) {
+  for (auto &binding : textBindings_) {
+    if (binding.target == target && binding.property == property) {
+      binding.message = message;
+      target->setProperty(property, message.render(language()));
+      return;
+    }
+  }
+  textBindings_.append({target, property, message});
+  target->setProperty(property, message.render(language()));
+}
+void StreamingPanel::setLanguage(i18n::Language value) {
+  if (!i18n::valid(value) || value == language())
+    return;
+  session_.setLanguage(value);
+  retranslate();
+  emit languageChanged();
+}
+void StreamingPanel::retranslate() {
+  for (const auto &binding : textBindings_)
+    if (binding.target)
+      binding.target->setProperty(binding.property.constData(),
+                                  binding.message.render(language()));
+  languageButton_->setText(language() == i18n::Language::English
+                               ? QStringLiteral("中文")
+                               : QStringLiteral("English"));
+  receiverModes_->setTabText(
+      0, i18n::text(i18n::Id::Discovery).render(language()));
+  receiverModes_->setTabText(1,
+                             i18n::text(i18n::Id::Manual).render(language()));
+  timingTabs_->setTabText(0,
+                          i18n::text(i18n::Id::BasicTiming).render(language()));
+  timingTabs_->setTabText(
+      1, i18n::text(i18n::Id::AdvancedTiming).render(language()));
+  if (network_->count())
+    network_->setItemText(
+        0, i18n::text(i18n::Id::AutomaticSystemRouting).render(language()));
+  for (int i = 1; i < network_->count(); ++i)
+    if (network_->itemData(i, Qt::UserRole + 2).toBool())
+      network_->setItemText(
+          i, (network_->itemData(i).toString() + " · " +
+              network_->itemData(i, Qt::UserRole + 1).toString() +
+              i18n::text(i18n::Id::Unavailable))
+                 .render(language()));
+}
 airplay::NetworkBinding StreamingPanel::networkBinding() const {
   return {network_->currentData(Qt::UserRole).toString(),
           network_->currentData(Qt::UserRole + 1).toString()};
@@ -335,7 +412,9 @@ void StreamingPanel::setNetworkBinding(const airplay::NetworkBinding &value) {
   const auto previous = networkBinding();
   QSignalBlocker block(network_);
   network_->clear();
-  network_->addItem("自动（系统路由）", QString{});
+  network_->addItem(
+      i18n::text(i18n::Id::AutomaticSystemRouting).render(language()),
+      QString{});
   int selected = 0;
   for (const auto &binding : airplay::NetworkBinding::available()) {
     network_->addItem(binding.interfaceName + " · " + binding.ipv4,
@@ -346,9 +425,12 @@ void StreamingPanel::setNetworkBinding(const airplay::NetworkBinding &value) {
       selected = row;
   }
   if (!value.automatic() && !selected) {
-    network_->addItem(value.interfaceName + " · " + value.ipv4 + "（不可用）",
+    network_->addItem((value.interfaceName + " · " + value.ipv4 +
+                       i18n::text(i18n::Id::Unavailable))
+                          .render(language()),
                       value.interfaceName);
     selected = network_->count() - 1;
+    network_->setItemData(selected, true, Qt::UserRole + 2);
     network_->setItemData(selected, value.ipv4, Qt::UserRole + 1);
   }
   network_->setCurrentIndex(selected);
@@ -423,18 +505,22 @@ void StreamingPanel::updateTargets() {
     QStringList addresses;
     for (const auto &endpoint : selected)
       addresses.append(endpoint.text());
-    title_->setText(selected.size() == 1 ? "音频输入 → AirPlay 单台接收端"
-                                         : "音频输入 → HomePod 立体声组");
-    targets_->setText(addresses.join(" + ") + (unavailable_.isEmpty()
-                                                   ? QString{}
-                                                   : "\n" + unavailable_));
+    bindText(title_, "text",
+             selected.size() == 1
+                 ? i18n::text(i18n::Id::AudioInputSingleAirPlayReceiver)
+                 : i18n::text(i18n::Id::AudioInputHomePodStereoPair));
+    bindText(targets_, "text",
+             addresses.join(" + ") + (unavailable_.isEmpty()
+                                          ? i18n::Message{}
+                                          : "\n" + unavailable_));
     start_->setEnabled(!busy_ && !recoveryPending_ && !closing_ &&
                        unavailable_.isEmpty());
   } catch (const std::exception &e) {
-    title_->setText("音频输入 → AirPlay 接收端");
-    targets_->setText(
-        QString::fromUtf8(e.what()) +
-        (unavailable_.isEmpty() ? QString{} : "\n" + unavailable_));
+    bindText(title_, "text", i18n::text(i18n::Id::AudioInputAirPlayReceivers));
+    bindText(targets_, "text",
+             i18n::fromException(e) + (unavailable_.isEmpty()
+                                           ? i18n::Message{}
+                                           : "\n" + unavailable_));
     start_->setEnabled(false);
   }
 }
@@ -475,19 +561,23 @@ void StreamingPanel::setBusy(bool busy) {
     volumePending_ = false;
     leftLevel_->setValue(0);
     rightLevel_->setValue(0);
-    leftLevel_->setFormat("静音");
-    rightLevel_->setFormat("静音");
+    bindText(leftLevel_, "format", i18n::text(i18n::Id::Mute));
+    bindText(rightLevel_, "format", i18n::text(i18n::Id::Mute));
   }
 }
 void StreamingPanel::setRecoveryPending(bool pending) {
+  const bool changed = recoveryPending_ != pending;
   recoveryPending_ = pending;
   setBusy(busy_);
+  if (!pending && changed)
+    bindText(state_, "text", session_.currentStatus());
   if (pending)
-    state_->setText("宿主音频处理中断，等待恢复（最多 5 秒）；可点击停止取消");
+    bindText(state_, "text",
+             i18n::text(i18n::Id::HostAudioProcessingInterruptedWaitingUpTo));
 }
-void StreamingPanel::appendLog(const QString &text) {
+void StreamingPanel::appendLog(const i18n::Message &text) {
   log_->appendPlainText(QDateTime::currentDateTime().toString("HH:mm:ss.zzz") +
-                        "  " + text);
+                        "  " + text.render(language()));
 }
 
 void StreamingPanel::setTiming(const app::Timing &value) {
@@ -496,11 +586,11 @@ void StreamingPanel::setTiming(const app::Timing &value) {
     timings_[i]->setValue(value.*(app::timingFields[i].member) * 1000);
   }
 }
-void StreamingPanel::showError(const QString &text) {
-  state_->setText("错误：" + text);
-  appendLog("错误：" + text);
+void StreamingPanel::showError(const i18n::Message &text) {
+  bindText(state_, "text", i18n::text(i18n::Id::ErrorPrefix) + text);
+  appendLog(i18n::text(i18n::Id::ErrorPrefix) + text);
 }
-void StreamingPanel::setUnavailable(const QString &reason) {
+void StreamingPanel::setUnavailable(const i18n::Message &reason) {
   unavailable_ = reason;
   updateTargets();
 }

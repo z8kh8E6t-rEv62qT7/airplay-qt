@@ -1,6 +1,7 @@
 #include "AirPlaySession.h"
 #include "EventChannel.h"
 #include "NowPlaying.h"
+#include "app/Message.h"
 #include <QNetworkDatagram>
 #include <QUuid>
 #include <algorithm>
@@ -11,7 +12,7 @@ namespace airplay {
 namespace {
 QVariantMap dictionary(const QVariant &value) {
   if (value.typeId() != QMetaType::QVariantMap)
-    throw Error("接收端未返回 plist 字典");
+    throw Error(i18n::text(i18n::Id::ReceiverDidNotReturnAPlistDictionary));
   return value.toMap();
 }
 bool integer(const QVariant &value) {
@@ -21,7 +22,7 @@ bool integer(const QVariant &value) {
 }
 quint16 port(const QVariant &value) {
   if (!integer(value) || value.toLongLong() < 1 || value.toLongLong() > 65535)
-    throw Error("接收端返回无效端口");
+    throw Error(i18n::text(i18n::Id::ReceiverReturnedAnInvalidPort));
   return quint16(value.toUInt());
 }
 QString string(const QVariant &value) {
@@ -32,7 +33,7 @@ QMap<QString, QString> txt(const QByteArray &data) {
   for (qsizetype cursor = 0; cursor < data.size();) {
     const int size = uint8_t(data[cursor++]);
     if (cursor + size > data.size())
-      throw Error("Bonjour TXT 截断");
+      throw Error(i18n::text(i18n::Id::TruncatedBonjourTXTRecord));
     auto item = data.mid(cursor, size);
     cursor += size;
     const auto equal = item.indexOf('=');
@@ -47,17 +48,17 @@ ReceiverInfo receiverInfo(const QByteArray &data) {
   const auto info = dictionary(plistDecode(data));
   if (info.contains("txtAirPlay") &&
       info["txtAirPlay"].typeId() != QMetaType::QByteArray)
-    throw Error("接收端 txtAirPlay 类型无效");
+    throw Error(i18n::text(i18n::Id::InvalidReceiverTxtAirPlayType));
   const auto fields = txt(info.value("txtAirPlay").toByteArray());
   const auto formats =
       info.value("supportedFormats").toMap().value("audioStream");
   if (integer(formats) && !(formats.toULongLong() & (1ULL << 18)))
-    throw Error("接收端不支持 44.1 kHz 立体声 ALAC");
+    throw Error(i18n::text(i18n::Id::ReceiverDoesNotSupportKHzStereoALAC));
   const auto volume = info.value("initialVolume");
   if ((volume.typeId() != QMetaType::Double && !integer(volume)) ||
       !std::isfinite(volume.toDouble()) || volume.toDouble() < -144 ||
       volume.toDouble() > 0)
-    throw Error("接收端 initialVolume 无效");
+    throw Error(i18n::text(i18n::Id::InvalidReceiverInitialVolume));
   auto id = string(info.value("deviceID"));
   if (id.isEmpty())
     id = fields.value("deviceid");
@@ -66,10 +67,10 @@ ReceiverInfo receiverInfo(const QByteArray &data) {
 }
 void validateGroup(const ReceiverInfo &a, const ReceiverInfo &b) {
   if (a.stereoId.isEmpty() || a.stereoId != b.stereoId)
-    throw Error("两台 HomePod 不属于同一个立体声组合");
+    throw Error(i18n::text(i18n::Id::TheTwoHomePodsAreNotInThe));
   if (a.deviceId.isEmpty() || b.deviceId.isEmpty() ||
       a.deviceId.compare(b.deviceId, Qt::CaseInsensitive) == 0)
-    throw Error("必须为两个不同的接收端设备");
+    throw Error(i18n::text(i18n::Id::TwoDifferentReceiverDevicesAreRequired));
 }
 struct AirPlaySession::Peer {
   enum class Step {
@@ -108,8 +109,7 @@ struct AirPlaySession::Peer {
     QByteArray bytes;
   };
   std::array<Packet, 1024> history;
-  explicit Peer(const QHostAddress &address) : host(address) {
-  }
+  explicit Peer(const QHostAddress &address) : host(address) {}
   ~Peer() {
     OPENSSL_cleanse(key.data(), size_t(key.size()));
     OPENSSL_cleanse(proof.key.data(), size_t(proof.key.size()));
@@ -124,18 +124,21 @@ AirPlaySession::AirPlaySession(app::Timing timing, audio::CaptureStream stream,
       stream_(std::move(stream)) {
   networkCheck_.setInterval(250);
   remoteDeadline_.setSingleShot(true);
-  connect(&remoteDeadline_, &QTimer::timeout, this,
-          [this] { stop("DACP 服务发布超时"); });
+  connect(&remoteDeadline_, &QTimer::timeout, this, [this] {
+    stop(i18n::text(i18n::Id::DACPServicePublicationTimedOut));
+  });
   connect(&remote_, &DacpServer::failed, this,
-          [this](const QString &text) { stop(text); });
+          [this](const i18n::Message &text) { stop(text); });
   connect(&remote_, &DacpServer::log, this, &AirPlaySession::log);
-  connect(this, &AirPlaySession::volumeApplied, &remote_, &DacpServer::setVolume);
+  connect(this, &AirPlaySession::volumeApplied, &remote_,
+          &DacpServer::setVolume);
   connect(&remote_, &DacpServer::ready, this, [this] {
     if (state_ != State::Connecting)
       return;
     remoteDeadline_.stop();
     remoteReady_ = true;
-    emit log("DACP 音量服务已发布：iTunes_Ctrl_" + identity_);
+    emit log(i18n::text(i18n::Id::DACPVolumeServicePublishedITunesCtrl) +
+             identity_);
     prepared();
   });
   connect(&remote_, &DacpServer::command, this,
@@ -159,12 +162,12 @@ AirPlaySession::AirPlaySession(app::Timing timing, audio::CaptureStream stream,
   connect(&teardown_, &QTimer::timeout, this, &AirPlaySession::finishStop);
   connect(&settle_, &QTimer::timeout, this, [this] {
     if (state_ == State::Synchronizing) {
-      setState(State::Buffering, "缓冲输入");
+      setState(State::Buffering, i18n::text(i18n::Id::BufferingInput));
       emit startCapture();
     }
   });
   connect(&clock_, &PtpClock::failed, this,
-          [this](const QString &error) { stop(error); });
+          [this](const i18n::Message &error) { stop(error); });
 }
 AirPlaySession::~AirPlaySession() {
   state_ = State::Stopped;
@@ -182,7 +185,7 @@ AirPlaySession::~AirPlaySession() {
     }
   }
 }
-void AirPlaySession::setState(State state, const QString &text) {
+void AirPlaySession::setState(State state, const i18n::Message &text) {
   state_ = state;
   remote_.setEnabled(state == State::Streaming);
   emit streamingChanged(state == State::Streaming);
@@ -190,22 +193,22 @@ void AirPlaySession::setState(State state, const QString &text) {
   emit log(text);
 }
 void AirPlaySession::fail(const std::exception &error) {
-  stop(QString::fromUtf8(error.what()));
+  stop(i18n::fromException(error));
 }
 void AirPlaySession::start() {
   try {
     if (state_ != State::Preparing)
-      throw Error("会话不能重复启动");
+      throw Error(i18n::text(i18n::Id::SessionCannotBeStartedTwice));
     if (const auto error = timing_.validate(); !error.isEmpty())
       throw Error(error);
     if (!stream_.queue)
-      throw Error("采集队列未准备");
+      throw Error(i18n::text(i18n::Id::CaptureQueueIsNotReady));
     validateEndpoints(endpoints_);
     route_.validate();
     if (!route_.binding.automatic()) {
       networkCheck_.start();
-      emit log("发送网络：" + route_.binding.interfaceName + " · " +
-               route_.binding.ipv4);
+      emit log(i18n::text(i18n::Id::SendingNetwork) +
+               route_.binding.interfaceName + " · " + route_.binding.ipv4);
     }
     clockId_ =
         (readBe(randomBytes(8), 0, 8) & 0x7fffffffffffffffULL) | (1ULL << 62);
@@ -216,7 +219,8 @@ void AirPlaySession::start() {
     groupId_ = QUuid::createUuid().toString(QUuid::WithoutBraces).toUpper();
     for (const auto &endpoint : endpoints_)
       peers_.push_back(std::make_unique<Peer>(endpoint.host));
-    setState(State::Connecting, "连接并校验接收端");
+    setState(State::Connecting,
+             i18n::text(i18n::Id::ConnectingAndValidatingReceivers));
     for (int i = 0; i < int(peers_.size()); ++i) {
       auto &p = *peers_[i];
       connect(&p.rtsp, &RtspClient::opened, this, [this, i] {
@@ -234,17 +238,21 @@ void AirPlaySession::start() {
                   fail(e);
                 }
               });
-      connect(&p.rtsp, &RtspClient::failed, this,
-              [this, i](const QString &error) {
-                if (state_ == State::Stopping) {
-                  peers_[i]->stopped = true;
-                  if (allStopped())
-                    finishStop();
-                } else
-                  stop(peers_[i]->host.toString() +
-                       (peers_[i]->step == Peer::Step::Metadata
-                            ? "：播放信息／外部控制未就绪：" : "：") + error);
-              });
+      connect(
+          &p.rtsp, &RtspClient::failed, this,
+          [this, i](const i18n::Message &error) {
+            if (state_ == State::Stopping) {
+              peers_[i]->stopped = true;
+              if (allStopped())
+                finishStop();
+            } else
+              stop(peers_[i]->host.toString() +
+                   (peers_[i]->step == Peer::Step::Metadata
+                        ? i18n::text(
+                              i18n::Id::NowPlayingInformationRemoteControlIsNot)
+                        : "：") +
+                   error);
+          });
       connect(&p.event, &EventChannel::connected, this, [this, i] {
         try {
           eventConnected(i);
@@ -252,14 +260,16 @@ void AirPlaySession::start() {
           fail(e);
         }
       });
-      connect(&p.event, &EventChannel::log, this, [this, i](QString text) {
-        emit log(peers_[i]->host.toString() + " · " + text);
-      });
-      connect(&p.event, &EventChannel::failed, this, [this, i](QString error) {
-        if (state_ != State::Stopping && state_ != State::Stopped &&
-            state_ != State::Error)
-          stop(peers_[i]->host.toString() + "：" + error);
-      });
+      connect(&p.event, &EventChannel::log, this,
+              [this, i](i18n::Message text) {
+                emit log(peers_[i]->host.toString() + " · " + text);
+              });
+      connect(&p.event, &EventChannel::failed, this,
+              [this, i](i18n::Message error) {
+                if (state_ != State::Stopping && state_ != State::Stopped &&
+                    state_ != State::Error)
+                  stop(peers_[i]->host.toString() + "：" + error);
+              });
       connect(&p.control, &QUdpSocket::readyRead, this, [this, i] {
         try {
           feedback(i);
@@ -284,7 +294,8 @@ void AirPlaySession::opened(int index) {
     local_ = p.rtsp.localAddress();
     for (size_t i = 1; i < peers_.size(); ++i)
       peers_[i]->rtsp.open(peers_[i]->host, endpoints_[qsizetype(i)].port,
-                           identity_, timing_.connectTimeout, local_, route_, activeRemote_);
+                           identity_, timing_.connectTimeout, local_, route_,
+                           activeRemote_);
   }
   p.rtsp.request("GET", "/info", {}, {}, timing_.requestTimeout);
 }
@@ -297,12 +308,14 @@ void AirPlaySession::setupGroup() {
   if (peers_.size() == 2) {
     validateGroup(peers_[0]->info, peers_[1]->info);
     volume_ = std::min(volume_, peers_[1]->info.volume);
-    emit group(QString("%1 + %2\n组合：%3\n成员：%4 / %5")
-                   .arg(peers_[0]->info.name, peers_[1]->info.name,
-                        peers_[0]->info.stereoId, peers_[0]->info.members,
-                        peers_[1]->info.members));
+    emit group(i18n::text(i18n::Id::GroupIdentity)
+                   .arg(peers_[0]->info.name)
+                   .arg(peers_[1]->info.name)
+                   .arg(peers_[0]->info.stereoId)
+                   .arg(peers_[0]->info.members)
+                   .arg(peers_[1]->info.members));
   } else
-    emit group(QString("单台接收端：%1\n%2")
+    emit group(i18n::text(i18n::Id::SingleReceiverIdentity)
                    .arg(peers_[0]->info.name, endpoints_[0].text()));
   QList<QHostAddress> hosts;
   for (const auto &p : peers_)
@@ -356,7 +369,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
   case Step::PairChallenge: {
     const auto tlv = tlvDecode(body);
     if (tlv.contains(7) || tlv.value(6) != QByteArray::fromHex("02"))
-      throw Error("瞬时配对被拒绝");
+      throw Error(i18n::text(i18n::Id::TransientPairingWasRejected));
     p.proof = srp(tlv.value(2), tlv.value(3));
     p.step = Step::PairProof;
     p.rtsp.request("POST", "/pair-setup",
@@ -374,7 +387,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
         proof.size() != expected.size() ||
         CRYPTO_memcmp(proof.constData(), expected.constData(),
                       size_t(expected.size())))
-      throw Error("SRP 服务端证明验证失败");
+      throw Error(i18n::text(i18n::Id::SRPServerProofVerificationFailed));
     p.rtsp.encrypt(p.proof.key);
     p.key = p.proof.key.left(32);
     QVariantMap timing{
@@ -387,18 +400,17 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     for (int i = 0; i < 16; i += 2)
       id.append(identity_.mid(i, 2));
     p.sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces).toUpper();
-    QVariantMap session{
-        {"deviceID", id.join(':')},
-        {"macAddress", id.join(':')},
-        {"name", "AirPlayQt"},
-        {"sessionUUID", p.sessionId},
-        {"timingProtocol", "PTP"},
-        {"groupUUID", groupId_},
-        {"groupContainsGroupLeader", false},
-        {"isMultiSelectAirPlay", true},
-        {"senderSupportsRelay", false},
-        {"timingPeerInfo", timing},
-        {"timingPeerList", QVariantList{timing}}};
+    QVariantMap session{{"deviceID", id.join(':')},
+                        {"macAddress", id.join(':')},
+                        {"name", "AirPlayQt"},
+                        {"sessionUUID", p.sessionId},
+                        {"timingProtocol", "PTP"},
+                        {"groupUUID", groupId_},
+                        {"groupContainsGroupLeader", false},
+                        {"isMultiSelectAirPlay", true},
+                        {"senderSupportsRelay", false},
+                        {"timingPeerInfo", timing},
+                        {"timingPeerList", QVariantList{timing}}};
     if (peers_.size() == 2)
       session.insert("senderPerceivedClusterType", 1);
     p.step = Step::SessionSetup;
@@ -411,7 +423,8 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     const auto eventPort =
         port(dictionary(plistDecode(body)).value("eventPort"));
     p.step = Step::Event;
-    p.event.open(p.proof.key, p.host, eventPort, local_, route_, timing_.connectTimeout);
+    p.event.open(p.proof.key, p.host, eventPort, local_, route_,
+                 timing_.connectTimeout);
     OPENSSL_cleanse(p.proof.key.data(), size_t(p.proof.key.size()));
     p.proof = {};
     break;
@@ -443,7 +456,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     const auto streams = dictionary(plistDecode(body)).value("streams");
     if (streams.typeId() != QMetaType::QVariantList ||
         streams.toList().size() != 1)
-      throw Error("流 SETUP 响应无效");
+      throw Error(i18n::text(i18n::Id::InvalidStreamSETUPResponse));
     const auto stream = dictionary(streams.toList()[0]);
     p.dataPort = port(stream.value("dataPort"));
     p.controlPort = port(stream.value("controlPort"));
@@ -464,18 +477,23 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     p.confirmedVolume = p.sentVolume;
     p.metadata = liveNowPlaying(identity_, p.sessionId, groupId_);
     p.step = Step::Metadata;
-    emit log(p.host.toString() + " · 发布播放信息：DMAP 实时音频");
+    emit log(
+        p.host.toString() +
+        i18n::text(i18n::Id::PublishingNowPlayingInformationDMAPLiveAudio));
     p.rtsp.request("SET_PARAMETER", p.url, liveDmapMetadata(),
-                   "application/x-dmap-tagged", timing_.requestTimeout, firstRtp_);
+                   "application/x-dmap-tagged", timing_.requestTimeout,
+                   firstRtp_);
     break;
   case Step::Metadata:
     ++p.metadataIndex;
     if (p.metadataIndex < p.metadata.size()) {
       const auto command = p.metadata[p.metadataIndex];
-      emit log(p.host.toString() + " · 发布播放信息：" +
+      emit log(p.host.toString() +
+               i18n::text(i18n::Id::PublishingNowPlayingInformation) +
                command.value("type", "DEVICE_INFO").toString());
       p.rtsp.request("POST", "/command", plistEncode(command),
-                     "application/x-apple-binary-plist", timing_.requestTimeout);
+                     "application/x-apple-binary-plist",
+                     timing_.requestTimeout);
       break;
     }
     p.metadata.clear();
@@ -494,7 +512,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     }
     break;
   default:
-    throw Error("意外的会话响应状态");
+    throw Error(i18n::text(i18n::Id::UnexpectedSessionResponseState));
   }
 }
 void AirPlaySession::eventConnected(int index) {
@@ -506,7 +524,7 @@ void AirPlaySession::eventConnected(int index) {
     route_.bind(p.control);
   } else if (!p.data.bind(local_, 0, QUdpSocket::DontShareAddress) ||
              !p.control.bind(local_, 0, QUdpSocket::DontShareAddress))
-    throw Error("音频 UDP 绑定失败");
+    throw Error(i18n::text(i18n::Id::AudioUDPBindingFailed));
   p.step = Peer::Step::Record;
   request(p, "RECORD");
 }
@@ -517,15 +535,11 @@ void AirPlaySession::captureStarted() {
   lastInput_ = lastStats_ = 0;
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   if (stream_.rateDiagnostics)
-    emit log(
-        QString("[VST速率] 开始统计：44100 帧/s，%1-bit 输入，%2 帧/队列块；"
-                "预缓冲 %3 ms，积压上限 %4 "
-                "ms。发送计数按每台接收端的同一时间线计算；"
-                "首个窗口包含预缓冲，每秒报告一次，停止前补充最后窗口。")
-            .arg(stream_.left.bytes * 8)
-            .arg(stream_.blockFrames)
-            .arg(timing_.prebuffer * 1000, 0, 'f', 1)
-            .arg(timing_.backlog * 1000, 0, 'f', 1));
+    emit log(i18n::text(i18n::Id::VSTRateStartingFramesSBitInput)
+                 .arg(stream_.left.bytes * 8)
+                 .arg(stream_.blockFrames)
+                 .arg(timing_.prebuffer * 1000, 0, 'f', 1)
+                 .arg(timing_.backlog * 1000, 0, 'f', 1));
 #endif
   poll_.start();
 }
@@ -542,24 +556,20 @@ void AirPlaySession::logRates(bool final) {
   const double seconds = double(interval) / 1e9;
   const double inputRate = double(captured - rates_.captured) / seconds;
   const double outputRate = double(sentFrames_ - rates_.sent) / seconds;
-  emit log(
-      QString(
-          "[VST速率%1] 窗口 %2 ms；输入 %3 帧/s；发送 %4 帧/s；"
-          "净增 %5 ms/s；积压 %6 ms（队列 %7 / PCM %8 ms）；"
-          "poll 最大间隔 %9 ms / 耗时 %10 ms；累计入/出 %11/%12 帧；故障码 %13")
-          .arg(final ? "·停止" : "")
-          .arg(seconds * 1000, 0, 'f', 1)
-          .arg(inputRate, 0, 'f', 1)
-          .arg(outputRate, 0, 'f', 1)
-          .arg((inputRate - outputRate) / 44.1, 0, 'f', 2)
-          .arg(double(queued + pcm_.size() / 2) / 44.1, 0, 'f', 2)
-          .arg(double(queued) / 44.1, 0, 'f', 2)
-          .arg(double(pcm_.size() / 2) / 44.1, 0, 'f', 2)
-          .arg(double(rates_.maxGap) / 1e6, 0, 'f', 3)
-          .arg(double(rates_.maxWork) / 1e6, 0, 'f', 3)
-          .arg(captured)
-          .arg(sentFrames_)
-          .arg(stream_.queue->fault.load()));
+  emit log(i18n::text(i18n::Id::VSTRateWindowMsInputFramesS)
+               .arg(final ? i18n::text(i18n::Id::StoppedRateSuffix) : "")
+               .arg(seconds * 1000, 0, 'f', 1)
+               .arg(inputRate, 0, 'f', 1)
+               .arg(outputRate, 0, 'f', 1)
+               .arg((inputRate - outputRate) / 44.1, 0, 'f', 2)
+               .arg(double(queued + pcm_.size() / 2) / 44.1, 0, 'f', 2)
+               .arg(double(queued) / 44.1, 0, 'f', 2)
+               .arg(double(pcm_.size() / 2) / 44.1, 0, 'f', 2)
+               .arg(double(rates_.maxGap) / 1e6, 0, 'f', 3)
+               .arg(double(rates_.maxWork) / 1e6, 0, 'f', 3)
+               .arg(captured)
+               .arg(sentFrames_)
+               .arg(stream_.queue->fault.load()));
   rates_.reportedAt = now;
   rates_.captured = captured;
   rates_.sent = sentFrames_;
@@ -578,11 +588,9 @@ void AirPlaySession::poll() {
 #endif
   try {
     if (const int fault = stream_.queue->fault.load())
-      throw Error(QString("音频输入故障 %1（1 缓冲索引，2 溢出，3 回调重入，4 "
-                          "采样率/时钟变化，5 采样位置跳变，6 重置/失步/过载；"
-                          "102 格式变化，103 旁路，104 非实时，"
-                          "105 溢出，106 块无效，107 NaN/Inf，108 状态载入）")
-                      .arg(fault));
+      throw Error(
+          i18n::text(i18n::Id::AudioInputFaultBufferIndexOverflowCallback)
+              .arg(fault));
     if (stream_.queue->interrupted.load()) {
       stop({}, SessionEnd::HostInterrupted);
       return;
@@ -593,10 +601,10 @@ void AirPlaySession::poll() {
       lastInput_ = now;
     }
     if (now - lastInput_ > timing_.inputTimeout * 1e9)
-      throw Error("音频输入断流超时");
+      throw Error(i18n::text(i18n::Id::AudioInputTimedOut));
     if (stream_.queue->queuedFrames() + pcm_.size() / 2 >
         timing_.backlog * 44100)
-      throw Error("采集积压超过上限");
+      throw Error(i18n::text(i18n::Id::CaptureBacklogExceedsTheLimit));
     std::span<const std::byte> left, right;
     while (stream_.queue->peek(left, right)) {
       const auto samples =
@@ -609,7 +617,7 @@ void AirPlaySession::poll() {
       }
       pcm_.insert(pcm_.end(), samples.begin(), samples.end());
       if (pcm_.size() / 2 > timing_.backlog * 44100)
-        throw Error("PCM 积压超过上限");
+        throw Error(i18n::text(i18n::Id::PCMBacklogExceedsTheLimit));
     }
     if (state_ == State::Buffering &&
         pcm_.size() / 2 >=
@@ -618,19 +626,19 @@ void AirPlaySession::poll() {
       anchorWall_ = wallNs();
       audible_ = anchorWall_ + int64_t(std::llround(timing_.lead * 1e9));
       nextSync_ = 0;
-      setState(State::Streaming, "发送中 · 44.1 kHz / 16-bit / 立体声");
+      setState(State::Streaming, i18n::text(i18n::Id::StreamingKHzBitStereo));
     }
     if (state_ == State::Streaming) {
       if (std::abs(double(wallNs() - anchorWall_ - (now - started_))) >
           timing_.late * 1e9)
-        throw Error("系统时钟偏移超过上限");
+        throw Error(i18n::text(i18n::Id::SystemClockOffsetExceedsTheLimit));
       if (now >= nextSync_) {
         const auto packet =
             syncPacket(clockId_, firstRtp_, audible_, wallNs(), firstSync_);
         for (auto &p : peers_)
           if (p->control.writeDatagram(packet, p->host, p->controlPort) !=
               packet.size())
-            throw Error("音频同步包发送失败");
+            throw Error(i18n::text(i18n::Id::AudioSyncPacketSendFailed));
         firstSync_ = false;
         nextSync_ = now + qint64(timing_.audioSync * 1e9);
       }
@@ -642,11 +650,11 @@ void AirPlaySession::poll() {
         if (current < due)
           break;
         if (current - due > timing_.late * 1e9)
-          throw Error("发送落后时间线超过上限");
+          throw Error(i18n::text(i18n::Id::SendingFellTooFarBehindTheTimeline));
         if (pcm_.size() < 704)
           break;
         if (counter_ == UINT64_MAX)
-          throw Error("音频 nonce 已耗尽");
+          throw Error(i18n::text(i18n::Id::AudioNonceExhausted));
         std::array<int16_t, 704> frame;
         for (auto &sample : frame) {
           sample = pcm_.front();
@@ -659,7 +667,7 @@ void AirPlaySession::poll() {
                                           counter_, counter_ == 0);
           if (p->data.writeDatagram(packet, p->host, p->dataPort) !=
               packet.size())
-            throw Error("音频 UDP 发送失败");
+            throw Error(i18n::text(i18n::Id::AudioUDPSendFailed));
           p->history[sequence % 1024] = {sequence, packet};
         }
         ++counter_;
@@ -714,7 +722,7 @@ void AirPlaySession::feedback(int index) {
       response += packet.bytes;
       if (p.control.writeDatagram(response, p.host, datagram.senderPort()) !=
           response.size())
-        throw Error("重传发送失败");
+        throw Error(i18n::text(i18n::Id::RetransmissionFailed));
       ++retransmitted_;
     }
   }
@@ -730,9 +738,9 @@ void AirPlaySession::feedback(int index) {
 void AirPlaySession::volume(double db) {
   try {
     if (state_ != State::Streaming)
-      throw Error("当前会话不能调整音量");
+      throw Error(i18n::text(i18n::Id::VolumeCannotBeAdjustedInTheCurrent));
     if (!std::isfinite(db) || db < -144 || db > 0)
-      throw Error("音量超出范围");
+      throw Error(i18n::text(i18n::Id::VolumeIsOutOfRange));
     volume_ = db;
     volumePending_ = true;
     dispatchVolume();
@@ -768,7 +776,8 @@ void AirPlaySession::prepared() {
     restoreVolume_ = volume_;
   emit volumeApplied(volume_);
   keepAlive_.start(int(std::ceil(timing_.keepAlive * 1000)));
-  setState(State::Synchronizing, "等待 PTP 同步");
+  setState(State::Synchronizing,
+           i18n::text(i18n::Id::WaitingForPTPSynchronization));
   settle_.start(int(std::ceil(timing_.settle * 1000)));
 }
 void AirPlaySession::remoteVolume(const QString &action, double value) {
@@ -789,7 +798,8 @@ void AirPlaySession::remoteVolume(const QString &action, double value) {
     if (volume_ <= -144 && action == "volumedown")
       return;
     value = std::clamp((volume_ <= -144 ? restoreVolume_ : volume_) +
-                        (action == "volumeup" ? 1. : -1.), -144., 0.);
+                           (action == "volumeup" ? 1. : -1.),
+                       -144., 0.);
   }
   volume(value);
 }
@@ -809,7 +819,7 @@ void AirPlaySession::keepAlive() {
     fail(e);
   }
 }
-void AirPlaySession::stop(const QString &error, SessionEnd reason) {
+void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
   networkCheck_.stop();
   remoteDeadline_.stop();
   remote_.stop();
@@ -819,8 +829,8 @@ void AirPlaySession::stop(const QString &error, SessionEnd reason) {
     if (!error.isEmpty() && error_.isEmpty()) {
       error_ = error;
       endReason_ = SessionEnd::Failure;
-      emit status("停止中：" + error);
-      emit log("停止中：" + error);
+      emit status(i18n::text(i18n::Id::StoppingReasonPrefix) + error);
+      emit log(i18n::text(i18n::Id::StoppingReasonPrefix) + error);
     }
     return;
   }
@@ -831,10 +841,12 @@ void AirPlaySession::stop(const QString &error, SessionEnd reason) {
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   logRates(true);
 #endif
-  setState(State::Stopping,
-           endReason_ == SessionEnd::HostInterrupted
-               ? "宿主音频处理中断，正在清理会话"
-               : (error.isEmpty() ? "停止中" : "停止中：" + error));
+  setState(
+      State::Stopping,
+      endReason_ == SessionEnd::HostInterrupted
+          ? i18n::text(i18n::Id::HostAudioProcessingInterruptedCleaningUpThe)
+          : (error.isEmpty() ? i18n::text(i18n::Id::Stopping)
+                             : i18n::text(i18n::Id::StoppingReasonPrefix) + error));
   emit stopCapture();
   poll_.stop();
   settle_.stop();
@@ -852,9 +864,10 @@ void AirPlaySession::stop(const QString &error, SessionEnd reason) {
         try {
           p->step = Peer::Step::StopMetadata;
           p->rtsp.request("POST", "/command", plistEncode(playbackState(false)),
-                         "application/x-apple-binary-plist", timing_.teardownTimeout);
+                          "application/x-apple-binary-plist",
+                          timing_.teardownTimeout);
         } catch (const std::exception &e) {
-          emit log("TEARDOWN：" + QString::fromUtf8(e.what()));
+          emit log("TEARDOWN：" + i18n::fromException(e));
           p->stopped = true;
         }
       } else {
@@ -886,7 +899,8 @@ void AirPlaySession::finishStop() {
     }
   pcm_.clear();
   setState(error_.isEmpty() ? State::Stopped : State::Error,
-           error_.isEmpty() ? "已停止" : "错误：" + error_);
+           error_.isEmpty() ? i18n::text(i18n::Id::Stopped)
+                            : i18n::text(i18n::Id::ErrorPrefix) + error_);
   emit finished(error_, int(endReason_));
 }
 } // namespace airplay

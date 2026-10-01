@@ -1,6 +1,7 @@
 #pragma once
 #include "Crypto.h"
 #include "NetworkBinding.h"
+#include "app/Message.h"
 #include <QTcpSocket>
 #include <QTimer>
 #include <QVariant>
@@ -41,11 +42,11 @@ public:
 signals:
   void opened();
   void response(QByteArray body);
-  void failed(QString error);
+  void failed(QJsonArray error);
 
 private:
   void receive();
-  void fail(const QString &error);
+  void fail(const i18n::Message &error);
   QTcpSocket socket_;
   QTimer timer_;
   QByteArray wire_, plain_, identity_, session_;

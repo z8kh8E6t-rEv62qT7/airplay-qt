@@ -1,4 +1,5 @@
 #pragma once
+#include "app/Message.h"
 #include <QAbstractSocket>
 #include <QJsonValue>
 #include <QNetworkInterface>
@@ -8,7 +9,7 @@ struct NetworkBinding {
   QString interfaceName, ipv4;
   bool automatic() const { return interfaceName.isEmpty() && ipv4.isEmpty(); }
   bool operator==(const NetworkBinding &) const = default;
-  QString validate() const;
+  i18n::Message validate() const;
   QJsonValue json() const;
   static NetworkBinding fromJson(const QJsonValue &);
   static QList<NetworkBinding> available();

@@ -1,6 +1,7 @@
 #include "PluginEditor.h"
 #include "NativeEditor.h"
 #include "PluginRuntime.h"
+#include "app/Message.h"
 #include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "public.sdk/source/common/pluginview.h"
 #include <QScrollArea>
@@ -14,8 +15,9 @@ using namespace Steinberg;
 namespace {
 class Editor final : public CPluginView, public IPlugViewContentScaleSupport {
 public:
-  explicit Editor(std::shared_ptr<PluginState> state)
-      : state_(std::move(state)) {
+  explicit Editor(std::shared_ptr<PluginState> state,
+                  std::function<void()> languageEdited)
+      : state_(std::move(state)), languageEdited_(std::move(languageEdited)) {
     rect = {0, 0, 900, 880};
     PluginRuntime::addComponent();
   }
@@ -35,6 +37,11 @@ public:
       auto &runtime = PluginRuntime::acquire(parent);
       runtime_ = &runtime;
       panel_ = runtime.open(state_);
+      QObject::connect(panel_, &ui::StreamingPanel::languageChanged, panel_,
+                       [callback = languageEdited_] {
+                         if (callback)
+                           callback();
+                       });
       viewport_ = std::make_unique<QScrollArea>();
       viewport_->setWidgetResizable(true);
       viewport_->setFrameShape(QFrame::NoFrame);
@@ -43,7 +50,7 @@ public:
       // host's QApplication. QWidget styles do not propagate to children.
       auto *fusion = QStyleFactory::create("Fusion");
       if (!fusion)
-        throw airplay::Error("Qt Fusion 样式不可用。");
+        throw airplay::Error(i18n::text(i18n::Id::QtFusionStyleIsUnavailable));
       fusion->setParent(panel_);
       viewport_->setStyle(fusion);
       for (auto *widget : viewport_->findChildren<QWidget *>())
@@ -57,8 +64,10 @@ public:
     } catch (const std::exception &e) {
       detachPanel();
       try {
-        native_ = std::make_unique<NativeEditor>(parent, nullptr,
-                                                 QString::fromUtf8(e.what()));
+        native_ = std::make_unique<NativeEditor>(
+            parent, nullptr,
+            i18n::fromException(e).render(state_ ? state_->language()
+                                                 : i18n::Language::English));
       } catch (...) {
         return kResultFalse;
       }
@@ -154,6 +163,7 @@ private:
     runtime_ = nullptr;
   }
   std::shared_ptr<PluginState> state_;
+  std::function<void()> languageEdited_;
   ui::StreamingPanel *panel_ = nullptr;
   PluginRuntime *runtime_ = nullptr;
   std::unique_ptr<NativeEditor> native_;
@@ -161,7 +171,8 @@ private:
   float scale_ = 1;
 };
 } // namespace
-Steinberg::IPlugView *createEditor(const std::shared_ptr<PluginState> &state) {
-  return new Editor(state);
+Steinberg::IPlugView *createEditor(const std::shared_ptr<PluginState> &state,
+                                   std::function<void()> languageEdited) {
+  return new Editor(state, std::move(languageEdited));
 }
 } // namespace vst3

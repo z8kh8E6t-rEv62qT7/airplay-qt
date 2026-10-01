@@ -1,5 +1,6 @@
 #include "Crypto.h"
 #include "ServiceAdvertisement.h"
+#include "app/Message.h"
 #include <QSocketNotifier>
 #include <QtEndian>
 #include <dns_sd.h>
@@ -32,7 +33,8 @@ struct ServiceAdvertisement::State {
           if (!o.state_ || o.generation_ != generation)
             return;
           if (code)
-            emit o.failed(QString("DACP 服务发布失败：%1").arg(code));
+            emit o.failed(
+                i18n::text(i18n::Id::DACPServicePublicationFailed).arg(code));
           else {
             (address ? o.state_->addressReady : o.state_->serviceReady) = true;
             if (o.state_->addressReady && o.state_->serviceReady)
@@ -53,7 +55,7 @@ struct ServiceAdvertisement::State {
   std::unique_ptr<QSocketNotifier> watch(DNSServiceRef value) {
     const int fd = DNSServiceRefSockFD(value);
     if (fd < 0)
-      throw Error("DACP Bonjour socket 无效");
+      throw Error(i18n::text(i18n::Id::InvalidDACPBonjourSocket));
     auto result = std::make_unique<QSocketNotifier>(fd, QSocketNotifier::Read);
     QObject::connect(result.get(), &QSocketNotifier::activated, &owner,
                      [this, value] {
@@ -102,7 +104,7 @@ void ServiceAdvertisement::start(const QString &identity, quint16 port,
                                 &State::registered, state_.get());
   if (result) {
     stop();
-    throw Error(QString("DACP 服务发布失败：%1").arg(result));
+    throw Error(i18n::text(i18n::Id::DACPServicePublicationFailed).arg(result));
   }
   state_->notifier = state_->watch(state_->ref);
   state_->addressNotifier = state_->watch(state_->addressRef);

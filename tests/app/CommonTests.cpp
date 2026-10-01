@@ -9,16 +9,172 @@
 class CommonAppTests : public QObject {
   Q_OBJECT
 private slots:
+  void messagesPreserveLiteralArgumentsAndCatalogueCoverage() {
+    using namespace i18n;
+    const auto message =
+        text(Id::SingleReceiverIdentity).arg("设备 %2").arg("192.0.2.1");
+    QCOMPARE(message.render(), QString("Single receiver: 设备 %2\n192.0.2.1"));
+    QCOMPARE(message.render(Language::Chinese),
+             QString("单台接收端：设备 %2\n192.0.2.1"));
+    const auto nested = text(Id::ErrorPrefix) + message;
+    QCOMPARE(Message(QJsonArray(nested)).render(), nested.render());
+    try {
+      throw MessageError(nested);
+    } catch (const std::exception &error) {
+      QCOMPARE(fromException(error).render(Language::Chinese),
+               nested.render(Language::Chinese));
+    }
+    const std::runtime_error native("native %1 error");
+    QCOMPARE(fromException(native).render(Language::Chinese),
+             QString("native %1 error"));
+    for (int i = 0; i < int(Id::Count); ++i) {
+      auto value = text(Id(i));
+      const auto english = value.render();
+      const auto chinese = value.render(Language::Chinese);
+      QVERIFY(!english.isEmpty());
+      QVERIFY(!chinese.isEmpty());
+      QVERIFY(english != chinese);
+      for (const auto c : english)
+        QVERIFY(c.unicode() < 0x4e00 || c.unicode() > 0x9fff);
+      // Both languages must consume the same numbered arguments.
+      for (int n = 1; n <= 13; ++n) {
+        const auto marker = QString("%%1").arg(n);
+        QCOMPARE(english.contains(marker), chinese.contains(marker));
+        value = value.arg(QString("argument-%1").arg(n));
+      }
+      QVERIFY(!value.render().contains('%'));
+      QVERIFY(!value.render(Language::Chinese).contains('%'));
+    }
+  }
+  void languageConfigurationIsStrictAndPreservesOtherSettings() {
+    using i18n::Language;
+    QTemporaryDir dir;
+    const auto path = dir.filePath("config.json");
+    app::SettingsStore store(path);
+    QCOMPARE(store.load().language, Language::English);
+    app::Settings original;
+    original.driverId = "device";
+    original.left = 4;
+    original.right = 5;
+    original.networkBinding = {"en-test", "192.0.2.10"};
+    original.timing.lead = .25;
+    original.receiverSelection = {{"设备", "192.0.2.1:7000"}};
+    store.saveStart(original, original.receiverSelection);
+    store.saveLanguage(Language::Chinese);
+    auto expected = original.json();
+    expected["language"] = "zh-CN";
+    QCOMPARE(app::Settings::load(path).json(), expected);
+    app::SettingsStore reopened(path);
+    QCOMPARE(reopened.load().language, Language::Chinese);
+    reopened.saveLanguage(Language::English);
+    QCOMPARE(app::Settings::load(path).json(), original.json());
+    auto json = original.json();
+    for (const auto invalid :
+         {QJsonValue(), QJsonValue(true), QJsonValue(0), QJsonValue(""),
+          QJsonValue("fr"), QJsonValue("EN")}) {
+      json["language"] = invalid;
+      QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                               app::Settings::fromJson(json));
+    }
+    json.remove("language");
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
+    for (int version : {1, 2, 4}) {
+      json = original.json();
+      json["version"] = version;
+      QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                               app::Settings::fromJson(json));
+    }
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("{broken");
+    file.close();
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error, reopened.load());
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             reopened.saveLanguage(Language::Chinese));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("{broken"));
+    app::SettingsStore unwritable(dir.filePath("missing/config.json"));
+    unwritable.load();
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             unwritable.saveLanguage(Language::Chinese));
+  }
+  void languageSwitchPreservesUiAndHistory() {
+    using namespace i18n;
+    app::SessionController session, otherSession;
+    ui::StreamingPanel panel(session), other(otherSession);
+    auto *toggle = panel.findChild<QPushButton *>("languageToggle");
+    auto *start = panel.findChild<QPushButton *>("start");
+    auto *modes = panel.findChild<QTabWidget *>("receiverModes");
+    auto *first = panel.findChild<QLineEdit *>("manualFirst");
+    auto *log = panel.findChild<QPlainTextEdit *>();
+    auto *list = panel.findChild<QListWidget *>("receivers");
+    auto *discovery = panel.findChild<airplay::ReceiverDiscovery *>();
+    QVERIFY(toggle && start && modes && first && log && list && discovery);
+    QCOMPARE(panel.language(), Language::English);
+    QCOMPARE(toggle->text(), QString("中文"));
+    QCOMPARE(start->text(), QString("Start"));
+    emit discovery->found("设备 %1", "192.0.2.1:7000");
+    list->item(0)->setCheckState(Qt::Checked);
+    auto *selected = list->item(0);
+    list->setCurrentItem(selected);
+    first->setText("192.0.2.2:7001");
+    auto timing = panel.timing();
+    timing.lead = .5;
+    panel.setTiming(timing);
+    emit session.log(text(Id::WaitingForPTPSynchronization));
+    const auto history = log->toPlainText();
+    emit session.status(text(Id::StreamingKHzBitStereo));
+    emit session.telemetry(.5, 0, .02, 123, 4, 5);
+    emit session.streamingChanged(true);
+    emit session.volumeApplied(-30);
+    panel.setBusy(true);
+    QSignalSpy starts(&panel, &ui::StreamingPanel::startRequested);
+    QSignalSpy stops(&panel, &ui::StreamingPanel::stopRequested);
+    QSignalSpy networks(&panel, &ui::StreamingPanel::networkBindingChanged);
+    toggle->click();
+    QCOMPARE(panel.language(), Language::Chinese);
+    QCOMPARE(toggle->text(), QString("English"));
+    QCOMPARE(start->text(), QString("开始"));
+    QCOMPARE(other.findChild<QPushButton *>("start")->text(), QString("Start"));
+    QCOMPARE(list->item(0), selected);
+    QCOMPARE(list->currentItem(), selected);
+    QCOMPARE(selected->checkState(), Qt::Checked);
+    QCOMPARE(selected->text(), QString("设备 %1 · 192.0.2.1:7000"));
+    QCOMPARE(first->text(), QString("192.0.2.2:7001"));
+    QCOMPARE(panel.timing().lead, .5);
+    QVERIFY(!start->isEnabled());
+    QCOMPARE(log->toPlainText(), history);
+    QVERIFY(session.streaming());
+    QCOMPARE(session.currentVolume(), -30.);
+    QVERIFY(starts.isEmpty() && stops.isEmpty() && networks.isEmpty());
+    emit session.log(text(Id::WaitingForPTPSynchronization));
+    QVERIFY(log->toPlainText().startsWith(history));
+    QVERIFY(log->toPlainText().endsWith("等待 PTP 同步"));
+    panel.showError(text(Id::SelectOneOrTwoReceivers));
+    toggle->click();
+    bool translatedError = false, translatedStats = false;
+    for (auto *label : panel.findChildren<QLabel *>()) {
+      translatedError |= label->text() == "Error: Select one or two receivers";
+      translatedStats |= label->text().contains("Packets/receiver 123");
+    }
+    QVERIFY(translatedError && translatedStats);
+    QCOMPARE(session.recentLog().first(),
+             QString("Waiting for PTP synchronization"));
+    QCOMPARE(session.recentLog().last(), QString("等待 PTP 同步"));
+    ui::StreamingPanel reopened(session);
+    QVERIFY(reopened.findChild<QPlainTextEdit *>()->toPlainText().contains(
+        "等待 PTP 同步"));
+  }
   void networkConfigurationAndUi() {
     app::Settings settings;
     settings.networkBinding = {"en-test", "192.0.2.10"};
     auto json = settings.json();
-    QCOMPARE(json["version"].toInt(), 2);
+    QCOMPARE(json["version"].toInt(), 3);
     QCOMPARE(app::Settings::fromJson(json).networkBinding,
              settings.networkBinding);
     json["version"] = 1;
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
-    json["version"] = 2;
+    json["version"] = 3;
     json.remove("networkBinding");
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
     QTemporaryDir dir;
@@ -40,7 +196,7 @@ private slots:
     panel.setNetworkBinding(settings.networkBinding);
     QCOMPARE(panel.networkBinding(), settings.networkBinding);
     auto *combo = panel.findChild<QComboBox *>("networkBinding");
-    QVERIFY(combo->currentText().contains("不可用"));
+    QVERIFY(combo->currentText().contains("unavailable"));
     auto *refresh = panel.findChild<QPushButton *>("refreshNetwork");
     refresh->click();
     QCOMPARE(panel.networkBinding(), settings.networkBinding);

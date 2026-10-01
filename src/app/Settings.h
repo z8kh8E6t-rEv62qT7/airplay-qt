@@ -1,5 +1,6 @@
 #pragma once
 #include "airplay/NetworkBinding.h"
+#include "app/Message.h"
 #include <QJsonObject>
 #include <QList>
 #include <QString>
@@ -12,11 +13,11 @@ struct Timing {
   double inputTimeout = 1, connectTimeout = 8, requestTimeout = 8,
          teardownTimeout = 1;
   double ptpSync = .125, ptpAnnounce = 1, audioSync = .5, keepAlive = 10;
-  QString validate() const;
+  i18n::Message validate() const;
 };
 struct TimingField {
   const char *key;
-  const char *label;
+  i18n::Message label;
   double Timing::*member;
   double minimum, maximum;
   bool powerOfTwo;
@@ -27,12 +28,13 @@ struct ReceiverSelection {
   bool operator==(const ReceiverSelection &) const = default;
 };
 struct Settings {
+  i18n::Language language = i18n::Language::English;
   QString driverId;
   int left = 0, right = 1; // SDK indices, GUI displays index + 1.
   Timing timing;
   airplay::NetworkBinding networkBinding;
   QList<ReceiverSelection> receiverSelection;
-  QString validate() const;
+  i18n::Message validate() const;
   QJsonObject json() const;
   static Settings fromJson(const QJsonObject &object);
   static Settings load(const QString &path);
@@ -45,6 +47,7 @@ class SettingsStore {
 public:
   explicit SettingsStore(QString path = {}) : path_(std::move(path)) {}
   Settings load();
+  void saveLanguage(i18n::Language);
   void saveStart(
       Settings,
       const std::optional<QList<ReceiverSelection>> &selection = std::nullopt);

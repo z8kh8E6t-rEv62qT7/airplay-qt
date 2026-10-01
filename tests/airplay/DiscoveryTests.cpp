@@ -161,7 +161,9 @@ private slots:
       names.append(QString::number(i));
     dns.advertise(names);
     QTRY_COMPARE(dns.requests.size(), 4);
-    QVERIFY(status.last()[0].toString().contains("128"));
+    QVERIFY(i18n::Message(status.last()[0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("128"));
     while (dns.resolutions < 128 || !dns.requests.isEmpty()) {
       QVERIFY(!dns.requests.isEmpty());
       dns.finish(0, "same", "192.168.8.9");
@@ -224,22 +226,30 @@ private slots:
     QSignalSpy status(&discovery, &ReceiverDiscovery::status);
     discovery.refresh();
     QVERIFY(!discovery.busy());
-    QVERIFY(status.last()[0].toString().contains("失败"));
+    QVERIFY(i18n::Message(status.last()[0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("失败"));
     dns.browseError = DNS_REQUEST_PENDING;
     discovery.refresh();
     dns.resolveError = ERROR_INVALID_PARAMETER;
     dns.advertise({"bad"});
     QTRY_COMPARE(dns.resolutions, 1);
-    QVERIFY(status.last()[0].toString().contains("失败"));
+    QVERIFY(i18n::Message(status.last()[0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("失败"));
     dns.resolveError = DNS_REQUEST_PENDING;
     dns.advertise({"timeout"});
     QTRY_COMPARE(dns.requests.size(), 1);
     dns.finish(0, "timeout", "", 0, ERROR_TIMEOUT);
-    QTRY_VERIFY(status.last()[0].toString().contains("解析失败"));
+    QTRY_VERIFY(i18n::Message(status.last()[0].toJsonArray())
+                    .render(i18n::Language::Chinese)
+                    .contains("解析失败"));
     dns.cancelError = ERROR_ACCESS_DENIED;
     discovery.cancel();
     QVERIFY(discovery.busy());
-    QVERIFY(status.last()[0].toString().contains("取消失败"));
+    QVERIFY(i18n::Message(status.last()[0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("取消失败"));
     dns.cancelError = ERROR_SUCCESS;
     discovery.cancel();
     QTRY_VERIFY(!discovery.busy());

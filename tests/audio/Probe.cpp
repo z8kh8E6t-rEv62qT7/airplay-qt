@@ -7,8 +7,7 @@
 #include <cmath>
 #include <cstdio>
 
-// Read-only diagnostic of the explicitly authorized ASIO input channels 31/32.
-// No AirPlay connection, output buffers, audio recording, or channel scanning.
+// Inspect ASIO inputs 31/32 without recording or sending audio.
 int main(int argc, char **argv) {
   QApplication application(argc, argv);
   try {
@@ -29,7 +28,7 @@ int main(int argc, char **argv) {
       const auto format = audio::format(channel.type);
       std::printf("INPUT channel=%d sdk_index=%d isInput=1 name=%s type=%ld "
                   "bytes=%d valid_bits=%d float=%d big_endian=%d\n",
-                  index + 1, index, channel.name.toUtf8().constData(),
+                  index + 1, index, channel.name.render().toUtf8().constData(),
                   channel.type, format.bytes, format.bits, format.floating,
                   format.bigEndian);
     }
@@ -64,7 +63,7 @@ int main(int argc, char **argv) {
         if (elapsed.elapsed() >= 5000) {
           poll.stop();
           if (const auto error = capture.stop(); !error.isEmpty())
-            throw std::runtime_error(error.toStdString());
+            throw std::runtime_error(error.render().toStdString());
           std::printf(
               "RESULT elapsed_ms=%lld callbacks=%llu captured_frames=%llu "
               "left_nonzero_bytes=%llu right_nonzero_bytes=%llu left_peak=%.9f "

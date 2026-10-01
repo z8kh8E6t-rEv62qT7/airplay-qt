@@ -1,6 +1,7 @@
 #pragma once
 #include "RtspClient.h"
 #include "ServiceAdvertisement.h"
+#include "app/Message.h"
 #include <QSet>
 #include <QTcpServer>
 namespace airplay {
@@ -18,10 +19,10 @@ public:
   void setVolume(double value) { volume_ = value; }
 signals:
   void ready();
-  void failed(QString text);
+  void failed(QJsonArray text);
   // Built-in Qt types only: no metatype registrations surviving VST unload.
   void command(QString peer, QString action, double value);
-  void log(QString text);
+  void log(QJsonArray text);
 
 private:
   void accept();

@@ -1,4 +1,5 @@
 #include "Controller.h"
+#include "app/Message.h"
 #ifdef Q_OS_MACOS
 #include <QCoreApplication>
 #include <QPermissions>
@@ -27,7 +28,7 @@ Controller::Controller(QObject *parent)
       capture_->start();
       session_.captureStarted();
     } catch (const std::exception &e) {
-      session_.stop(QString::fromUtf8(e.what()));
+      session_.stop(i18n::fromException(e));
     }
   });
 }
@@ -37,9 +38,19 @@ Settings Controller::initialize() {
   try {
     return settings_.load();
   } catch (const std::exception &e) {
-    emit error(QString::fromUtf8(e.what()) + "\n原配置不会被覆盖。请删除 " +
-               Settings::path() + " 后重启。");
+    emit error(
+        i18n::fromException(e) +
+        i18n::text(i18n::Id::ConfigPreservedPrefix) +
+        Settings::path() + i18n::text(i18n::Id::AndRestart));
     return {};
+  }
+}
+void Controller::saveLanguage(i18n::Language language) {
+  try {
+    settings_.saveLanguage(language);
+  } catch (const std::exception &e) {
+    emit error(
+        i18n::text(i18n::Id::LanguageSaveFailed).arg(i18n::fromException(e)));
   }
 }
 void Controller::selectDriver(const QString &id, void *window) {
@@ -51,10 +62,10 @@ void Controller::selectDriver(const QString &id, void *window) {
     const auto list = capture_->open(id, window);
     selectedId_ = id;
     emit channels(list);
-    emit session_.status("驱动已加载，等待开始");
+    emit session_.status(i18n::text(i18n::Id::DriverLoadedReadyToStart));
   } catch (const std::exception &e) {
     emit channels({});
-    emit error(QString::fromUtf8(e.what()));
+    emit error(i18n::fromException(e));
   }
 }
 void Controller::controlPanel() {
@@ -65,7 +76,7 @@ void Controller::controlPanel() {
     const auto id = selectedId_;
     selectDriver(id, window_);
   } catch (const std::exception &e) {
-    emit error(QString::fromUtf8(e.what()));
+    emit error(i18n::fromException(e));
   }
 }
 void Controller::start(
@@ -82,14 +93,14 @@ void Controller::start(
     if (saveSettings)
       settings_.saveStart(settings, selection);
   } catch (const std::exception &e) {
-    emit error(QString::fromUtf8(e.what()));
+    emit error(i18n::fromException(e));
     return;
   }
 #ifdef Q_OS_MACOS
   const QMicrophonePermission permission;
   const auto permissionStatus = qApp->checkPermission(permission);
   if (permissionStatus == Qt::PermissionStatus::Denied) {
-    emit error("音频输入权限被拒绝。");
+    emit error(i18n::text(i18n::Id::AudioInputPermissionDenied));
     return;
   }
   if (permissionStatus == Qt::PermissionStatus::Undetermined) {
@@ -106,7 +117,7 @@ void Controller::start(
           if (result.status() == Qt::PermissionStatus::Granted)
             start(settings, endpoints, false);
           else
-            emit error("音频输入权限被拒绝。");
+            emit error(i18n::text(i18n::Id::AudioInputPermissionDenied));
         });
     return;
   }
@@ -114,21 +125,22 @@ void Controller::start(
   try {
     airplay::validateEndpoints(endpoints);
     if (settings.driverId.isEmpty() || selectedId_ != settings.driverId)
-      throw airplay::Error("请选择有效输入设备");
+      throw airplay::Error(i18n::text(i18n::Id::SelectAValidInputDevice));
     if (const auto message = settings.validate(); !message.isEmpty())
       throw airplay::Error(message);
-    emit session_.status("准备音频输入");
+    emit session_.status(i18n::text(i18n::Id::PreparingAudioInput));
     const auto stream = capture_->prepare(settings.left, settings.right,
                                           settings.timing.backlog);
 #ifdef Q_OS_WIN
-    emit session_.log("采集计时：已申请 1 ms 精度，并禁止忽略计时精度请求。");
+    emit session_.log(
+        i18n::text(i18n::Id::CaptureTimingRequestedMsResolutionAndDisabled));
 #endif
     session_.start(settings.timing, stream, endpoints, {},
                    airplay::NetworkRoute::resolve(settings.networkBinding));
   } catch (const std::exception &e) {
     stopCapture();
-    emit error(QString::fromUtf8(e.what()));
-    emit session_.status("准备失败");
+    emit error(i18n::fromException(e));
+    emit session_.status(i18n::text(i18n::Id::PreparationFailed));
   }
 }
 void Controller::stopCapture() {

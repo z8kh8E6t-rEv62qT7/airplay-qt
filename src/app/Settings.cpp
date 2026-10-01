@@ -1,5 +1,6 @@
 #include "Settings.h"
 #include "airplay/ReceiverEndpoint.h"
+#include "app/Message.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -12,58 +13,69 @@
 
 namespace app {
 const std::array<TimingField, 13> timingFields{
-    {{"lead", "播放提前量", &Timing::lead, 0, 2, false},
-     {"settle", "启动 PTP 等待", &Timing::settle, 0, 30, false},
-     {"prebuffer", "采集预缓冲", &Timing::prebuffer, 0, .5, false},
-     {"backlog", "最大积压", &Timing::backlog, .01, 1, false},
-     {"late", "最大发送落后", &Timing::late, .01, 1, false},
-     {"inputTimeout", "采集断流超时", &Timing::inputTimeout, .1, 30, false},
-     {"connectTimeout", "TCP 连接超时", &Timing::connectTimeout, .1, 60, false},
-     {"requestTimeout", "RTSP 请求超时", &Timing::requestTimeout, .1, 60,
+    {{"lead", i18n::text(i18n::Id::PlaybackLead), &Timing::lead, 0, 2, false},
+     {"settle", i18n::text(i18n::Id::StartupPTPWait), &Timing::settle, 0, 30,
       false},
-     {"teardownTimeout", "TEARDOWN 等待上限", &Timing::teardownTimeout, .1, 10,
+     {"prebuffer", i18n::text(i18n::Id::CapturePrebuffer), &Timing::prebuffer,
+      0, .5, false},
+     {"backlog", i18n::text(i18n::Id::MaximumBacklog), &Timing::backlog, .01, 1,
       false},
-     {"ptpSync", "PTP Sync 周期", &Timing::ptpSync, 1. / 64, 1, true},
-     {"ptpAnnounce", "PTP Announce 周期", &Timing::ptpAnnounce, 1. / 8, 8,
-      true},
-     {"audioSync", "音频同步包周期", &Timing::audioSync, .05, 2, false},
-     {"keepAlive", "RTSP 保活周期", &Timing::keepAlive, 1, 20, false}}};
-static void fail(const QString &message) {
-  throw std::runtime_error(message.toStdString());
+     {"late", i18n::text(i18n::Id::MaximumSendLateness), &Timing::late, .01, 1,
+      false},
+     {"inputTimeout", i18n::text(i18n::Id::InputDropoutTimeout),
+      &Timing::inputTimeout, .1, 30, false},
+     {"connectTimeout", i18n::text(i18n::Id::TCPConnectionTimeout),
+      &Timing::connectTimeout, .1, 60, false},
+     {"requestTimeout", i18n::text(i18n::Id::RTSPRequestTimeout),
+      &Timing::requestTimeout, .1, 60, false},
+     {"teardownTimeout", i18n::text(i18n::Id::TEARDOWNTimeout),
+      &Timing::teardownTimeout, .1, 10, false},
+     {"ptpSync", i18n::text(i18n::Id::PTPSyncInterval), &Timing::ptpSync,
+      1. / 64, 1, true},
+     {"ptpAnnounce", i18n::text(i18n::Id::PTPAnnounceInterval),
+      &Timing::ptpAnnounce, 1. / 8, 8, true},
+     {"audioSync", i18n::text(i18n::Id::AudioSyncInterval), &Timing::audioSync,
+      .05, 2, false},
+     {"keepAlive", i18n::text(i18n::Id::RTSPKeepAliveInterval),
+      &Timing::keepAlive, 1, 20, false}}};
+static void fail(const i18n::Message &message) {
+  throw i18n::MessageError(message);
 }
-QString Timing::validate() const {
+i18n::Message Timing::validate() const {
   for (const auto &f : timingFields) {
     const double value = this->*(f.member);
     if (!std::isfinite(value) || value < f.minimum || value > f.maximum ||
         (f.powerOfTwo && std::exp2(std::round(std::log2(value))) != value))
-      return QString::fromUtf8(f.label) + "超出允许范围";
+      return f.label + i18n::text(i18n::Id::IsOutOfRange);
   }
   if (prebuffer >= backlog)
-    return "采集预缓冲必须小于最大积压";
+    return i18n::text(i18n::Id::CapturePrebufferMustBeLessThanMaximum);
   return {};
 }
-QString Settings::validate() const {
+i18n::Message Settings::validate() const {
+  if (!i18n::valid(language))
+    return i18n::text(i18n::Id::InvalidLanguage);
   if (const auto error = networkBinding.validate(); !error.isEmpty())
     return error;
   if (receiverSelection.size() > 2)
-    return "保存的接收端最多为两台";
+    return i18n::text(i18n::Id::AtMostTwoReceiversCanBeSaved);
   QList<airplay::ReceiverEndpoint> endpoints;
   try {
     for (const auto &receiver : receiverSelection) {
       if (receiver.name.trimmed().isEmpty())
-        return "保存的接收端名称无效";
+        return i18n::text(i18n::Id::InvalidSavedReceiverName);
       const auto endpoint = airplay::parseReceiverEndpoint(receiver.endpoint);
       if (endpoint.text() != receiver.endpoint)
-        return "保存的接收端地址格式无效";
+        return i18n::text(i18n::Id::InvalidSavedReceiverAddressFormat);
       endpoints.append(endpoint);
     }
     if (!endpoints.isEmpty())
       airplay::validateEndpoints(endpoints);
   } catch (const std::exception &e) {
-    return QString::fromUtf8(e.what());
+    return i18n::fromException(e);
   }
   if (left < 0 || right < 0 || left == right)
-    return "请选择两个不同的有效输入通道";
+    return i18n::text(i18n::Id::SelectTwoDifferentValidInputChannels);
   return timing.validate();
 }
 QJsonObject Settings::json() const {
@@ -74,7 +86,8 @@ QJsonObject Settings::json() const {
   QJsonObject times;
   for (const auto &f : timingFields)
     times.insert(f.key, timing.*(f.member));
-  return {{"version", 2},
+  return {{"version", 3},
+          {"language", i18n::languageCode(language)},
           {"networkBinding", networkBinding.json()},
           {"driverId", driverId},
           {"left", left},
@@ -83,23 +96,28 @@ QJsonObject Settings::json() const {
           {"receiverSelection", selection}};
 }
 Settings Settings::fromJson(const QJsonObject &object) {
-  if (object.value("version") != QJsonValue(2) ||
+  if (object.value("version") != QJsonValue(3) ||
       !object.value("driverId").isString() ||
       !object.value("timing").isObject())
-    fail("配置结构或版本无效");
+    fail(i18n::text(i18n::Id::InvalidConfigurationStructureOrVersion));
   Settings settings;
+  const auto language =
+      i18n::parseLanguage(object.value("language").toString());
+  if (!language)
+    fail(i18n::text(i18n::Id::InvalidLanguage));
+  settings.language = *language;
   settings.networkBinding =
       airplay::NetworkBinding::fromJson(object.value("networkBinding"));
   if (object.contains("receiverSelection")) {
     if (!object.value("receiverSelection").isArray())
-      fail("保存的接收端列表无效");
+      fail(i18n::text(i18n::Id::InvalidSavedReceiverList));
     for (const auto &entry : object.value("receiverSelection").toArray()) {
       if (!entry.isObject())
-        fail("保存的接收端结构无效");
+        fail(i18n::text(i18n::Id::InvalidSavedReceiverStructure));
       const auto receiver = entry.toObject();
       if (!receiver.value("name").isString() ||
           !receiver.value("endpoint").isString())
-        fail("保存的接收端名称或地址无效");
+        fail(i18n::text(i18n::Id::InvalidSavedReceiverNameOrAddress));
       settings.receiverSelection.append(
           {receiver.value("name").toString(),
            receiver.value("endpoint").toString()});
@@ -112,13 +130,13 @@ Settings Settings::fromJson(const QJsonObject &object) {
     const double number = value.toDouble(-1);
     if (!value.isDouble() || !std::isfinite(number) || number < 0 ||
         number > INT_MAX || std::floor(number) != number)
-      fail("配置声道索引无效");
+      fail(i18n::text(i18n::Id::InvalidConfigurationChannelIndex));
     *target = static_cast<int>(number);
   }
   const auto times = object.value("timing").toObject();
   for (const auto &f : timingFields) {
     if (!times.value(f.key).isDouble())
-      fail(QString("缺少时间参数：") + f.key);
+      fail(i18n::text(i18n::Id::MissingTimingParameter) + f.key);
     settings.timing.*(f.member) = times.value(f.key).toDouble();
   }
   if (const auto error = settings.validate(); !error.isEmpty())
@@ -132,11 +150,11 @@ Settings Settings::load(const QString &path) {
   if (!file.open(QIODevice::ReadOnly))
     fail(file.errorString());
   if (file.size() > 65536)
-    fail("配置文件过大");
+    fail(i18n::text(i18n::Id::ConfigurationFileIsTooLarge));
   QJsonParseError error;
   const auto document = QJsonDocument::fromJson(file.readAll(), &error);
   if (error.error != QJsonParseError::NoError || !document.isObject())
-    fail("配置 JSON 损坏：" + error.errorString());
+    fail(i18n::text(i18n::Id::CorruptConfigurationJSON) + error.errorString());
   return fromJson(document.object());
 }
 void Settings::save(const QString &path) const {
@@ -154,7 +172,7 @@ QString Settings::path() {
 #ifdef Q_OS_MACOS
   const auto directory = QDir::home().filePath(".config");
   if (!QDir().mkpath(directory))
-    fail("无法创建用户配置目录");
+    fail(i18n::text(i18n::Id::CannotCreateTheUserConfigurationDirectory));
   return directory + "/AirPlayQt.json";
 #else
   return QCoreApplication::applicationDirPath() + "/AirPlayQt.json";
@@ -168,9 +186,15 @@ Settings SettingsStore::load() {
 }
 void SettingsStore::commit(const Settings &value) {
   if (!writable_)
-    fail("原配置无效，禁止覆盖；请删除 " + path() + " 后重新启动。");
+    fail(i18n::text(i18n::Id::OriginalConfigurationIsInvalidAndCannotBe) +
+         path() + i18n::text(i18n::Id::AndRestartTheApplication));
   value.save(path());
   value_ = value;
+}
+void SettingsStore::saveLanguage(i18n::Language language) {
+  auto updated = value_;
+  updated.language = language;
+  commit(updated);
 }
 void SettingsStore::saveStart(
     Settings value, const std::optional<QList<ReceiverSelection>> &selection) {

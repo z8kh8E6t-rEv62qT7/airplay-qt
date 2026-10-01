@@ -16,11 +16,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <dns_sd.h>
 #include <QSocketNotifier>
 #include <QtEndian>
+#include <dns_sd.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #endif
 
 using namespace airplay;
@@ -101,43 +101,82 @@ private slots:
     QSignalSpy failed(&server, &DacpServer::failed);
     server.start(id, route.local, route, {route.local});
     QTRY_VERIFY_WITH_TIMEOUT(!ready.isEmpty() || !failed.isEmpty(), 6000);
-    QVERIFY2(failed.isEmpty(), failed.isEmpty() ? "" : qPrintable(failed[0][0].toString()));
-    struct Result { bool done = false; int error = 0; quint16 port = 0; QString host; } result;
+    QVERIFY2(failed.isEmpty(),
+             failed.isEmpty()
+                 ? ""
+                 : qPrintable(i18n::Message(failed[0][0].toJsonArray())
+                                  .render(i18n::Language::Chinese)));
+    struct Result {
+      bool done = false;
+      int error = 0;
+      quint16 port = 0;
+      QString host;
+    } result;
     DNSServiceRef ref = nullptr;
     const auto name = ("iTunes_Ctrl_" + id).toLatin1();
-    QCOMPARE(DNSServiceResolve(&ref, 0, route.index, name.constData(), "_dacp._tcp",
-        "local.", [](DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceErrorType error,
-            const char *, const char *host, uint16_t port, uint16_t, const unsigned char *, void *ctx) {
-          auto &r = *static_cast<Result *>(ctx);
-          r.done = true; r.error = error;
-          if (!error) { r.port = qFromBigEndian(port); r.host = QString::fromUtf8(host); }
-        }, &result), 0);
+    QCOMPARE(DNSServiceResolve(
+                 &ref, 0, route.index, name.constData(), "_dacp._tcp", "local.",
+                 [](DNSServiceRef, DNSServiceFlags, uint32_t,
+                    DNSServiceErrorType error, const char *, const char *host,
+                    uint16_t port, uint16_t, const unsigned char *, void *ctx) {
+                   auto &r = *static_cast<Result *>(ctx);
+                   r.done = true;
+                   r.error = error;
+                   if (!error) {
+                     r.port = qFromBigEndian(port);
+                     r.host = QString::fromUtf8(host);
+                   }
+                 },
+                 &result),
+             0);
     const auto release = qScopeGuard([&] { DNSServiceRefDeallocate(ref); });
     QSocketNotifier notifier(DNSServiceRefSockFD(ref), QSocketNotifier::Read);
     connect(&notifier, &QSocketNotifier::activated, this, [&] {
       const int error = DNSServiceProcessResult(ref);
-      if (error) { result.error = error; result.done = true; }
+      if (error) {
+        result.error = error;
+        result.done = true;
+      }
     });
     QTRY_VERIFY_WITH_TIMEOUT(result.done, 5000);
     QCOMPARE(result.error, 0);
     QCOMPARE(result.port, server.port());
     QCOMPARE(result.host.toLower(), "airplayqt-" + id.toLower() + ".local.");
-    struct AddressResult { bool done = false; int error = 0; uint index = 0; QHostAddress address; } address;
+    struct AddressResult {
+      bool done = false;
+      int error = 0;
+      uint index = 0;
+      QHostAddress address;
+    } address;
     DNSServiceRef addressRef = nullptr;
     const auto hostname = result.host.toUtf8();
-    QCOMPARE(DNSServiceGetAddrInfo(&addressRef, 0, route.index, kDNSServiceProtocol_IPv4,
-        hostname.constData(), [](DNSServiceRef, DNSServiceFlags, uint32_t index,
-            DNSServiceErrorType error, const char *, const sockaddr *sa, uint32_t, void *ctx) {
-          auto &r = *static_cast<AddressResult *>(ctx);
-          r.done = true; r.error = error; r.index = index;
-          if (!error && sa && sa->sa_family == AF_INET)
-            r.address = QHostAddress(ntohl(reinterpret_cast<const sockaddr_in *>(sa)->sin_addr.s_addr));
-        }, &address), 0);
-    const auto releaseAddress = qScopeGuard([&] { DNSServiceRefDeallocate(addressRef); });
-    QSocketNotifier addressNotifier(DNSServiceRefSockFD(addressRef), QSocketNotifier::Read);
+    QCOMPARE(DNSServiceGetAddrInfo(
+                 &addressRef, 0, route.index, kDNSServiceProtocol_IPv4,
+                 hostname.constData(),
+                 [](DNSServiceRef, DNSServiceFlags, uint32_t index,
+                    DNSServiceErrorType error, const char *, const sockaddr *sa,
+                    uint32_t, void *ctx) {
+                   auto &r = *static_cast<AddressResult *>(ctx);
+                   r.done = true;
+                   r.error = error;
+                   r.index = index;
+                   if (!error && sa && sa->sa_family == AF_INET)
+                     r.address = QHostAddress(
+                         ntohl(reinterpret_cast<const sockaddr_in *>(sa)
+                                   ->sin_addr.s_addr));
+                 },
+                 &address),
+             0);
+    const auto releaseAddress =
+        qScopeGuard([&] { DNSServiceRefDeallocate(addressRef); });
+    QSocketNotifier addressNotifier(DNSServiceRefSockFD(addressRef),
+                                    QSocketNotifier::Read);
     connect(&addressNotifier, &QSocketNotifier::activated, this, [&] {
       const int error = DNSServiceProcessResult(addressRef);
-      if (error) { address.error = error; address.done = true; }
+      if (error) {
+        address.error = error;
+        address.done = true;
+      }
     });
     QTRY_VERIFY_WITH_TIMEOUT(address.done, 5000);
     QCOMPARE(address.error, 0);
@@ -149,23 +188,30 @@ private slots:
 #endif
   void encryptedEventsAndRemoteVolume() {
     SessionFixture f;
-    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
     f.attach(session);
     QSignalSpy done(&session, &AirPlaySession::finished);
     QSignalSpy applied(&session, &AirPlaySession::volumeApplied);
     session.start();
     QTRY_VERIFY(!f.left.packets.isEmpty());
     QVERIFY(f.left.metadata.contains("AirPlayQt"));
-    QCOMPARE(f.left.metadataRtpInfo, QByteArray("rtptime=") +
-             QByteArray::number(readBe(f.left.packets.first(), 4, 4)));
+    QCOMPARE(f.left.metadataRtpInfo,
+             QByteArray("rtptime=") +
+                 QByteArray::number(readBe(f.left.packets.first(), 4, 4)));
     QCOMPARE(f.left.commands.size(), 5);
     const auto npi = f.left.commands[1]["params"].toMap()["params"].toMap();
     QCOMPARE(npi["Title"].toString(), QString("AirPlayQt"));
     QVERIFY(!npi.contains("Duration"));
-    QVERIFY(f.left.commands[2]["params"].toMap()["mrSupportedCommandsFromSender"].toList().isEmpty());
-    const auto body = plistEncode(QVariantMap{{"type", "updateInfo"},
+    QVERIFY(f.left.commands[2]["params"]
+                .toMap()["mrSupportedCommandsFromSender"]
+                .toList()
+                .isEmpty());
+    const auto body = plistEncode(QVariantMap{
+        {"type", "updateInfo"},
         {"params", QVariantMap{{"diagnostic", QByteArray(2500, 'x')}}}});
-    auto request = QByteArray("POST /command RTSP/1.0\r\nCSeq: 73\r\nContent-Length: ") +
+    auto request =
+        QByteArray("POST /command RTSP/1.0\r\nCSeq: 73\r\nContent-Length: ") +
         QByteArray::number(body.size()) + "\r\n\r\n" + body;
     auto wire = f.left.eventRecords->encode(request);
     // Split a record header, then deliver multiple encrypted records together.
@@ -183,8 +229,8 @@ private slots:
       socket.connectToHost(QHostAddress::LocalHost, remote->port());
       if (!socket.waitForConnected(1000))
         return QByteArray{};
-      socket.write("GET /ctrl-int/1/" + path + " HTTP/1.1\r\nActive-Remote: " +
-                   token + "\r\n\r\n");
+      socket.write("GET /ctrl-int/1/" + path +
+                   " HTTP/1.1\r\nActive-Remote: " + token + "\r\n\r\n");
       QByteArray response;
       QElapsedTimer timer;
       timer.start();
@@ -198,19 +244,25 @@ private slots:
     QTRY_COMPARE(f.left.volumes.last(), -29.);
     QTRY_COMPARE(f.right.volumes.last(), -29.);
     QTRY_COMPARE(applied.last()[0].toDouble(), -29.);
-    const auto property = send("getproperty?properties=dmcp.volume,dacp.volumecontrollable",
-                               f.left.activeRemote);
+    const auto property =
+        send("getproperty?properties=dmcp.volume,dacp.volumecontrollable",
+             f.left.activeRemote);
     QVERIFY(property.contains("200"));
     QVERIFY(property.endsWith(volumeProperties(-29., true, true)));
     auto count = f.left.volumeRequests;
-    QVERIFY(send("setproperty?dmcp.device-volume=-29", f.left.activeRemote).contains("204"));
+    QVERIFY(send("setproperty?dmcp.device-volume=-29", f.left.activeRemote)
+                .contains("204"));
     QTest::qWait(20);
     QCOMPARE(f.left.volumeRequests, count); // echo does not loop
     QVERIFY(send("volumeup", "stale-token").contains("403"));
     QVERIFY(send("pause", f.left.activeRemote).contains("501"));
-    QVERIFY(send("setproperty?dmcp.device-volume=nan", f.left.activeRemote).contains("400"));
-    QVERIFY(send("setproperty?dmcp.device-volume=1", f.left.activeRemote).contains("400"));
-    QVERIFY(send("setproperty?dmcp.device-volume=-18&dmcp.device-volume=-12", f.left.activeRemote).contains("400"));
+    QVERIFY(send("setproperty?dmcp.device-volume=nan", f.left.activeRemote)
+                .contains("400"));
+    QVERIFY(send("setproperty?dmcp.device-volume=1", f.left.activeRemote)
+                .contains("400"));
+    QVERIFY(send("setproperty?dmcp.device-volume=-18&dmcp.device-volume=-12",
+                 f.left.activeRemote)
+                .contains("400"));
     QVERIFY(send("devicevolume=-24", f.left.activeRemote).contains("204"));
     QTRY_COMPARE(f.right.volumes.last(), -24.);
     QVERIFY(send("devicevolume=-29", f.left.activeRemote).contains("204"));
@@ -229,33 +281,40 @@ private slots:
     QVERIFY(done.isEmpty());
     session.stop();
     QTRY_COMPARE(done.size(), 1);
-    QCOMPARE(f.left.commands.last()["params"].toMap()["mrPlaybackState"].toInt(), 3);
+    QCOMPARE(
+        f.left.commands.last()["params"].toMap()["mrPlaybackState"].toInt(), 3);
     QCOMPARE(f.left.teardowns, 1);
     QCOMPARE(remote->port(), quint16(0));
   }
   void eventAuthenticationFailureStopsGroup() {
     SessionFixture f;
-    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
     f.attach(session);
     QSignalSpy done(&session, &AirPlaySession::finished);
     session.start();
     QTRY_VERIFY(!f.left.packets.isEmpty());
-    auto bad = f.left.eventRecords->encode("POST /command RTSP/1.0\r\nContent-Length: 0\r\n\r\n");
-    bad[bad.size()-1] ^= 1;
+    auto bad = f.left.eventRecords->encode(
+        "POST /command RTSP/1.0\r\nContent-Length: 0\r\n\r\n");
+    bad[bad.size() - 1] ^= 1;
     f.left.eventSocket->write(bad);
     QTRY_COMPARE(done.size(), 1);
     QCOMPARE(done[0][1].toInt(), int(SessionEnd::Failure));
-    QVERIFY(!done[0][0].toString().isEmpty());
+    QVERIFY(!i18n::Message(done[0][0].toJsonArray())
+                 .render(i18n::Language::Chinese)
+                 .isEmpty());
   }
   void eventReplySurvivesReceiverDeadline() {
     SessionFixture f;
-    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
     f.attach(session);
     QSignalSpy done(&session, &AirPlaySession::finished);
     session.start();
     QTRY_VERIFY(!f.left.packets.isEmpty());
     const auto body = plistEncode(QVariantMap{{"type", "updateInfo"}});
-    const auto request = QByteArray("POST /command RTSP/1.0\r\nCSeq: 1\r\nContent-Length: ") +
+    const auto request =
+        QByteArray("POST /command RTSP/1.0\r\nCSeq: 1\r\nContent-Length: ") +
         QByteArray::number(body.size()) + "\r\n\r\n" + body;
     f.left.eventSocket->write(f.left.eventRecords->encode(request));
     // Reproduce the receiver's observed 30-second response deadline. This is
@@ -278,12 +337,15 @@ private slots:
   void metadataRejectionStopsBeforeAudio() {
     SessionFixture f;
     f.right.rejectMetadata = true;
-    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
     f.attach(session);
     QSignalSpy done(&session, &AirPlaySession::finished);
     session.start();
     QTRY_COMPARE(done.size(), 1);
-    QVERIFY(done[0][0].toString().contains("播放信息／外部控制未就绪"));
+    QVERIFY(i18n::Message(done[0][0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("播放信息／外部控制未就绪"));
     QVERIFY(f.left.packets.isEmpty());
     QVERIFY(f.right.packets.isEmpty());
   }
@@ -294,11 +356,13 @@ private slots:
     QCOMPARE(parseControlMessage(part)->body, QByteArray("abcd"));
     QCOMPARE(parseControlMessage(part)->line, QByteArray("GET /x HTTP/1.1"));
     QVERIFY(part.isEmpty());
-    for (auto bad : {QByteArray("GET / HTTP/1.1\r\nContent-Length: -1\r\n\r\n"),
-                     QByteArray("GET / HTTP/1.1\r\nContent-Length: 1048577\r\n\r\n"),
-                     QByteArray("GET / HTTP/1.1\r\nContent-Length: 1\r\ncontent-length: 1\r\n\r\n"),
-                     QByteArray("GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"),
-                     QByteArray(16385, 'x')})
+    for (auto bad :
+         {QByteArray("GET / HTTP/1.1\r\nContent-Length: -1\r\n\r\n"),
+          QByteArray("GET / HTTP/1.1\r\nContent-Length: 1048577\r\n\r\n"),
+          QByteArray("GET / HTTP/1.1\r\nContent-Length: 1\r\ncontent-length: "
+                     "1\r\n\r\n"),
+          QByteArray("GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"),
+          QByteArray(16385, 'x')})
       QVERIFY_THROWS_EXCEPTION(Error, parseControlMessage(bad));
   }
   void networkBindingAndNativeSockets() {
@@ -397,7 +461,9 @@ private slots:
     }
     session.stop();
     QTRY_COMPARE(done.size(), 1);
-    QVERIFY(done[0][0].toString().isEmpty());
+    QVERIFY(i18n::Message(done[0][0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .isEmpty());
   }
   void boundPtpNative() {
     NetworkBinding binding;
@@ -440,7 +506,9 @@ private slots:
     session.stop("指定网卡已失效");
     session.stop("后续故障");
     QTRY_COMPARE(done.size(), 1);
-    QCOMPARE(done[0][0].toString(), QString("指定网卡已失效"));
+    QCOMPARE(
+        i18n::Message(done[0][0].toJsonArray()).render(i18n::Language::Chinese),
+        QString("指定网卡已失效"));
     QCOMPARE(done[0][1].toInt(), int(SessionEnd::Failure));
   }
   void invalidBindingNeverConnects() {
@@ -452,7 +520,9 @@ private slots:
     session.start();
     QTRY_COMPARE(done.size(), 1);
     QCOMPARE(done[0][1].toInt(), int(SessionEnd::Failure));
-    QVERIFY(done[0][0].toString().contains("网卡"));
+    QVERIFY(i18n::Message(done[0][0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("网卡"));
     QVERIFY(!f.left.socket && !f.right.socket);
   }
   void endpointValidation() {
@@ -501,11 +571,15 @@ private slots:
     QTRY_COMPARE_WITH_TIMEOUT(f.left.retransmits.size(), 1, 1000);
     session.stop();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
-    QCOMPARE(done[0][0].toString(), QString{});
+    QCOMPARE(
+        i18n::Message(done[0][0].toJsonArray()).render(i18n::Language::Chinese),
+        QString{});
     QCOMPARE(f.left.teardowns, 1);
     QVERIFY(!f.input.isActive());
     for (const auto &entry : logs)
-      QVERIFY(!entry[0].toString().startsWith("[VST速率"));
+      QVERIFY(!i18n::Message(entry[0].toJsonArray())
+                   .render(i18n::Language::Chinese)
+                   .startsWith("[VST速率"));
   }
   void vstRateDiagnostics() {
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
@@ -518,8 +592,11 @@ private slots:
         done(&session, &AirPlaySession::finished);
     const auto periodic = [&] {
       for (const auto &entry : logs)
-        if (entry[0].toString().startsWith("[VST速率] 窗口"))
-          return entry[0].toString();
+        if (i18n::Message(entry[0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .startsWith("[VST速率] 窗口"))
+          return i18n::Message(entry[0].toJsonArray())
+              .render(i18n::Language::Chinese);
       return QString{};
     };
     session.start();
@@ -534,9 +611,13 @@ private slots:
     QVERIFY(periodic().contains("poll 最大间隔"));
     session.stop();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
-    QVERIFY(done[0][0].toString().isEmpty());
+    QVERIFY(i18n::Message(done[0][0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .isEmpty());
     QVERIFY(std::any_of(logs.begin(), logs.end(), [](const auto &entry) {
-      return entry[0].toString().startsWith("[VST速率·停止]");
+      return i18n::Message(entry[0].toJsonArray())
+          .render(i18n::Language::Chinese)
+          .startsWith("[VST速率·停止]");
     }));
 #else
     QSKIP("VST rate diagnostics disabled in this build");
@@ -555,11 +636,16 @@ private slots:
         done(&session, &AirPlaySession::finished);
     session.start();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 4000);
-    QVERIFY(done[0][0].toString().contains("积压"));
+    QVERIFY(i18n::Message(done[0][0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("积压"));
     QString final;
     for (const auto &entry : logs)
-      if (entry[0].toString().startsWith("[VST速率·停止]"))
-        final = entry[0].toString();
+      if (i18n::Message(entry[0].toJsonArray())
+              .render(i18n::Language::Chinese)
+              .startsWith("[VST速率·停止]"))
+        final = i18n::Message(entry[0].toJsonArray())
+                    .render(i18n::Language::Chinese);
     QVERIFY(!final.isEmpty());
     const auto match =
         QRegularExpression("输入 ([0-9.]+) 帧/s；发送 ([0-9.]+) 帧/s")
@@ -588,7 +674,9 @@ private slots:
     QSignalSpy done(&session, &AirPlaySession::finished);
     session.start();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 2000);
-    QVERIFY(!done[0][0].toString().isEmpty());
+    QVERIFY(!i18n::Message(done[0][0].toJsonArray())
+                 .render(i18n::Language::Chinese)
+                 .isEmpty());
     QVERIFY(f.left.sessionSetup.isEmpty());
     QVERIFY(f.right.sessionSetup.isEmpty());
     QVERIFY(f.left.packets.isEmpty());
@@ -612,7 +700,9 @@ private slots:
     QVERIFY(done.isEmpty());
     session.stop();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
-    QCOMPARE(done[0][0].toString(), QString{});
+    QCOMPARE(
+        i18n::Message(done[0][0].toJsonArray()).render(i18n::Language::Chinese),
+        QString{});
   }
   void keepAliveFailureStopsGroup() {
     SessionFixture f;
@@ -624,7 +714,9 @@ private slots:
     QSignalSpy done(&session, &AirPlaySession::finished);
     session.start();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 4000);
-    QVERIFY(!done[0][0].toString().isEmpty());
+    QVERIFY(!i18n::Message(done[0][0].toJsonArray())
+                 .render(i18n::Language::Chinese)
+                 .isEmpty());
     QVERIFY(!f.input.isActive());
   }
   void pocVectors() {
@@ -789,7 +881,9 @@ private slots:
     QTRY_COMPARE_WITH_TIMEOUT(volume.size(), 4, 1000);
     session.stop();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
-    QCOMPARE(done[0][0].toString(), QString{});
+    QCOMPARE(
+        i18n::Message(done[0][0].toJsonArray()).render(i18n::Language::Chinese),
+        QString{});
     QCOMPARE(f.left.teardowns, 1);
     QCOMPARE(f.right.teardowns, 1);
   }
@@ -822,7 +916,9 @@ private slots:
     QSignalSpy done(&session, &AirPlaySession::finished);
     session.start();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 3000);
-    QVERIFY(!done[0][0].toString().isEmpty());
+    QVERIFY(!i18n::Message(done[0][0].toJsonArray())
+                 .render(i18n::Language::Chinese)
+                 .isEmpty());
     QVERIFY(!f.input.isActive());
     QVERIFY(f.left.packets.isEmpty());
   }
@@ -837,7 +933,9 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!f.left.packets.isEmpty(), 3000);
     session.volume(-15);
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 2000);
-    QVERIFY(!done[0][0].toString().isEmpty());
+    QVERIFY(!i18n::Message(done[0][0].toJsonArray())
+                 .render(i18n::Language::Chinese)
+                 .isEmpty());
     QVERIFY(!f.input.isActive());
   }
   void cancelAndRestart() {
@@ -853,7 +951,9 @@ private slots:
       session.stop();
       session.stop();
       QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
-      QCOMPARE(done[0][0].toString(), QString{});
+      QCOMPARE(i18n::Message(done[0][0].toJsonArray())
+                   .render(i18n::Language::Chinese),
+               QString{});
       QVERIFY(!f.input.isActive());
     }
   }
@@ -875,7 +975,9 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!f.left.packets.isEmpty(), 3000);
     f.stream.queue->fault = fault;
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
-    QVERIFY(!done[0][0].toString().isEmpty());
+    QVERIFY(!i18n::Message(done[0][0].toJsonArray())
+                 .render(i18n::Language::Chinese)
+                 .isEmpty());
     QVERIFY(!f.input.isActive());
   }
   void hostInterruptionIsNotAnInputError() {
@@ -888,7 +990,9 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!f.left.packets.isEmpty(), 3000);
     f.stream.queue->interrupted = true;
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
-    QCOMPARE(done[0][0].toString(), QString{});
+    QCOMPARE(
+        i18n::Message(done[0][0].toJsonArray()).render(i18n::Language::Chinese),
+        QString{});
     QCOMPARE(done[0][1].toInt(), int(SessionEnd::HostInterrupted));
     QVERIFY(!f.input.isActive());
   }
@@ -904,7 +1008,9 @@ private slots:
     QTRY_VERIFY_WITH_TIMEOUT(!f.left.packets.isEmpty(), 3000);
     f.input.stop();
     QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 2000);
-    QVERIFY(done[0][0].toString().contains("断流"));
+    QVERIFY(i18n::Message(done[0][0].toJsonArray())
+                .render(i18n::Language::Chinese)
+                .contains("断流"));
   }
 };
 QTEST_GUILESS_MAIN(ProtocolTests)

@@ -1,4 +1,5 @@
 #include "VstAudioInput.h"
+#include "app/Message.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -70,33 +71,36 @@ void VstAudioInput::setRealtime(bool realtime) noexcept {
   if (!realtime)
     fail(InputFault::NonRealtime);
 }
-QString VstAudioInput::unavailable() const {
+i18n::Message VstAudioInput::unavailable() const {
   if (rate_.load() != 44100)
-    return "AirPlay 需要 44,100 Hz 工程；本地音频仍原样透传。";
+    return i18n::text(i18n::Id::AirPlayRequiresAHzProjectLocalAudio);
   if (!active_.load() || !processing_.load())
-    return "宿主尚未启用实时音频处理。";
+    return i18n::text(i18n::Id::HostHasNotEnabledRealtimeAudioProcessing);
   if (!realtime_.load())
-    return "预处理／离线导出期间不能发送 AirPlay。";
+    return i18n::text(
+        i18n::Id::AirPlayCannotStreamDuringPreprocessingOrOffline);
   if (bypass_.load())
-    return "插件已旁路；取消旁路后请手动开始。";
+    return i18n::text(i18n::Id::PluginIsBypassedDisableBypassAndStart);
   if (maxBlock_.load() <= 0)
-    return "宿主块长度无效。";
+    return i18n::text(i18n::Id::InvalidHostBlockLength);
   return {};
 }
 audio::CaptureStream VstAudioInput::prepare(double backlog, bool resuming) {
   const auto changes = changes_.load();
   if (resuming && fault_.load() != InputFault::None)
-    throw std::runtime_error("宿主音频条件已变化，请手动开始。");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::HostAudioConditionsChangedStartManually));
   stop();
   monitored_.store(nullptr);
   // A new queue is never published until the prior callback has relinquished
   // its Run. The network retains its own shared ownership of the old queue.
   if (readers_.load() != 0)
-    throw std::runtime_error("音频回调交接中，请稍后重试。");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::AudioCallbackHandoffInProgressTryAgain));
   if (const auto reason = unavailable(); !reason.isEmpty())
-    throw std::runtime_error(reason.toStdString());
+    throw i18n::MessageError(reason);
   if (!std::isfinite(backlog) || backlog < .01 || backlog > 1)
-    throw std::runtime_error("无效的采集积压上限");
+    throw i18n::MessageError(i18n::text(i18n::Id::InvalidCaptureBacklogLimit));
   auto run = std::make_unique<Run>();
   run->doubles = doubles_.load();
   const int bytes = run->doubles ? 8 : 4;
@@ -115,7 +119,8 @@ audio::CaptureStream VstAudioInput::prepare(double backlog, bool resuming) {
   monitored_.store(owned_.get());
   if (changes_.load() != changes) {
     monitored_.store(nullptr);
-    throw std::runtime_error("准备期间宿主音频条件已变化，请手动开始。");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::HostAudioConditionsChangedDuringPreparationStart));
   }
   return owned_->stream;
 }

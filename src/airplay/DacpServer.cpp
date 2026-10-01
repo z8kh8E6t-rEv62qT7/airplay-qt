@@ -1,5 +1,6 @@
 #include "DacpServer.h"
 #include "NowPlaying.h"
+#include "app/Message.h"
 #include <QNetworkProxy>
 #include <QUrl>
 #include <QUrlQuery>
@@ -26,7 +27,7 @@ void DacpServer::start(const QString &identity, const QHostAddress &local,
   route_ = route;
   activeRemote_ = QByteArray::number(activeRemote);
   if (local.isNull() || !server_.listen(local, 0))
-    throw Error("DACP 监听失败：" + server_.errorString());
+    throw Error(i18n::text(i18n::Id::DACPListenFailed) + server_.errorString());
   try {
     route_.bindInterface(server_.socketDescriptor());
   } catch (...) {
@@ -43,7 +44,7 @@ void DacpServer::start(const QString &identity, const QHostAddress &local,
       }
   if (advertise) {
     if (publicationRoute.local.isNull())
-      throw Error("DACP 发布找不到发送源 IPv4 对应的网卡");
+      throw Error(i18n::text(i18n::Id::NoNetworkInterfaceMatchesTheDACPSource));
     advertisement_.start(identity, server_.serverPort(), publicationRoute);
   } else
     QTimer::singleShot(0, this, &DacpServer::ready);
@@ -75,7 +76,7 @@ void DacpServer::accept() {
       clients_.remove(client);
       client->abort();
       client->deleteLater();
-      emit failed(QString::fromUtf8(e.what()));
+      emit failed(i18n::fromException(e));
       return;
     }
     client->setReadBufferSize(16384);
@@ -92,7 +93,7 @@ void DacpServer::accept() {
       try {
         *buffer += client->readAll();
         if (buffer->size() > 16384)
-          throw Error("DACP 请求过大");
+          throw Error(i18n::text(i18n::Id::DACPRequestIsTooLarge));
         auto request = parseControlMessage(*buffer);
         if (!request)
           return;
@@ -106,13 +107,14 @@ void DacpServer::accept() {
           response += "Content-Type: application/x-dmap-tagged\r\n";
         response += "\r\n" + body;
         if (status != 200 && status != 204)
-          emit log(QString("DACP 请求未执行：%1；状态 %2")
+          emit log(i18n::text(i18n::Id::DACPRequestNotExecutedStatus)
                        .arg(QString::fromLatin1(request->line.left(256)))
                        .arg(status));
         client->write(response);
         client->disconnectFromHost();
       } catch (const std::exception &e) {
-        emit log("DACP 请求拒绝：" + QString::fromUtf8(e.what()));
+        emit log(i18n::text(i18n::Id::DACPRequestRejected) +
+                 i18n::fromException(e));
         client->abort();
       }
     });
@@ -190,7 +192,8 @@ int DacpServer::handle(QTcpSocket &socket, const ControlMessage &request,
     return 501;
   }
   emit log(
-      "DACP：" + socket.peerAddress().toString() + " · " + operation +
+      i18n::Message("DACP: ") + socket.peerAddress().toString() + " · " +
+      operation +
       (operation == "absolute" ? QString(" %1 dB").arg(value) : QString{}));
   emit command(socket.peerAddress().toString(), operation, value);
   return 204;

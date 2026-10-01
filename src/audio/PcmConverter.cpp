@@ -1,4 +1,5 @@
 #include "PcmConverter.h"
+#include "app/Message.h"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -27,7 +28,8 @@ PcmFormat format(long type) {
   case 11:
     return {4, 24, big, false};
   default:
-    throw std::runtime_error("不支持的 ASIO 格式（不接受 DSD）");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::UnsupportedASIOFormatDSDIsNotAccepted));
   }
 }
 int16_t sample(const std::byte *source, PcmFormat f) {
@@ -40,7 +42,8 @@ int16_t sample(const std::byte *source, PcmFormat f) {
     value = f.bytes == 4 ? double(std::bit_cast<float>(uint32_t(raw)))
                          : std::bit_cast<double>(raw);
     if (!std::isfinite(value))
-      throw std::runtime_error("音频输入含 NaN/Inf，已停止发送");
+      throw i18n::MessageError(
+          i18n::text(i18n::Id::AudioInputContainsNaNInfStreamingStopped));
     value = std::clamp(value, -1., 1.) * 32768.;
   } else {
     // ASIO Int32{MSB,LSB}{16,18,20,24} is right-aligned, signed PCM.
@@ -55,7 +58,8 @@ std::vector<int16_t> convert(std::span<const std::byte> left, PcmFormat lf,
                              std::span<const std::byte> right, PcmFormat rf) {
   if (left.size() % lf.bytes || right.size() % rf.bytes ||
       left.size() / lf.bytes != right.size() / rf.bytes)
-    throw std::runtime_error("输入声道数据长度不匹配");
+    throw i18n::MessageError(
+        i18n::text(i18n::Id::InputChannelDataLengthsDoNotMatch));
   std::vector<int16_t> pcm(left.size() / lf.bytes * 2);
   for (size_t i = 0; i < pcm.size() / 2; ++i) {
     pcm[2 * i] = sample(left.data() + i * lf.bytes, lf);

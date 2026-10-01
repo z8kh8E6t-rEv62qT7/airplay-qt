@@ -1,7 +1,9 @@
 #include "PluginRuntime.h"
 #include "HostRecovery.h"
+#include "app/Message.h"
 #include <QDir>
 #include <QFileInfo>
+#include <QSignalBlocker>
 #include <QThread>
 #ifdef Q_OS_MACOS
 #include <dlfcn.h>
@@ -14,22 +16,23 @@ namespace vst3 {
 namespace {
 std::atomic<PluginRuntime *> runtime{nullptr};
 std::atomic<unsigned> components{0};
-QString faultText(InputFault value) {
+i18n::Message faultText(InputFault value) {
   switch (value) {
   case InputFault::SampleRate:
-    return "宿主采样率或样本格式改变，已停止 AirPlay。";
+    return i18n::text(i18n::Id::HostSampleRateOrSampleFormatChanged);
   case InputFault::Bypass:
-    return "插件已旁路，已停止 AirPlay。";
+    return i18n::text(i18n::Id::PluginBypassedAirPlayStopped);
   case InputFault::NonRealtime:
-    return "进入预处理／离线导出，已停止 AirPlay。";
+    return i18n::text(
+        i18n::Id::PreprocessingOrOfflineExportStartedAirPlayStopped);
   case InputFault::Overflow:
-    return "DAW 输入队列溢出，已停止 AirPlay。";
+    return i18n::text(i18n::Id::DAWInputQueueOverflowAirPlayStopped);
   case InputFault::InvalidBlock:
-    return "宿主音频块长度或格式无效，已停止 AirPlay。";
+    return i18n::text(i18n::Id::InvalidHostAudioBlockLengthOrFormat);
   case InputFault::NonFinite:
-    return "DAW 输入含 NaN/Inf，已停止 AirPlay。";
+    return i18n::text(i18n::Id::DAWInputContainsNaNInfAirPlayStopped);
   case InputFault::StateLoad:
-    return "工程状态已载入，请重新选择并手动开始。";
+    return i18n::text(i18n::Id::ProjectStateLoadedSelectReceiversAndStart);
   default:
     return {};
   }
@@ -47,14 +50,15 @@ struct PluginRuntime::ApplicationMode {
     if (!dladdr(reinterpret_cast<const void *>(&PluginRuntime::exists),
                 &module) ||
         !module.dli_fname)
-      throw airplay::Error("无法定位插件模块。");
+      throw airplay::Error(i18n::text(i18n::Id::CannotLocateThePluginModule));
     const auto contents = QFileInfo(QString::fromUtf8(module.dli_fname)).dir();
     const auto plugins = QDir::cleanPath(contents.filePath("../PlugIns"));
     // Development builds have no private runtime. A deployed bundle must have
     // its Cocoa backend; never silently fall back to the developer's Qt.
     if (QFileInfo::exists(contents.filePath("../Frameworks"))) {
       if (!QFileInfo::exists(plugins + "/platforms/libqcocoa.dylib"))
-        throw airplay::Error("包内缺少 platforms/libqcocoa.dylib。");
+        throw airplay::Error(
+            i18n::text(i18n::Id::PackageIsMissingPlatformsLibqcocoaDylib));
       QCoreApplication::setLibraryPaths({plugins});
       changedPaths = true;
     }
@@ -80,18 +84,21 @@ struct PluginRuntime::Instance {
   airplay::NetworkBinding requestBinding;
   airplay::NetworkRoute requestRoute;
   QList<airplay::ReceiverEndpoint> requestTargets;
-  uint64_t stopRevision = 0, timingRevision = 0;
+  uint64_t stopRevision = 0, timingRevision = 0, languageRevision = 0;
   explicit Instance(PluginRuntime &owner, std::shared_ptr<PluginState> value)
       : runtime(owner), state(std::move(value)),
         stopRevision(state->stopRevision.load()),
-        timingRevision(state->timingRevision.load()) {
-    QObject::connect(&session, &app::SessionController::startCapture, &session,
-                     [this] {
-                       if (state->processorAlive.load() && state->input.start())
-                         session.captureStarted();
-                       else
-                         session.stop("宿主音频条件已变化，不能开始 AirPlay。");
-                     });
+        timingRevision(state->timingRevision.load()),
+        languageRevision(state->languageRevision.load()) {
+    session.setLanguage(state->language());
+    QObject::connect(
+        &session, &app::SessionController::startCapture, &session, [this] {
+          if (state->processorAlive.load() && state->input.start())
+            session.captureStarted();
+          else
+            session.stop(i18n::text(
+                i18n::Id::HostAudioConditionsChangedAirPlayCannotStart));
+        });
     QObject::connect(&session, &app::SessionController::stopCapture, &session,
                      [this] { state->input.stop(); });
     QObject::connect(
@@ -120,12 +127,13 @@ struct PluginRuntime::Instance {
       const bool restored = endSessionTiming();
       timer = false;
       if (!restored && panel)
-        panel->showError("释放 1 ms 计时精度失败。");
+        panel->showError(
+            i18n::text(i18n::Id::FailedToReleaseMsTimerResolution));
     }
     if (runtime.sender_ == state->id && !recovery.active() && !session.busy())
       runtime.sender_ = 0;
   }
-  void cancel(const QString &reason = {}) {
+  void cancel(const i18n::Message &reason = {}) {
     recovery.cancel();
     state->input.stop();
     if (panel)
@@ -133,9 +141,11 @@ struct PluginRuntime::Instance {
     if (session.busy())
       session.stop(reason);
     else {
-      emit session.status(reason.isEmpty() ? "已停止" : "错误：" + reason);
+      emit session.status(reason.isEmpty()
+                              ? i18n::text(i18n::Id::Stopped)
+                              : i18n::text(i18n::Id::ErrorPrefix) + reason);
       if (!reason.isEmpty())
-        emit session.log("错误：" + reason);
+        emit session.log(i18n::text(i18n::Id::ErrorPrefix) + reason);
     }
     release();
   }
@@ -159,16 +169,18 @@ struct PluginRuntime::Instance {
       else
         requestRoute = airplay::NetworkRoute::resolve(requestBinding);
       if (!state->processorAlive.load())
-        throw airplay::Error("音频组件已卸载。");
+        throw airplay::Error(
+            i18n::text(i18n::Id::AudioComponentHasBeenUnloaded));
       if (runtime.sender_ && runtime.sender_ != state->id)
         throw airplay::Error(
-            "另一个 AirPlayQt 插件实例正在发送，请先停止该实例。");
+            i18n::text(i18n::Id::AnotherAirPlayQtInstanceIsStreamingStopThat));
       if (const auto error = requestTiming.validate(); !error.isEmpty())
         throw airplay::Error(error);
       airplay::validateEndpoints(requestTargets);
       if (reconnect && (state->input.fault() != InputFault::None ||
                         !state->input.unavailable().isEmpty()))
-        throw airplay::Error("宿主音频条件已变化，请手动开始。");
+        throw airplay::Error(
+            i18n::text(i18n::Id::HostAudioConditionsChangedStartManually));
       const auto stream =
           state->input.prepare(requestTiming.backlog, reconnect);
       beginSessionTiming();
@@ -178,14 +190,26 @@ struct PluginRuntime::Instance {
       if (panel)
         panel->setRecoveryPending(false);
       if (reconnect)
-        emit session.log("宿主已恢复，自动重建 AirPlay 会话（一次）");
+        emit session.log(i18n::text(
+            i18n::Id::HostRecoveredRebuildingTheAirPlaySessionAutomatically));
       session.start(requestTiming, stream, requestTargets, runtime.environment_,
                     requestRoute);
     } catch (const std::exception &e) {
-      cancel(QString::fromUtf8(e.what()));
+      cancel(i18n::fromException(e));
     }
   }
   void poll() {
+    const auto language = state->languageRevision.load();
+    if (language != languageRevision) {
+      // Restoring host state is not a user edit and must not dirty the project.
+      if (panel) {
+        const QSignalBlocker blocker(panel.get());
+        panel->setLanguage(state->language());
+      } else {
+        session.setLanguage(state->language());
+      }
+      languageRevision = language;
+    }
     const auto stop = state->stopRevision.load();
     const auto timing = state->timingRevision.load();
     if (!state->processorAlive.load() || stop != stopRevision)
@@ -194,7 +218,7 @@ struct PluginRuntime::Instance {
       try {
         requestRoute.validate();
       } catch (const std::exception &e) {
-        cancel(QString::fromUtf8(e.what()));
+        cancel(i18n::fromException(e));
       }
     }
     if (stop != stopRevision && panel)
@@ -205,17 +229,17 @@ struct PluginRuntime::Instance {
         state->input.interruption(), state->input.unavailable().isEmpty(),
         !session.busy(), fault != InputFault::None, monotonicNs())) {
     case HostRecovery::Action::Interrupt:
-      emit session.log("宿主暂停音频处理，等待恢复（最多 5 秒）");
+      emit session.log(
+          i18n::text(i18n::Id::HostAudioProcessingPausedWaitingUpTo));
       session.stop({}, airplay::SessionEnd::HostInterrupted);
       break;
     case HostRecovery::Action::Reconnect:
       begin(true);
       break;
     case HostRecovery::Action::Cancel:
-      cancel(
-          fault != InputFault::None
-              ? faultText(fault)
-              : "宿主未满足 5 秒自动恢复条件，或重连中再次中断；请手动开始。");
+      cancel(fault != InputFault::None
+                 ? faultText(fault)
+                 : i18n::text(i18n::Id::HostDidNotRecoverWithinSecondsOr));
       break;
     case HostRecovery::Action::None:
       break;
@@ -226,11 +250,12 @@ struct PluginRuntime::Instance {
         panel->setTiming(state->timing());
         panel->setNetworkBinding(state->networkBinding());
       }
-      panel->setUnavailable(state->processorAlive.load()
-                                ? (state->configurationError().isEmpty()
-                                       ? state->input.unavailable()
-                                       : state->configurationError())
-                                : "音频组件已卸载。");
+      panel->setUnavailable(
+          state->processorAlive.load()
+              ? (state->configurationError().isEmpty()
+                     ? state->input.unavailable()
+                     : state->configurationError())
+              : i18n::text(i18n::Id::AudioComponentHasBeenUnloaded));
       if (!attached && !panel->discoveryBusy())
         panel.reset();
     }
@@ -252,10 +277,11 @@ bool PluginRuntime::prepareUnload() noexcept {
 PluginRuntime &PluginRuntime::acquire(void *parent,
                                       airplay::SessionEnvironment environment) {
   if (!NativeRuntime::validParentThread(parent))
-    throw airplay::Error("Qt 编辑器必须在宿主窗口所属 UI 线程打开。");
+    throw airplay::Error(i18n::text(i18n::Id::QtEditorMustOpenOnTheHost));
   if (auto *value = runtime.load()) {
     if (!value->native_->onThread())
-      throw airplay::Error("插件 Qt 运行时属于另一个 UI 线程。");
+      throw airplay::Error(
+          i18n::text(i18n::Id::PluginQtRuntimeBelongsToADifferent));
     return *value;
   }
   auto *value = new PluginRuntime(std::move(environment));
@@ -268,7 +294,7 @@ PluginRuntime::PluginRuntime(airplay::SessionEnvironment environment)
     if (!qobject_cast<QApplication *>(existing) ||
         existing->thread() != QThread::currentThread())
       throw airplay::Error(
-          "宿主已有不兼容的 Qt 应用或 Qt UI 线程；音频仍原样透传。");
+          i18n::text(i18n::Id::HostHasAnIncompatibleQtApplicationOr));
   } else {
 #ifdef AIRPLAY_PACKAGED_RUNTIME
     HMODULE module = nullptr;
@@ -278,11 +304,13 @@ PluginRuntime::PluginRuntime(airplay::SessionEnvironment environment)
                             reinterpret_cast<LPCWSTR>(&PluginRuntime::exists),
                             &module) ||
         !GetModuleFileNameW(module, path, 32768))
-      throw airplay::Error("无法定位包内 Qt 平台插件。");
+      throw airplay::Error(
+          i18n::text(i18n::Id::CannotLocateThePackagedQtPlatformPlugin));
     const auto directory =
         QFileInfo(QString::fromWCharArray(path)).absolutePath();
     if (!QFileInfo::exists(directory + "/platforms/qwindows.dll"))
-      throw airplay::Error("包内缺少 platforms/qwindows.dll。");
+      throw airplay::Error(
+          i18n::text(i18n::Id::PackageIsMissingPlatformsQwindowsDll));
     platformPath_ =
         QDir::toNativeSeparators(directory + "/platforms").toLocal8Bit();
     // The Qt build's compiled-in development path must not win over this
@@ -364,16 +392,22 @@ ui::StreamingPanel *
 PluginRuntime::open(const std::shared_ptr<PluginState> &state,
                     const airplay::DiscoveryApi &api) {
   if (!state || !state->processorAlive.load())
-    throw airplay::Error("尚未关联有效音频组件。");
+    throw airplay::Error(
+        i18n::text(i18n::Id::NoValidAudioComponentIsAssociatedYet));
   auto &instance = instances_[state->id];
   if (!instance)
     instance = std::make_unique<Instance>(*this, state);
   if (instance->panel)
-    throw airplay::Error("此实例已有编辑器或正在等待发现取消，请稍后重试。");
+    throw airplay::Error(
+        i18n::text(i18n::Id::ThisInstanceAlreadyHasAnEditorOr));
+  instance->session.setLanguage(state->language());
   instance->panel = std::make_unique<ui::StreamingPanel>(
       instance->session, nullptr, std::move(api));
   instance->attached = true;
   auto *panel = instance->panel.get();
+  QObject::connect(panel, &ui::StreamingPanel::languageChanged,
+                   &instance->session,
+                   [state, panel] { state->setLanguage(panel->language()); });
   panel->setTiming(state->timing());
   panel->setNetworkBinding(state->networkBinding());
   panel->setUnavailable(state->configurationError().isEmpty()

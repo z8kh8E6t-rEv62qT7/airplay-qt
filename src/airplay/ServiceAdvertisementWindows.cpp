@@ -1,5 +1,6 @@
 #include "Crypto.h"
 #include "ServiceAdvertisement.h"
+#include "app/Message.h"
 #include <QTimer>
 #include <atomic>
 #include <windns.h>
@@ -50,7 +51,7 @@ void ServiceAdvertisement::start(const QString &identity, quint16 port,
   state_ = std::make_unique<State>();
   auto &s = *state_;
   if (!s.completion)
-    throw Error("DACP 原生完成事件创建失败");
+    throw Error(i18n::text(i18n::Id::DACPNativeCompletionEventCreationFailed));
   const auto name =
       ("iTunes_Ctrl_" + identity + "._dacp._tcp.local").toStdWString();
   const auto host =
@@ -63,14 +64,14 @@ void ServiceAdvertisement::start(const QString &identity, quint16 port,
       name.c_str(), host.c_str(), route.local.isNull() ? nullptr : &address,
       nullptr, port, 0, 0, 4, keys, values);
   if (!s.request.pServiceInstance)
-    throw Error("DACP 服务实例创建失败");
+    throw Error(i18n::text(i18n::Id::DACPServiceInstanceCreationFailed));
   s.request.Version = DNS_QUERY_REQUEST_VERSION1;
   s.request.InterfaceIndex = route.index;
   s.request.pRegisterCompletionCallback = &State::completed;
   s.request.pQueryContext = &s;
   const auto result = DnsServiceRegister(&s.request, &s.cancel);
   if (result != DNS_REQUEST_PENDING)
-    throw Error(QString("DACP 服务发布失败：%1").arg(result));
+    throw Error(i18n::text(i18n::Id::DACPServicePublicationFailed).arg(result));
   s.pending = true;
   s.poll.setInterval(20);
   connect(&s.poll, &QTimer::timeout, this, [this] {
@@ -83,7 +84,8 @@ void ServiceAdvertisement::start(const QString &identity, quint16 port,
     if (s.registered)
       emit ready();
     else
-      emit failed(QString("DACP 服务发布失败：%1").arg(s.status.load()));
+      emit failed(i18n::text(i18n::Id::DACPServicePublicationFailed)
+                      .arg(s.status.load()));
   });
   s.poll.start();
 }

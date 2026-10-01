@@ -132,23 +132,26 @@ int transmit(QApplication &application, const Options &o) {
       finish();
   };
   QObject::connect(&controller, &Controller::error, &context,
-                   [&](const QString &text) {
-                     report("error", {{"message", text}});
+                   [&](const i18n::Message &text) {
+                     report("error", {{"message", text.render()}});
                      if (!result)
                        result = 1;
                      if (!controller.busy())
                        finish();
                    });
   QObject::connect(&controller, &Controller::stopped, &context, finish);
-  QObject::connect(
-      &controller, &Controller::status, &context,
-      [](const QString &text) { report("status", {{"message", text}}); });
-  QObject::connect(
-      &controller, &Controller::log, &context,
-      [](const QString &text) { report("log", {{"message", text}}); });
-  QObject::connect(
-      &controller, &Controller::group, &context,
-      [](const QString &text) { report("group", {{"message", text}}); });
+  QObject::connect(&controller, &Controller::status, &context,
+                   [](const i18n::Message &text) {
+                     report("status", {{"message", text.render()}});
+                   });
+  QObject::connect(&controller, &Controller::log, &context,
+                   [](const i18n::Message &text) {
+                     report("log", {{"message", text.render()}});
+                   });
+  QObject::connect(&controller, &Controller::group, &context,
+                   [](const i18n::Message &text) {
+                     report("group", {{"message", text.render()}});
+                   });
   QObject::connect(&controller, &Controller::volumeApplied, &context,
                    [](double value) { report("volume", {{"db", value}}); });
   QObject::connect(&controller, &Controller::streamingChanged, &context,

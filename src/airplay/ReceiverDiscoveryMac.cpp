@@ -1,5 +1,6 @@
 #include "DiscoveryApi.h"
 #include "ReceiverDiscovery.h"
+#include "app/Message.h"
 #include <QSet>
 #include <QSocketNotifier>
 #include <QTimer>
@@ -44,7 +45,7 @@ struct ReceiverDiscovery::State {
     void watch() {
       const int fd = api.socket(ref);
       if (fd < 0)
-        throw std::runtime_error("Bonjour socket 无效");
+        throw i18n::MessageError(i18n::text(i18n::Id::InvalidBonjourSocket));
       notifier = std::make_unique<QSocketNotifier>(fd, QSocketNotifier::Read);
       std::weak_ptr<Operation> weak = shared_from_this();
       QObject::connect(notifier.get(), &QSocketNotifier::activated,
@@ -92,8 +93,9 @@ struct ReceiverDiscovery::State {
     clear();
     emit object.status(
         endpoints.isEmpty()
-            ? "扫描结束，未发现可用 IPv4 接收端；可刷新或使用手动模式。"
-            : QString("扫描结束，找到 %1 台接收端。").arg(endpoints.size()));
+            ? i18n::text(i18n::Id::ScanCompleteNoUsableIPvReceiversFound)
+            : i18n::text(i18n::Id::ScanCompleteFoundReceiverS)
+                  .arg(endpoints.size()));
     emit object.idle();
   }
   void failed(Operation &op, DNSServiceErrorType error) {
@@ -103,8 +105,9 @@ struct ReceiverDiscovery::State {
     } else {
       finish(op);
     }
-    emit object.status(QString("Bonjour %1失败（%2）；可刷新或使用手动模式。")
-                           .arg(isBrowse ? "查询" : "解析")
+    emit object.status(i18n::text(i18n::Id::BonjourFailedRefreshOrUseManualMode)
+                           .arg(isBrowse ? i18n::text(i18n::Id::Browse)
+                                         : i18n::text(i18n::Id::Resolve))
                            .arg(error));
     if (isBrowse)
       emit object.idle();
@@ -140,7 +143,7 @@ struct ReceiverDiscovery::State {
         return;
       if (s.seen.size() >= 128) {
         emit s.object.status(
-            "候选服务达到 128 个上限，忽略其余服务；最多同时解析 4 个。");
+            i18n::text(i18n::Id::TheLimitOfCandidateServicesWasReached));
         return;
       }
       s.seen.insert(key);
@@ -211,7 +214,8 @@ struct ReceiverDiscovery::State {
                               endpoint.text());
         }
       } catch (const std::exception &) {
-        emit s.object.status("已忽略无有效 IPv4 地址或端口的服务，继续扫描。");
+        emit s.object.status(
+            i18n::text(i18n::Id::IgnoredAServiceWithNoValidIPv));
       }
       // A signal receiver may have canceled or refreshed discovery.
       if (o.generation == s.generation)
@@ -247,7 +251,7 @@ struct ReceiverDiscovery::State {
     try {
       selectedIndex = NetworkRoute::resolve(binding).index;
     } catch (const std::exception &e) {
-      emit object.status(QString::fromUtf8(e.what()));
+      emit object.status(i18n::fromException(e));
       emit object.idle();
       return;
     }
@@ -266,7 +270,8 @@ struct ReceiverDiscovery::State {
       return;
     }
     deadline.start();
-    emit object.status("扫描中（10 秒）…请选择一台或两台接收端。");
+    emit object.status(
+        i18n::text(i18n::Id::ScanningSecondsSelectOneOrTwoReceivers));
   }
 };
 const DiscoveryApi &defaultDiscoveryApi() {

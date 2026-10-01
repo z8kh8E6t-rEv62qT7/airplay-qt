@@ -1,5 +1,6 @@
 #include "AsioCapture.h"
 #include "CaptureTiming.h"
+#include "app/Message.h"
 #include <QDebug>
 #include <algorithm>
 #include <cmath>
@@ -9,12 +10,10 @@ namespace audio {
 static_assert(sizeof(ASIOBufferInfo) == 24);
 static_assert(offsetof(AsioTimeInfo, sampleRate) == 24);
 static_assert(sizeof(ASIOTime) == 148);
-static void fail(const QString &text) {
-  throw std::runtime_error(text.toStdString());
-}
-static void check(ASIOError result, const char *operation) {
+static void fail(const i18n::Message &text) { throw i18n::MessageError(text); }
+static void check(ASIOError result, const i18n::Message &operation) {
   if (result != ASE_OK)
-    fail(QString("%1 失败（ASIO %2）").arg(operation).arg(result));
+    fail(i18n::text(i18n::Id::AsioOperationFailed).arg(operation).arg(result));
 }
 struct RegistryKey {
   HKEY handle = nullptr;
@@ -38,7 +37,8 @@ std::atomic<AsioCapture *> AsioCapture::active_{nullptr};
 AsioCapture::AsioCapture() {
   const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(hr))
-    fail(QString("初始化 COM 失败：0x%1").arg(uint32_t(hr), 8, 16, QChar('0')));
+    fail(i18n::text(i18n::Id::ComInitializationFailed)
+             .arg(uint32_t(hr), 8, 16, QChar('0')));
   com_ = true;
 }
 AsioCapture::~AsioCapture() {
@@ -56,7 +56,7 @@ QList<DriverInfo> AsioCapture::enumerate() {
   if (result == ERROR_FILE_NOT_FOUND)
     return {};
   if (result != ERROR_SUCCESS)
-    fail("无法读取 x64 ASIO 注册表");
+    fail(i18n::text(i18n::Id::CannotReadTheXASIORegistry));
   QList<DriverInfo> drivers;
   for (DWORD index = 0;; ++index) {
     wchar_t name[256];
@@ -66,7 +66,7 @@ QList<DriverInfo> AsioCapture::enumerate() {
     if (status == ERROR_NO_MORE_ITEMS)
       break;
     if (status != ERROR_SUCCESS)
-      fail("ASIO 注册表枚举失败");
+      fail(i18n::text(i18n::Id::ASIORegistryEnumerationFailed));
     RegistryKey entry;
     if (RegOpenKeyExW(root.handle, name, 0, KEY_READ | KEY_WOW64_64KEY,
                       &entry.handle) != ERROR_SUCCESS)
@@ -87,20 +87,21 @@ QList<ChannelInfo> AsioCapture::open(const QString &id, void *window) {
   CLSID clsid{};
   auto text = id.toStdWString();
   if (FAILED(CLSIDFromString(text.c_str(), &clsid)))
-    fail("ASIO CLSID 无效");
+    fail(i18n::text(i18n::Id::InvalidASIOCLSID));
   const HRESULT hr =
       CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER, clsid,
                        reinterpret_cast<void **>(&driver_));
   if (FAILED(hr))
-    fail(QString("无法加载 ASIO 驱动：0x%1")
+    fail(i18n::text(i18n::Id::AsioDriverLoadFailed)
              .arg(uint32_t(hr), 8, 16, QChar('0')));
   try {
     if (!driver_->init(window))
-      fail("ASIO 驱动初始化失败，设备可能被其他程序占用");
+      fail(i18n::text(
+          i18n::Id::ASIODriverInitializationFailedAnotherApplicationMay));
     long inputs = 0, outputs = 0;
     check(driver_->getChannels(&inputs, &outputs), "getChannels");
     if (inputs < 2 || inputs > 65536)
-      fail("ASIO 驱动未提供有效的两个输入通道");
+      fail(i18n::text(i18n::Id::ASIODriverDidNotProvideTwoValid));
     for (long index = 0; index < inputs; ++index) {
       ASIOChannelInfo info{};
       info.channel = index;
@@ -118,18 +119,18 @@ QList<ChannelInfo> AsioCapture::open(const QString &id, void *window) {
 }
 void AsioCapture::controlPanel() {
   if (!driver_ || buffers_)
-    fail("请先选择驱动并停止采集");
+    fail(i18n::text(i18n::Id::SelectADriverAndStopCaptureFirst));
   check(driver_->controlPanel(), "controlPanel");
 }
 CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
   if (!driver_ || buffers_ || timing_ || left == right || left < 0 ||
       right < 0 || left >= channels_.size() || right >= channels_.size())
-    fail("ASIO 驱动或输入通道选择无效");
+    fail(i18n::text(i18n::Id::InvalidASIODriverOrInputChannelSelection));
   if (!std::isfinite(backlog) || backlog < .01 || backlog > 1)
-    fail("最大积压设置无效");
+    fail(i18n::text(i18n::Id::InvalidMaximumBacklog));
   AsioCapture *expected = nullptr;
   if (!active_.compare_exchange_strong(expected, this))
-    fail("已有 ASIO 会话活动");
+    fail(i18n::text(i18n::Id::AnASIOSessionIsAlreadyActive));
   try {
     timing_ = std::make_unique<CaptureTiming>();
     check(driver_->canSampleRate(44100), "canSampleRate(44100)");
@@ -137,15 +138,14 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
     double rate = 0;
     if (setResult != ASE_OK) {
       const auto getResult = driver_->getSampleRate(&rate);
-      fail(QString("setSampleRate(44100) 失败（ASIO %1）；当前采样率 %2 "
-                   "Hz，查询状态 %3。请检查 Matrix 主引擎和主时钟。")
+      fail(i18n::text(i18n::Id::SetSampleRateFailedASIOCurrentRateHzQuery)
                .arg(setResult)
                .arg(rate)
                .arg(getResult));
     }
     check(driver_->getSampleRate(&rate), "getSampleRate");
     if (rate != 44100)
-      fail("ASIO 未采用 44.1 kHz，请检查驱动或 Matrix 主时钟");
+      fail(i18n::text(i18n::Id::ASIODidNotAdoptKHzCheckThe));
     long minimum = 0, maximum = 0, preferred = 0, granularity = 0;
     check(driver_->getBufferSize(&minimum, &maximum, &preferred, &granularity),
           "getBufferSize");
@@ -153,9 +153,9 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
         preferred > maximum || preferred > 44100 || granularity < -1 ||
         (granularity == -1 && (preferred & (preferred - 1))) ||
         (granularity > 0 && (preferred - minimum) % granularity))
-      fail("ASIO 首选缓冲大小无效");
+      fail(i18n::text(i18n::Id::InvalidPreferredASIOBufferSize));
     if (preferred > backlog * 44100)
-      fail("ASIO 缓冲时间超过最大积压，请调整驱动缓冲或最大积压");
+      fail(i18n::text(i18n::Id::ASIOBufferDurationExceedsMaximumBacklogAdjust));
     PcmFormat formats[2];
     int indices[2]{left, right};
     for (int i = 0; i < 2; ++i) {
@@ -178,15 +178,15 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
     buffers_ = true;
     for (const auto &info : bufferInfo_)
       if (!info.buffers[0] || !info.buffers[1])
-        fail("ASIO 返回空输入缓冲");
+        fail(i18n::text(i18n::Id::ASIOReturnedANullInputBuffer));
     check(driver_->getSampleRate(&rate), "getSampleRate");
     if (rate != 44100)
-      fail("建立缓冲后 ASIO 采样率变化");
+      fail(i18n::text(i18n::Id::ASIOSampleRateChangedAfterBufferCreation));
     return {queue_, formats[0], formats[1], preferred};
   } catch (const std::exception &error) {
     const auto cleanup = stop();
     if (!cleanup.isEmpty())
-      fail(QString::fromUtf8(error.what()) + "\n" + cleanup);
+      fail(i18n::fromException(error) + "\n" + cleanup);
     throw;
   } catch (...) {
     stop();
@@ -195,7 +195,7 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
 }
 void AsioCapture::setTrace(CaptureTrace *trace) {
   if (running_)
-    fail("不能在采集中更换回调诊断缓冲");
+    fail(i18n::text(i18n::Id::CannotReplaceCallbackDiagnosticsDuringCapture));
   trace_ = trace;
   if (trace_) {
     trace_->used = 0;
@@ -204,7 +204,7 @@ void AsioCapture::setTrace(CaptureTrace *trace) {
 }
 void AsioCapture::start() {
   if (!driver_ || !buffers_ || running_)
-    fail("ASIO 启动状态无效");
+    fail(i18n::text(i18n::Id::InvalidASIOStartState));
   positionValid_ = false;
   accepting_.store(true, std::memory_order_release);
   // A driver may invoke its callback before start() returns.
@@ -214,11 +214,11 @@ void AsioCapture::start() {
   } catch (const std::exception &error) {
     const auto cleanup = stop();
     if (!cleanup.isEmpty())
-      fail(QString::fromUtf8(error.what()) + "\n" + cleanup);
+      fail(i18n::fromException(error) + "\n" + cleanup);
     throw;
   }
 }
-QString AsioCapture::stop() noexcept {
+i18n::Message AsioCapture::stop() noexcept {
   accepting_.store(false, std::memory_order_release);
   if (driver_ && running_)
     driver_->stop();
@@ -237,14 +237,14 @@ QString AsioCapture::stop() noexcept {
       // Retain ownership and the session guard for a later cleanup retry.
       // Never replace an unrestored policy snapshot with a new session's.
       qWarning("%s", error.what());
-      return QString::fromUtf8(error.what());
+      return i18n::fromException(error);
     }
   }
   auto *expected = this;
   active_.compare_exchange_strong(expected, nullptr);
   return {};
 }
-QString AsioCapture::close() noexcept {
+i18n::Message AsioCapture::close() noexcept {
   const auto error = stop();
   if (driver_)
     driver_->Release();
@@ -371,5 +371,7 @@ long AsioCapture::message(long selector, long value, void *, double *) {
 
 namespace audio {
 QList<DriverInfo> inputDevices() { return AsioCapture::enumerate(); }
-std::unique_ptr<InputCapture> createInputCapture() { return std::make_unique<AsioCapture>(); }
+std::unique_ptr<InputCapture> createInputCapture() {
+  return std::make_unique<AsioCapture>();
 }
+} // namespace audio

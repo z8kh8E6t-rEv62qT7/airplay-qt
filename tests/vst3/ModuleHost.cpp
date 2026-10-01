@@ -1,12 +1,14 @@
+#include "TestComponentHandler.h"
 #include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include "vst3/Plugin.h"
 #include <QApplication>
-#include <QDir>
 #include <QCoreApplication>
-#include <QWidget>
-#include <QImageWriter>
+#include <QDir>
 #include <QFileInfo>
+#include <QImageWriter>
+#include <QPushButton>
+#include <QWidget>
 #include <cstdio>
 #include <windows.h>
 
@@ -26,7 +28,8 @@ int main(int argc, char **argv) {
     return 1;
   // Resolve the host's output directory before the DLL creates its QApplication
   // with synthetic argv; that application's applicationDirPath may be empty.
-  const auto outputDirectory = QFileInfo(QString::fromLocal8Bit(argv[0])).absolutePath();
+  const auto outputDirectory =
+      QFileInfo(QString::fromLocal8Bit(argv[0])).absolutePath();
   std::unique_ptr<QCoreApplication> existing;
   const bool incompatible =
       argc > 2 && std::strcmp(argv[2], "incompatible") == 0;
@@ -36,9 +39,11 @@ int main(int argc, char **argv) {
   else if (borrowed)
     existing = std::make_unique<QApplication>(argc, argv);
   HostApplication host;
+  TestComponentHandler handler;
   const auto originalLibraryPaths = QCoreApplication::libraryPaths();
   for (int cycle = 0; cycle < 5; ++cycle) {
-    const auto path = QDir::toNativeSeparators(QString::fromLocal8Bit(argv[1])).toStdWString();
+    const auto path = QDir::toNativeSeparators(QString::fromLocal8Bit(argv[1]))
+                          .toStdWString();
     HMODULE module = LoadLibraryW(path.c_str());
     if (!module) {
       std::fprintf(stderr, "LoadLibrary: %lu\n", GetLastError());
@@ -65,6 +70,8 @@ int main(int argc, char **argv) {
     if (component->initialize(&host) != kResultOk ||
         controller->initialize(&host) != kResultOk)
       return 5;
+    if (controller->setComponentHandler(&handler) != kResultOk)
+      return 20;
     FUnknownPtr<IConnectionPoint> processorConnection(component);
     FUnknownPtr<IConnectionPoint> controllerConnection(controller);
     processorConnection->connect(controllerConnection);
@@ -85,6 +92,17 @@ int main(int argc, char **argv) {
     EnumChildWindows(window, findQtChild, reinterpret_cast<LPARAM>(&embedded));
     if (incompatible ? embedded != nullptr : embedded == nullptr)
       return 11;
+    if (embedded) {
+      auto *toggle = embedded->findChild<QPushButton *>("languageToggle");
+      auto *start = embedded->findChild<QPushButton *>("start");
+      if (!toggle || !start || start->text() != "Start")
+        return 21;
+      const auto dirty = handler.dirtyCalls;
+      toggle->click();
+      if (handler.dirtyCalls != dirty + 1 || handler.parameterCalls ||
+          start->text() != "开始")
+        return 22;
+    }
     ViewRect size{0, 0, 900, 880};
     view->onSize(&size);
     view->onFocus(true);
@@ -94,12 +112,12 @@ int main(int argc, char **argv) {
     view->getSize(&size);
     view->onSize(&size);
     if (embedded && cycle == 0) {
-      QImageWriter writer(outputDirectory +
-                          "/VstEmbedded-" +
+      QImageWriter writer(outputDirectory + "/VstEmbedded-" +
                           (borrowed ? "borrowed" : "owned") + ".png");
       if (!writer.write(embedded->grab().toImage())) {
         std::fprintf(stderr, "Screenshot %s: %s\n",
-                     qPrintable(writer.fileName()), qPrintable(writer.errorString()));
+                     qPrintable(writer.fileName()),
+                     qPrintable(writer.errorString()));
         return 13;
       }
     }
@@ -140,9 +158,11 @@ int main(int argc, char **argv) {
       return 10;
     if (GetModuleHandleW(path.c_str()))
       return 14;
-    const auto enginePath = QDir::toNativeSeparators(
-        QFileInfo(QString::fromStdWString(path)).absolutePath() +
-        "/runtime/AirPlayQtEngine.dll").toStdWString();
+    const auto enginePath =
+        QDir::toNativeSeparators(
+            QFileInfo(QString::fromStdWString(path)).absolutePath() +
+            "/runtime/AirPlayQtEngine.dll")
+            .toStdWString();
     if (GetModuleHandleW(enginePath.c_str()))
       return 15;
   }

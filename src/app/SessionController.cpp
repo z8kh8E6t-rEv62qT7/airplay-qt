@@ -1,4 +1,5 @@
 #include "SessionController.h"
+#include "app/Message.h"
 #include <QEventLoop>
 
 namespace app {
@@ -11,11 +12,11 @@ SessionController::SessionController(QObject *parent)
   worker_->moveToThread(&thread_);
   connect(&thread_, &QThread::finished, worker_, &QObject::deleteLater);
   connect(this, &SessionController::status, this,
-          [this](QString text) { status_ = text; });
+          [this](i18n::Message text) { status_ = text; });
   connect(this, &SessionController::group, this,
-          [this](QString text) { group_ = text; });
-  connect(this, &SessionController::log, this, [this](QString text) {
-    log_.append(text);
+          [this](i18n::Message text) { group_ = text; });
+  connect(this, &SessionController::log, this, [this](i18n::Message text) {
+    log_.append(text.render(language_));
     if (log_.size() > 1000)
       log_.removeFirst();
   });
@@ -62,14 +63,14 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
   if (const auto error = timing.validate(); !error.isEmpty())
     throw airplay::Error(error);
   if (!stream.queue || stream.blockFrames <= 0)
-    throw airplay::Error("音频输入尚未准备");
+    throw airplay::Error(i18n::text(i18n::Id::AudioInputIsNotReady));
   busy_ = true;
   stopping_ = false;
   endReason_ = airplay::SessionEnd::Stopped;
   const auto generation = ++generation_;
   emit busyChanged(true);
   if (timing.lead < .5)
-    emit log("播放提前量较低，接收端可能晚到；不保证零延迟。");
+    emit log(i18n::text(i18n::Id::LowPlaybackLeadMayCauseLateArrival));
   QMetaObject::invokeMethod(worker_, [this, context = network_, timing, stream,
                                       endpoints, generation, environment,
                                       route] {
@@ -100,7 +101,7 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
                 emit startCapture();
             });
     connect(session, &airplay::AirPlaySession::finished, this,
-            [this, generation](QString message, int reason) {
+            [this, generation](i18n::Message message, int reason) {
               if (generation != generation_)
                 return;
               emit stopCapture();
@@ -128,7 +129,8 @@ void SessionController::captureStarted() {
       context->session->captureStarted();
   });
 }
-void SessionController::stop(const QString &reason, airplay::SessionEnd end) {
+void SessionController::stop(const i18n::Message &reason,
+                             airplay::SessionEnd end) {
   if (!busy_)
     return;
   stopping_ = true;

@@ -1,15 +1,12 @@
 #pragma once
+#include "app/Message.h"
 #include <QByteArray>
 #include <QMap>
 #include <cstdint>
 #include <span>
 #include <stdexcept>
 namespace airplay {
-class Error : public std::runtime_error {
-public:
-  explicit Error(const QString &message)
-      : std::runtime_error(message.toStdString()) {}
-};
+using Error = i18n::MessageError;
 QByteArray randomBytes(int size);
 QByteArray sha512(const QByteArray &data);
 QByteArray hkdf(const QByteArray &shared, const QByteArray &salt,

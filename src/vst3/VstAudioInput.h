@@ -1,4 +1,5 @@
 #pragma once
+#include "app/Message.h"
 #include "audio/CaptureStream.h"
 #include <QString>
 #include <array>
@@ -35,7 +36,7 @@ public:
   void setProcessing(bool) noexcept;
   void setBypass(bool) noexcept;
   void setRealtime(bool) noexcept;
-  QString unavailable() const;
+  i18n::Message unavailable() const;
   audio::CaptureStream prepare(double backlog, bool resuming = false);
   bool start() noexcept;
   void stop() noexcept;

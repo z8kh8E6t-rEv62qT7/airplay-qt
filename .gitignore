@@ -18,3 +18,5 @@ AirPlayQt.json
 /.vs/
 
 .DS_Store
+
+/internal.md

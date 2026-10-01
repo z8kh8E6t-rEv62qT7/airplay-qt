@@ -1,5 +1,6 @@
 #pragma once
 #include "NetworkBinding.h"
+#include "app/Message.h"
 #include <QObject>
 #include <memory>
 namespace airplay {
@@ -12,7 +13,7 @@ public:
   void stop();
 signals:
   void ready();
-  void failed(QString text);
+  void failed(QJsonArray text);
 
 private:
   struct State;

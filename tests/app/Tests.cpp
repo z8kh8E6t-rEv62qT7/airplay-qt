@@ -2,9 +2,11 @@
 #include "app/Settings.h"
 #include "ui/MainWindow.h"
 #include <QFile>
+#include <QGroupBox>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest>
+#ifdef Q_OS_WIN
 #include <aclapi.h>
 
 namespace {
@@ -32,9 +34,11 @@ struct RestoreDirectoryAcl {
   ~RestoreDirectoryAcl() { restore(); }
 };
 } // namespace
+#endif
 class AppTests : public QObject {
   Q_OBJECT
 private slots:
+#ifdef Q_OS_WIN
   void closingWaitsForDiscovery() {
     DNS_SERVICE_BROWSE_REQUEST request{};
     int cancellations = 0;
@@ -108,15 +112,41 @@ private slots:
     file.close();
     QCOMPARE(permissions.restore(), DWORD(ERROR_SUCCESS));
   }
+#endif
   void guiSmoke() {
     airplay::DiscoveryApi api;
+#ifdef Q_OS_WIN
     api.browse = [](auto *, auto *) { return DNS_STATUS(ERROR_NOT_SUPPORTED); };
+#else
+    api.browse = [](DNSServiceRef *, DNSServiceFlags, uint32_t, const char *,
+                    const char *, DNSServiceBrowseReply,
+                    void *) -> DNSServiceErrorType {
+      return kDNSServiceErr_Unsupported;
+    };
+#endif
     ui::MainWindow window(api);
     window.show();
     QVERIFY(window.isVisible());
     QVERIFY(window.findChildren<QComboBox *>().size() >= 3);
+    auto *panel = window.findChild<ui::StreamingPanel *>();
+    auto *toggle = window.findChild<QPushButton *>("languageToggle");
+    auto *input = window.findChild<QGroupBox *>();
+    QVERIFY(panel && toggle && input);
+    const auto widgetCount = window.findChildren<QWidget *>().size();
+    const auto originalTitle = input->title();
+    QVERIFY(originalTitle.endsWith("Input Device"));
     QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
-                               "/MainWindow.png"));
+                               "/MainWindow-en.png"));
+    // Exercise the shipping widget bindings without writing the user's config.
+    const QSignalBlocker noPersistence(panel);
+    toggle->click();
+    QVERIFY(input->title().endsWith("输入设备"));
+    QCOMPARE(toggle->text(), QString("English"));
+    QCOMPARE(window.findChildren<QWidget *>().size(), widgetCount);
+    QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
+                               "/MainWindow-zh.png"));
+    toggle->click();
+    QCOMPARE(input->title(), originalTitle);
     window.close();
   }
 };

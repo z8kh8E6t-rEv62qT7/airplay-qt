@@ -34,7 +34,7 @@ else()
   add_library(LibPlist::LibPlist ALIAS PkgConfig::PLIST)
 endif()
 add_library(airplay_core STATIC
-  src/app/Settings.cpp
+  src/app/Settings.cpp src/app/Message.cpp
   src/audio/PcmConverter.cpp src/app/SessionController.cpp
   src/airplay/Crypto.cpp src/airplay/RtspClient.cpp src/airplay/NetworkBinding.cpp
   src/airplay/EventChannel.cpp src/airplay/DacpServer.cpp src/airplay/NowPlaying.cpp
@@ -100,7 +100,7 @@ if(BUILD_TESTING)
   set_tests_properties(common_app PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
   set(test_modules airplay)
   if(WIN32 AND AIRPLAY_BUILD_STANDALONE)
-    list(APPEND test_modules audio app)
+    list(APPEND test_modules audio)
   endif()
   foreach(module IN LISTS test_modules)
     add_executable(test_${module} tests/${module}/Tests.cpp)
@@ -119,11 +119,16 @@ if(BUILD_TESTING)
   add_test(NAME discovery COMMAND test_discovery
     -o ${CMAKE_CURRENT_BINARY_DIR}/test_discovery.txt,txt
     -o ${CMAKE_CURRENT_BINARY_DIR}/test_discovery.xml,junitxml)
-  if(WIN32 AND AIRPLAY_BUILD_STANDALONE)
-    target_sources(test_app PRIVATE src/app/Controller.cpp src/ui/MainWindow.cpp)
-    target_link_libraries(test_audio PRIVATE airplay_asio)
-    target_link_libraries(test_app PRIVATE airplay_asio airplay_ui)
+  if(AIRPLAY_BUILD_STANDALONE)
+    add_executable(test_app tests/app/Tests.cpp src/app/Controller.cpp src/ui/MainWindow.cpp)
+    target_link_libraries(test_app PRIVATE ${capture_target} airplay_ui Qt6::Test)
+    add_test(NAME app COMMAND test_app
+      -o ${CMAKE_CURRENT_BINARY_DIR}/test_app.txt,txt
+      -o ${CMAKE_CURRENT_BINARY_DIR}/test_app.xml,junitxml)
     set_tests_properties(app PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  endif()
+  if(WIN32 AND AIRPLAY_BUILD_STANDALONE)
+    target_link_libraries(test_audio PRIVATE airplay_asio)
     add_executable(test_live tests/audio/Live.cpp src/app/Controller.cpp)
     target_link_libraries(test_live PRIVATE airplay_asio Qt6::Widgets)
     add_executable(test_probe tests/audio/Probe.cpp)

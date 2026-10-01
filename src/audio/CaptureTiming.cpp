@@ -1,4 +1,5 @@
 #include "CaptureTiming.h"
+#include "app/Message.h"
 #include <QDebug>
 #include <QString>
 #include <mmsystem.h>
@@ -6,15 +7,14 @@
 
 namespace audio {
 namespace {
-void fail(const QString &message) {
-  throw std::runtime_error(message.toStdString());
-}
+void fail(const i18n::Message &message) { throw i18n::MessageError(message); }
 PROCESS_POWER_THROTTLING_STATE policy() {
   PROCESS_POWER_THROTTLING_STATE state{};
   state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
   if (!GetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
                              &state, sizeof(state)))
-    fail(QString("读取采集计时策略失败（Win32 %1）").arg(GetLastError()));
+    fail(i18n::text(i18n::Id::FailedToReadCaptureTimingPolicyWin)
+             .arg(GetLastError()));
   return state;
 }
 } // namespace
@@ -26,17 +26,19 @@ CaptureTiming::CaptureTiming() : original_(policy()) {
   requested.StateMask &= ~PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
   if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
                              &requested, sizeof(requested)))
-    fail(QString("禁用采集计时降精度策略失败（Win32 %1）").arg(GetLastError()));
+    fail(i18n::text(i18n::Id::FailedToDisableCaptureTimingThrottlingWin)
+             .arg(GetLastError()));
   policyChanged_ = true;
   try {
     const auto status = timeBeginPeriod(1);
     if (status != TIMERR_NOERROR)
-      fail(QString("申请 1 ms 采集计时精度失败（MMRESULT %1）").arg(status));
+      fail(i18n::text(i18n::Id::FailedToRequestMsCaptureTimerResolution)
+               .arg(status));
     timerActive_ = true;
     const auto current = policy();
     constexpr auto flag = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
     if (!(current.ControlMask & flag) || (current.StateMask & flag))
-      fail("Windows 未接受采集计时策略");
+      fail(i18n::text(i18n::Id::WindowsDidNotAcceptTheCaptureTiming));
   } catch (...) {
     restoreNoThrow();
     throw;
@@ -64,7 +66,7 @@ void CaptureTiming::restore() {
       policyError = GetLastError();
   }
   if (timerError != TIMERR_NOERROR || policyError != ERROR_SUCCESS)
-    fail(QString("恢复采集计时状态失败（MMRESULT %1，Win32 %2）")
+    fail(i18n::text(i18n::Id::FailedToRestoreCaptureTimingStateMMRESULT)
              .arg(timerError)
              .arg(policyError));
 }
@@ -74,7 +76,7 @@ void CaptureTiming::verifyRestored() const {
       (current.StateMask & original_.ControlMask) !=
           (original_.StateMask & original_.ControlMask) ||
       timerActive_ || policyChanged_)
-    fail("采集计时策略未恢复到原状态");
+    fail(i18n::text(i18n::Id::CaptureTimingPolicyWasNotRestored));
 }
 void CaptureTiming::restoreNoThrow() noexcept {
   try {

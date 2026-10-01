@@ -1,5 +1,6 @@
 #pragma once
 #include "RtspClient.h"
+#include "app/Message.h"
 
 namespace airplay {
 // The receiver initiates requests on this connection. Its HAP directions are
@@ -15,13 +16,13 @@ public:
   void close();
 signals:
   void connected();
-  void failed(QString error);
-  void log(QString text);
+  void failed(QJsonArray error);
+  void log(QJsonArray text);
   void command(QByteArray plist);
 
 private:
   void receive();
-  void fail(const QString &);
+  void fail(const i18n::Message &);
   QTcpSocket socket_;
   QTimer timeout_;
   std::unique_ptr<HapRecords> records_;
