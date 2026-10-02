@@ -5,12 +5,16 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QTimer>
+#include <QSignalBlocker>
+#include <QScopedValueRollback>
 #include <QVBoxLayout>
 
 namespace ui {
 MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
 #ifdef Q_OS_MACOS
   const QString backend = "Core Audio";
+#elif defined(Q_OS_LINUX)
+  const QString backend = "PipeWire";
 #else
   const QString backend = "ASIO";
 #endif
@@ -40,6 +44,9 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   left_ = new QComboBox;
   right_ = new QComboBox;
   panel_ = new QPushButton;
+#ifdef Q_OS_LINUX
+  panel_->hide();
+#endif
   streaming_->bindText(panel_, "text",
 #ifdef Q_OS_MACOS
                        i18n::text(i18n::Id::AudioMIDISetup)
@@ -72,6 +79,8 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   });
   connect(&controller_, &app::Controller::channels, this,
           &MainWindow::setChannels);
+  connect(&controller_, &app::Controller::devicesChanged, this,
+          &MainWindow::setDevices);
   connect(&controller_, &app::Controller::error, streaming_,
           &StreamingPanel::showError);
   connect(&controller_, &app::Controller::busyChanged, this,
@@ -149,6 +158,35 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
     streaming_->beginDiscovery();
   });
 }
+void MainWindow::setDevices(const QList<audio::DriverInfo> &devices) {
+  if (loading_ || closing_) return;
+  const auto previous = driver_->currentData().toString();
+  const auto selected = previous.isEmpty() ? saved_.driverId : previous;
+  const auto oldLabel = driver_->currentData(Qt::UserRole + 1);
+  {
+    QSignalBlocker blocker(driver_);
+    driver_->clear();
+    for (const auto &device : devices) {
+      const auto label = device.displayName();
+      driver_->addItem(label.render(streaming_->language()), device.id);
+      driver_->setItemData(driver_->count() - 1, QJsonArray(label), Qt::UserRole + 1);
+    }
+    // An active selection survives disappearance; it must never fall back to
+    // another input. Reappearance is handled by the capture backend itself.
+    if (!previous.isEmpty() && driver_->findData(previous) < 0) {
+      const auto label = i18n::Message(oldLabel.toJsonArray());
+      driver_->addItem(label.render(streaming_->language()), previous);
+      driver_->setItemData(driver_->count() - 1, oldLabel, Qt::UserRole + 1);
+    }
+    driver_->setCurrentIndex(driver_->findData(selected));
+  }
+  if (previous.isEmpty() && driver_->currentIndex() >= 0 && !controller_.busy()) {
+    // The saved device can arrive after startup's asynchronous enumeration.
+    // Restore its saved channel mapping just as during initial loading.
+    QScopedValueRollback<bool> loading(loading_, true);
+    controller_.selectDriver(selected, reinterpret_cast<void *>(winId()));
+  }
+}
 void MainWindow::setChannels(const QList<audio::ChannelInfo> &channels) {
   const int previousLeft =
       left_->currentIndex() < 0 ? -1 : left_->currentData().toInt();
@@ -157,7 +195,7 @@ void MainWindow::setChannels(const QList<audio::ChannelInfo> &channels) {
   left_->clear();
   right_->clear();
   for (const auto &channel : channels) {
-#ifdef Q_OS_MACOS
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
     const auto label =
         i18n::Message("%1 · %2").arg(channel.index + 1).arg(channel.name);
 #else

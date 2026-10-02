@@ -18,7 +18,9 @@
 #else
 #include <QSocketNotifier>
 #include <QtEndian>
+#ifdef Q_OS_MACOS
 #include <dns_sd.h>
+#endif
 #include <netinet/in.h>
 #include <sys/socket.h>
 #endif
@@ -85,6 +87,65 @@ struct SessionFixture {
 class ProtocolTests : public QObject {
   Q_OBJECT
 private slots:
+  void continuousInputKeepsSessionAndDiscardsOldGenerations() {
+    SessionFixture f;
+    f.timing.inputTimeout = .1;
+    f.timing.late = 1;
+    f.timing.prebuffer = .016;
+    f.timing.backlog = .1;
+    f.stream = {std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
+                audio::format(16), audio::format(16), 352};
+    f.stream.gapPolicy = audio::GapPolicy::Silence;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    connect(&session, &AirPlaySession::startCapture, &session, &AirPlaySession::captureStarted);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY(f.left.packets.size() > 20);
+    QVERIFY(done.isEmpty());
+    const auto decoded = [&](const QByteArray &packet) {
+      return unseal(f.left.srp.key.left(32), QByteArray(4, '\0') + packet.right(8),
+                    packet.mid(12, packet.size() - 20), packet.mid(4, 8));
+    };
+    const auto silence = alac(std::vector<int16_t>(704, 0));
+    for (const auto &packet : f.left.packets) QCOMPARE(decoded(packet), silence);
+    std::array<int16_t, 352> samples;
+    samples.fill(123);
+    auto feed = [&](int count, uint64_t generation) {
+      for (int i = 0; i < count; ++i)
+        QVERIFY(f.stream.queue->push(samples.data(), samples.data(), nullptr, generation));
+    };
+    feed(8, f.stream.queue->generation.load());
+    const auto audio = alac(std::vector<int16_t>(704, 123));
+    QTRY_VERIFY(std::any_of(f.left.packets.begin(), f.left.packets.end(),
+                            [&](const auto &p) { return decoded(p) == audio; }));
+    const auto old = f.stream.queue->generation.fetch_add(1);
+    samples.fill(777);
+    feed(5, old); // A queued callback from a removed PipeWire node.
+    const auto forbidden = alac(std::vector<int16_t>(704, 777));
+    QTest::qWait(180);
+    QVERIFY(done.isEmpty());
+    for (const auto &packet : f.left.packets) QVERIFY(decoded(packet) != forbidden);
+    samples.fill(456);
+    feed(8, f.stream.queue->generation.load());
+    const auto resumed = alac(std::vector<int16_t>(704, 456));
+    QTRY_VERIFY(std::any_of(f.left.packets.begin(), f.left.packets.end(),
+                            [&](const auto &p) { return decoded(p) == resumed; }));
+    // Excess input resets buffering, not the AirPlay session.
+    feed(50, f.stream.queue->generation.load());
+    QTest::qWait(180);
+    QVERIFY(done.isEmpty());
+    QCOMPARE(f.left.teardowns, 0);
+    const auto first = f.left.packets.first();
+    for (qsizetype i = 0; i < f.left.packets.size(); ++i) {
+      const auto &p = f.left.packets[i];
+      QCOMPARE(uint16_t(readBe(p, 2, 2)), uint16_t(readBe(first, 2, 2) + i));
+      QCOMPARE(uint32_t(readBe(p, 4, 4)), uint32_t(readBe(first, 4, 4) + i * 352));
+      QCOMPARE(p.right(8), nonce(uint64_t(i)).mid(4));
+    }
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(done[0][1].toInt(), int(SessionEnd::Stopped));
+  }
   void pausedTelemetryCountsOnlyEnabledIntervals_data() {
     QTest::addColumn<bool>("stereo");
     QTest::newRow("single") << false;
@@ -540,6 +601,12 @@ private slots:
                           &size),
                0);
       QCOMPARE(ntohl(actual), route.index);
+#elif defined(Q_OS_LINUX)
+      char actual[256]{};
+      socklen_t size = sizeof(actual);
+      QCOMPARE(getsockopt(int(socket.socketDescriptor()), SOL_SOCKET,
+                          SO_BINDTODEVICE, actual, &size), 0);
+      QCOMPARE(QString::fromLocal8Bit(actual), route.binding.interfaceName);
 #else
       int actual = 0;
       socklen_t size = sizeof(actual);
@@ -615,12 +682,10 @@ private slots:
         binding = v;
     QVERIFY(!binding.automatic());
     QUdpSocket eventProbe, generalProbe;
-    if (!eventProbe.bind(QHostAddress::AnyIPv4, 319,
-                         QUdpSocket::DontShareAddress) ||
-        !generalProbe.bind(QHostAddress::AnyIPv4, 320,
-                           QUdpSocket::DontShareAddress))
-      QSKIP("PTP 319/320 occupied by another process; native PTP success path "
-            "not verified");
+    for (auto [probe, port] : {std::pair{&eventProbe, 319}, std::pair{&generalProbe, 320}})
+      if (!probe->bind(QHostAddress::AnyIPv4, quint16(port), QUdpSocket::DontShareAddress))
+        QSKIP(qPrintable(QString("Cannot bind PTP UDP %1: %2; native PTP success path not verified")
+                             .arg(port).arg(probe->errorString())));
     eventProbe.close();
     generalProbe.close();
     PtpClock clock;

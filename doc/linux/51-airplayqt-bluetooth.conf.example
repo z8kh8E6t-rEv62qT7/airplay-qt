@@ -1,0 +1,15 @@
+# WirePlumber 0.5+. Replace this address with the selected PHONE's Bluetooth
+# address, using underscores. This matches only that phone's input nodes.
+# Pairing, connecting and codec negotiation remain managed by the system.
+monitor.bluez.rules = [
+  {
+    matches = [
+      { node.name = "~bluez_input.AA_BB_CC_DD_EE_FF.*" }
+    ]
+    actions = {
+      update-props = {
+        bluez5.media-source-role = "input"
+      }
+    }
+  }
+]

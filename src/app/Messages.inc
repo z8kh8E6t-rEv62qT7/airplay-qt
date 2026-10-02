@@ -351,3 +351,13 @@ MESSAGE(InvalidLoopbackAggregate, "Core Audio returned an invalid loopback devic
 MESSAGE(LoopbackLayoutChanged, "Output and loopback channel layouts do not match; select the device again.", "输出与环回声道布局不一致，请重新选择设备。")
 MESSAGE(DestroyLoopbackAggregateFailed, "Failed to release loopback device (%1); cleanup must be retried.", "释放环回设备失败（%1），需要重试清理。")
 MESSAGE(DestroyLoopbackTapFailed, "Failed to release audio tap (%1); cleanup must be retried.", "释放音频 Tap 失败（%1），需要重试清理。")
+
+MESSAGE(LinuxDiscoveryFailed, "Avahi discovery failed: %1", "Avahi 发现失败：%1")
+MESSAGE(LinuxPublicationFailed, "Avahi publication failed: %1", "Avahi 发布失败：%1")
+MESSAGE(LinuxInputLog, "[PipeWire] %1", "[PipeWire 输入] %1")
+MESSAGE(BluetoothInputConnected, "%1(bluetooth)", "%1(蓝牙)")
+MESSAGE(BluetoothInputDisconnected, "%1(bluetooth) · offline (waiting)", "%1(蓝牙) · 离线（等待连接）")
+MESSAGE(LinuxInputWaiting, "Waiting for selected input; sending silence", "等待所选输入；发送静音")
+MESSAGE(LinuxInputBuffering, "Buffering selected input; sending silence", "缓冲所选输入；发送静音")
+MESSAGE(LinuxInputPlaying, "Selected input is playing", "所选输入正在播放")
+MESSAGE(LinuxInputReset, "Input discontinuity; discarding local audio and buffering again", "输入中断；清除本地音频并重新缓冲")

@@ -14,6 +14,7 @@ protected:
   void closeEvent(QCloseEvent *) override;
 
 private:
+  void setDevices(const QList<audio::DriverInfo> &);
   void setChannels(const QList<audio::ChannelInfo> &);
   Q_SLOT void setBusy(bool);
   app::Controller controller_;

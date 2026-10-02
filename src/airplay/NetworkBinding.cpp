@@ -130,6 +130,17 @@ void NetworkRoute::bindInterface(qintptr descriptor) const {
       setsockopt(SOCKET(descriptor), IPPROTO_IP, IP_UNICAST_IF,
                  reinterpret_cast<const char *>(&option), sizeof(option));
   const auto error = QString::number(WSAGetLastError());
+#elif defined(Q_OS_LINUX)
+  // Each socket is bound once; changing the interface requires a new socket.
+  const auto name = binding.interfaceName.toLocal8Bit();
+  char current[256]{};
+  socklen_t length = sizeof(current);
+  if (getsockopt(int(descriptor), SOL_SOCKET, SO_BINDTODEVICE, current, &length) == 0 &&
+      name == current)
+    return; // Accepted TCP sockets inherit the listener's interface.
+  const int result = setsockopt(int(descriptor), SOL_SOCKET, SO_BINDTODEVICE,
+                               name.constData(), socklen_t(name.size() + 1));
+  const auto error = QString::fromLocal8Bit(std::strerror(errno));
 #else
   const int option = int(index);
   const int result = setsockopt(int(descriptor), IPPROTO_IP, IP_BOUND_IF,

@@ -9,6 +9,7 @@
 namespace app {
 Controller::Controller(QObject *parent)
     : QObject(parent), capture_(audio::createInputCapture()) {
+  connectCapture();
   connect(&session_, &SessionController::status, this, &Controller::status);
   connect(&session_, &SessionController::log, this, &Controller::log);
   connect(&session_, &SessionController::group, this, &Controller::group);
@@ -34,6 +35,13 @@ Controller::Controller(QObject *parent)
   });
 }
 Controller::~Controller() { capture_->stop(); }
+void Controller::connectCapture() {
+  connect(capture_.get(), &audio::InputCapture::log, &session_, &SessionController::log);
+  connect(capture_.get(), &audio::InputCapture::devicesChanged, this, [this] {
+    drivers_ = audio::inputDevices();
+    emit devicesChanged(drivers_);
+  }, Qt::QueuedConnection);
+}
 Settings Controller::initialize() {
   drivers_ = audio::inputDevices();
   try {
@@ -69,6 +77,7 @@ void Controller::selectDriver(const QString &id, void *window) {
     if (const auto error = capture_->close(); !error.isEmpty())
       throw i18n::MessageError(error);
     capture_ = audio::createInputCapture(selected->kind);
+    connectCapture();
     const auto list = capture_->open(id, window);
     selectedKind_ = selected->kind;
     selectedId_ = id;

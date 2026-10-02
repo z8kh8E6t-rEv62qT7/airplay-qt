@@ -31,6 +31,7 @@ public:
   bool busy() const { return permissionPending_ || session_.busy(); }
   SessionController &session() { return session_; }
 signals:
+  void devicesChanged(QList<audio::DriverInfo> devices);
   void channels(QList<audio::ChannelInfo> channels);
   void status(QJsonArray text);
   void log(QJsonArray text);
@@ -44,6 +45,7 @@ signals:
   void stopped();
 
 private:
+  void connectCapture();
   void stopCapture();
   SessionController session_;
   std::unique_ptr<audio::InputCapture> capture_;

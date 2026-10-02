@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=AirPlayQt
+Comment=Send PipeWire audio to AirPlay receivers
+Comment[zh_CN]=将 PipeWire 音频发送至 AirPlay 接收端
+Exec=AirPlayQt
+Terminal=false
+Categories=AudioVideo;Audio;

@@ -533,6 +533,10 @@ void AirPlaySession::captureStarted() {
     return;
   elapsed_.start();
   lastInput_ = lastStats_ = 0;
+  stream_.queue->targetFrames.store(uint64_t(std::max(352., std::ceil(timing_.prebuffer * 44100))),
+                                    std::memory_order_release);
+  if (stream_.gapPolicy == audio::GapPolicy::Silence)
+    emit log(i18n::text(i18n::Id::LinuxInputWaiting));
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   if (stream_.rateDiagnostics)
     emit log(i18n::text(i18n::Id::VSTRateStartingFramesSBitInput)
@@ -582,6 +586,16 @@ void AirPlaySession::setTelemetryEnabled(bool enabled, quint64 revision) {
   leftPeak_ = rightPeak_ = 0;
   lastStats_ = elapsed_.isValid() ? elapsed_.nsecsElapsed() : 0;
 }
+void AirPlaySession::resetContinuousInput(bool invalidate) {
+  if (invalidate)
+    stream_.queue->generation.fetch_add(1, std::memory_order_acq_rel);
+  inputGeneration_ = stream_.queue->generation.load(std::memory_order_acquire);
+  pcm_.clear();
+  inputReady_ = false;
+  stream_.queue->bufferedFrames.store(0, std::memory_order_release);
+  stream_.queue->playbackActive.store(false, std::memory_order_release);
+  emit log(i18n::text(i18n::Id::LinuxInputReset));
+}
 void AirPlaySession::poll() {
   if (state_ != State::Buffering && state_ != State::Streaming)
     return;
@@ -593,6 +607,9 @@ void AirPlaySession::poll() {
   }
 #endif
   try {
+    const bool continuous = stream_.gapPolicy == audio::GapPolicy::Silence;
+    if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
+      resetContinuousInput(false);
     if (const int fault = stream_.queue->fault.load())
       throw Error(
           i18n::text(i18n::Id::AudioInputFaultBufferIndexOverflowCallback)
@@ -606,13 +623,22 @@ void AirPlaySession::poll() {
       seenFrames_ = captured;
       lastInput_ = now;
     }
-    if (now - lastInput_ > timing_.inputTimeout * 1e9)
+    if (!continuous && now - lastInput_ > timing_.inputTimeout * 1e9)
       throw Error(i18n::text(i18n::Id::AudioInputTimedOut));
-    if (stream_.queue->queuedFrames() + pcm_.size() / 2 >
+    if (!continuous && stream_.queue->queuedFrames() + pcm_.size() / 2 >
         timing_.backlog * 44100)
       throw Error(i18n::text(i18n::Id::CaptureBacklogExceedsTheLimit));
     std::span<const std::byte> left, right;
-    while (stream_.queue->peek(left, right)) {
+    uint64_t generation = 0;
+    // Snapshot the producer cursor: polling must remain bounded while input
+    // is arriving. Newly arriving blocks are handled on the next poll.
+    auto remaining = stream_.queue->queuedFrames();
+    while (remaining >= uint64_t(stream_.blockFrames) && stream_.queue->peek(left, right, &generation)) {
+      remaining -= uint64_t(stream_.blockFrames);
+      if (continuous && generation != inputGeneration_) {
+        stream_.queue->pop();
+        continue;
+      }
       const auto samples =
           audio::convert(left, stream_.left, right, stream_.right);
       stream_.queue->pop();
@@ -622,13 +648,24 @@ void AirPlaySession::poll() {
           rightPeak_ =
               std::max(rightPeak_, std::abs(double(samples[i + 1])) / 32768);
         }
+      if (continuous && !inputReady_ && pcm_.empty() && !samples.empty())
+        emit log(i18n::text(i18n::Id::LinuxInputBuffering));
       pcm_.insert(pcm_.end(), samples.begin(), samples.end());
-      if (pcm_.size() / 2 > timing_.backlog * 44100)
-        throw Error(i18n::text(i18n::Id::PCMBacklogExceedsTheLimit));
+      if (pcm_.size() / 2 > timing_.backlog * 44100) {
+        if (continuous) resetContinuousInput(true);
+        else throw Error(i18n::text(i18n::Id::PCMBacklogExceedsTheLimit));
+      }
+    }
+    if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
+      resetContinuousInput(false);
+    if (continuous && !inputReady_ &&
+        pcm_.size() / 2 >= std::max(352., std::ceil(timing_.prebuffer * 44100))) {
+      inputReady_ = true;
+      emit log(i18n::text(i18n::Id::LinuxInputPlaying));
     }
     if (state_ == State::Buffering &&
-        pcm_.size() / 2 >=
-            std::max(352., std::ceil(timing_.prebuffer * 44100))) {
+        (continuous || pcm_.size() / 2 >=
+            std::max(352., std::ceil(timing_.prebuffer * 44100)))) {
       started_ = now;
       anchorWall_ = wallNs();
       audible_ = anchorWall_ + int64_t(std::llround(timing_.lead * 1e9));
@@ -658,15 +695,20 @@ void AirPlaySession::poll() {
           break;
         if (current - due > timing_.late * 1e9)
           throw Error(i18n::text(i18n::Id::SendingFellTooFarBehindTheTimeline));
-        if (pcm_.size() < 704)
+        if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
+          resetContinuousInput(false);
+        if (continuous && inputReady_ && pcm_.size() < 704)
+          resetContinuousInput(true);
+        if (!continuous && pcm_.size() < 704)
           break;
         if (counter_ == UINT64_MAX)
           throw Error(i18n::text(i18n::Id::AudioNonceExhausted));
-        std::array<int16_t, 704> frame;
-        for (auto &sample : frame) {
-          sample = pcm_.front();
-          pcm_.pop_front();
-        }
+        std::array<int16_t, 704> frame{};
+        if (!continuous || inputReady_)
+          for (auto &sample : frame) {
+            sample = pcm_.front();
+            pcm_.pop_front();
+          }
         const auto sequence = uint16_t(firstSequence_ + counter_);
         for (auto &p : peers_) {
           const auto packet = audioPacket(p->key, frame, sequence,
@@ -682,6 +724,11 @@ void AirPlaySession::poll() {
           ++telemetryPackets_;
         sentFrames_ += 352;
       }
+    }
+    if (continuous) {
+      stream_.queue->bufferedFrames.store(stream_.queue->queuedFrames() + pcm_.size() / 2,
+                                         std::memory_order_release);
+      stream_.queue->playbackActive.store(inputReady_, std::memory_order_release);
     }
     if (telemetryEnabled_ && now - lastStats_ >= 100000000) {
       emit telemetry(leftPeak_, rightPeak_,

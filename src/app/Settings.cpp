@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QStandardPaths>
 #include <cmath>
 #include <stdexcept>
 
@@ -169,7 +170,12 @@ void Settings::save(const QString &path) const {
     fail(file.errorString());
 }
 QString Settings::path() {
-#ifdef Q_OS_MACOS
+#ifdef Q_OS_LINUX
+  const auto directory = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+  if (directory.isEmpty() || !QDir().mkpath(directory))
+    fail(i18n::text(i18n::Id::CannotCreateTheUserConfigurationDirectory));
+  return directory + "/AirPlayQt.json";
+#elif defined(Q_OS_MACOS)
   const auto directory = QDir::home().filePath(".config");
   if (!QDir().mkpath(directory))
     fail(i18n::text(i18n::Id::CannotCreateTheUserConfigurationDirectory));

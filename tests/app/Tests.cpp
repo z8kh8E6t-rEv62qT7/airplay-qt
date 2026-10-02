@@ -117,6 +117,8 @@ private slots:
     airplay::DiscoveryApi api;
 #ifdef Q_OS_WIN
     api.browse = [](auto *, auto *) { return DNS_STATUS(ERROR_NOT_SUPPORTED); };
+#elif defined(Q_OS_LINUX)
+    api.service = "org.airplayqt.UnavailableAvahi";
 #else
     api.browse = [](DNSServiceRef *, DNSServiceFlags, uint32_t, const char *,
                     const char *, DNSServiceBrowseReply,

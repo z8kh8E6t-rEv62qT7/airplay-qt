@@ -6,6 +6,8 @@
 #include <windows.h>
 #include <windns.h>
 // clang-format on
+#elif defined(__linux__)
+#include <QDBusConnection>
 #else
 #include <dns_sd.h>
 #endif
@@ -26,6 +28,11 @@ struct DiscoveryApi {
   };
   std::function<void(PDNS_SERVICE_INSTANCE)> freeInstance =
       DnsServiceFreeInstance;
+};
+#elif defined(__linux__)
+struct DiscoveryApi {
+  QDBusConnection bus = QDBusConnection::systemBus();
+  QString service = QStringLiteral("org.freedesktop.Avahi");
 };
 #else
 struct DiscoveryApi {

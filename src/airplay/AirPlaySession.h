@@ -67,6 +67,7 @@ private:
                const QByteArray &body = {}, const QByteArray &type = {});
   void eventConnected(int index);
   void poll();
+  void resetContinuousInput(bool invalidate);
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   void logRates(bool final = false);
 #endif
@@ -108,6 +109,8 @@ private:
   qint64 started_ = 0, lastInput_ = 0, lastStats_ = 0, nextSync_ = 0;
   int64_t audible_ = 0, anchorWall_ = 0;
   uint64_t seenFrames_ = 0;
+  uint64_t inputGeneration_ = 0;
+  bool inputReady_ = false;
   std::deque<int16_t> pcm_;
   double leftPeak_ = 0, rightPeak_ = 0, volume_ = 0;
   bool telemetryEnabled_ = true;
