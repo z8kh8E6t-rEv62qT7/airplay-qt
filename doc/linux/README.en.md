@@ -2,11 +2,11 @@
 
 [中文](README.md) | [English](README.en.md)
 
-Send your phone's Bluetooth audio through AirPlayQt to an AirPlay receiver or a HomePod stereo pair.
+Send your phone's Bluetooth audio through AirPlayQt to an AirPlay receiver or a AirPlay stereo pair.
 
 ## 1. Install dependencies
 
-These commands target an up-to-date Arch Linux x86_64 installation. Use PipeWire 1.4+, WirePlumber 0.5+, and an active desktop user session. Connect the phone to the computer over Bluetooth, and place the computer and HomePods on a local network that allows them to communicate.
+These commands target an up-to-date Arch Linux x86_64 installation. Use PipeWire 1.4+, WirePlumber 0.5+, and an active desktop user session. Connect the phone to the computer over Bluetooth, and place the computer and AirPlay receivers on a local network that allows them to communicate.
 
 ```sh
 sudo pacman -S --needed qt6-base openssl libplist pipewire pipewire-audio wireplumber bluez bluez-utils avahi libcap
@@ -31,7 +31,7 @@ sudo setcap cap_net_bind_service=ep /usr/local/bin/AirPlayQt
 getcap /usr/local/bin/AirPlayQt
 ```
 
-The last command should show `cap_net_bind_service=ep`, which allows binding UDP ports 319/320 for HomePod playback. Reapply `setcap` whenever you reinstall or replace the executable.
+The last command should show `cap_net_bind_service=ep`, which allows binding UDP ports 319/320 for AirPlay playback. Reapply `setcap` whenever you reinstall or replace the executable.
 
 ## 3. Pair your phone
 
@@ -49,7 +49,7 @@ discoverable on
 
 If an agent is already registered, continue with `default-agent`. When the phone initiates pairing, answer `yes` to `Confirm passkey` after checking that the codes match. If prompted with `Enter passkey`, enter the six digits shown on the phone.
 
-After pairing, enter the following in the same terminal. Replace `PHONE_MAC` with the phone's Bluetooth address, such as `08:C7:B5:48:7D:0C`; use `devices` to list addresses.
+After pairing, enter the following in the same terminal. Replace `PHONE_MAC` with the phone's Bluetooth address, such as `AA:BB:CC:DD:EE:FF`; use `devices` to list addresses.
 
 ```text
 trust PHONE_MAC
@@ -76,7 +76,7 @@ Choose one matching pattern and keep `bluez5.media-source-role = "input"` in the
 
 |Scope| `node.name` |
 | --- | --- |
-|Only the selected phone; replace address colons with underscores| `"~bluez_input.08_C7_B5_48_7D_0C.*"` |
+|Only the selected phone; replace address colons with underscores| `"~bluez_input.AA_BB_CC_DD_EE_FF.*"` |
 |All phones| `"~bluez_input.*"` |
 
 Stop audio playback, apply the configuration, and reconnect the phone. This briefly interrupts desktop audio.
@@ -87,7 +87,7 @@ systemctl --user restart wireplumber
 
 This makes phone audio available to capture applications without also playing it through the computer's speakers. Use `wpctl status` to list inputs; some devices appear only after phone playback begins.
 
-## 5. Play through HomePod
+## 5. Play through AirPlay
 
 Launch the installed application as your normal desktop user, without `sudo`:
 
@@ -97,7 +97,7 @@ Launch the installed application as your normal desktop user, without `sudo`:
 
 1. Play music on the phone and select the computer, such as `archlive`, as its audio output.
 2. Select the phone in AirPlayQt's input list and choose FL/FR for the left and right input channels.
-3. Select the network interface connected to the HomePods' LAN, scan, and select the receivers. For stereo playback, first create the pair in Apple's Home app, then select both members in AirPlayQt and check their left/right assignments.
+3. Select the network interface connected to the AirPlay receivers' LAN, scan, and select the receivers. For stereo playback, first create the pair using an application supported by the receivers, then select both members in AirPlayQt and check their left/right assignments.
 4. Click Start, adjust the volume, and use Mute as needed.
 5. Click Stop before changing input devices. To end playback, click Stop or close the application.
 
@@ -135,7 +135,7 @@ journalctl -b -u bluetooth.service --no-pager -n 80
 - Check AirPlayQt's log: `codec=aac` indicates AAC; SBC is also supported. The obtained client rate should be 44100 Hz. The source rate may differ, and `unknown` means that metadata is unavailable.
 - For unsupported rate control or a client-format mismatch, check that PipeWire is 1.4+ and review custom format/resampling settings.
 
-### HomePods missing or playback cannot start
+### AirPlay receivers missing or playback cannot start
 
 Check that Avahi is running, the correct interface is selected, and the LAN permits multicast traffic. Check for guest-network or client-isolation settings. Avahi is also required when entering receiver addresses manually.
 

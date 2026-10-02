@@ -19,7 +19,7 @@ Built with C++20 and Qt Widgets for Windows x64, macOS, and 64-bit Linux.
 
 ## Quick start
 
-For Bluetooth audio input and HomePod playback on Linux, see the [Linux user guide](doc/linux/README.en.md) ([中文](doc/linux/README.md)).
+For Bluetooth audio input and AirPlay playback on Linux, see the [Linux user guide](doc/linux/README.en.md) ([中文](doc/linux/README.md)).
 
 1. Open the app, or insert AirPlayQt as an effect on a stereo track or bus in your DAW.
 2. For the app, select a capture device and two distinct channels. On macOS, output devices are labeled `(auto loopback)`. For VST3, use a 44.1 kHz project with real-time processing enabled.

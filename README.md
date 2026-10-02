@@ -19,7 +19,7 @@
 
 ## 快速开始
 
-Linux 蓝牙音频接收与 HomePod 播放操作请参阅 [Linux 使用教程](doc/linux/README.md)。
+Linux 蓝牙音频接收与 AirPlay 播放操作请参阅 [Linux 使用教程](doc/linux/README.md)。
 
 1. 打开独立应用，或在 DAW 的立体声轨道或总线上插入 AirPlayQt 效果插件。
 2. 独立应用中选择采集设备和两个不同的声道。macOS 输出设备标注为 `(auto loopback)`。使用 VST3 时，将工程采样率设为 44.1 kHz，并启用实时处理。

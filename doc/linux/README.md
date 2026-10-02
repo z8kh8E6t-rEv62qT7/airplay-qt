@@ -2,11 +2,11 @@
 
 [中文](README.md) | [English](README.en.md)
 
-将手机的蓝牙音频通过 AirPlayQt 发送到 AirPlay 接收器或 HomePod 立体声组合。
+将手机的蓝牙音频通过 AirPlayQt 发送到 AirPlay 接收器或 AirPlay 立体声组合。
 
 ## 1. 安装依赖
 
-以下命令适用于已更新的 Arch Linux x86_64。需要 PipeWire 1.4+、WirePlumber 0.5+，以及运行中的桌面用户会话。手机和电脑通过蓝牙连接；电脑与 HomePod 需要在能够互相通信的局域网中。
+以下命令适用于已更新的 Arch Linux x86_64。需要 PipeWire 1.4+、WirePlumber 0.5+，以及运行中的桌面用户会话。手机和电脑通过蓝牙连接；电脑与 AirPlay 需要在能够互相通信的局域网中。
 
 ```sh
 sudo pacman -S --needed qt6-base openssl libplist pipewire pipewire-audio wireplumber bluez bluez-utils avahi libcap
@@ -31,7 +31,7 @@ sudo setcap cap_net_bind_service=ep /usr/local/bin/AirPlayQt
 getcap /usr/local/bin/AirPlayQt
 ```
 
-最后一条命令应显示 `cap_net_bind_service=ep`，用于绑定 HomePod 所需的 UDP 319/320 端口。每次重新安装或替换程序后，重新执行 `setcap`。
+最后一条命令应显示 `cap_net_bind_service=ep`，用于绑定 AirPlay 所需的 UDP 319/320 端口。每次重新安装或替换程序后，重新执行 `setcap`。
 
 ## 3. 配对手机
 
@@ -49,7 +49,7 @@ discoverable on
 
 若提示 agent 已注册，继续执行 `default-agent`。手机发起配对后，电脑若显示 `Confirm passkey`，核对一致后输入 `yes`；若显示 `Enter passkey`，输入手机显示的六位数字。
 
-配对成功后，在同一终端输入以下命令。将 `PHONE_MAC` 替换为手机蓝牙地址，例如 `08:C7:B5:48:7D:0C`；可用 `devices` 查看地址。
+配对成功后，在同一终端输入以下命令。将 `PHONE_MAC` 替换为手机蓝牙地址，例如 `AA:BB:CC:DD:EE:FF`；可用 `devices` 查看地址。
 
 ```text
 trust PHONE_MAC
@@ -76,7 +76,7 @@ nano ~/.config/wireplumber/wireplumber.conf.d/51-airplayqt-bluetooth.conf
 
 |用途| `node.name` |
 | --- | --- |
-|仅指定手机；地址中的冒号改成下划线| `"~bluez_input.08_C7_B5_48_7D_0C.*"` |
+|仅指定手机；地址中的冒号改成下划线| `"~bluez_input.AA_BB_CC_DD_EE_FF.*"` |
 |所有手机| `"~bluez_input.*"` |
 
 停止音频播放后应用配置，再重新连接手机。这会短暂中断桌面音频。
@@ -87,7 +87,7 @@ systemctl --user restart wireplumber
 
 该设置使手机音频供应用采集，避免同时从电脑音箱播放。可用 `wpctl status` 查看输入设备；某些设备需要手机开始播放后才出现。
 
-## 5. 发送到 HomePod
+## 5. 发送到 AirPlay
 
 以普通桌面用户启动已安装的程序，不要使用 `sudo`：
 
@@ -97,7 +97,7 @@ systemctl --user restart wireplumber
 
 1. 在手机上播放音乐，将音频输出选为电脑（例如 `archlive`）。
 2. 在 AirPlayQt 输入列表中选择该手机，左右输入声道选择 FL/FR。
-3. 选择连接 HomePod 所在局域网的网卡，扫描并选择接收器。使用立体声组合时，先在 Apple 家庭 App 中建立组合，再在 AirPlayQt 中选择组合的两个成员并确认左右声道。
+3. 选择连接 AirPlay 所在局域网的网卡，扫描并选择接收器。使用立体声组合时，先通过接收器支持的应用建立组合，再在 AirPlayQt 中选择组合的两个成员并确认左右声道。
 4. 点击“开始”，调整音量；需要时使用静音。
 5. 更换输入设备前先点击“停止”；结束播放时点击“停止”或关闭程序。
 
@@ -135,7 +135,7 @@ journalctl -b -u bluetooth.service --no-pager -n 80
 - 查看 AirPlayQt 日志：`codec=aac` 表示当前使用 AAC；SBC 也可接收。客户端实际采样率应为 44100 Hz；源端采样率可不同，`unknown` 表示未取得该信息。
 - 若提示速率控制不支持或客户端格式不匹配，检查 PipeWire 是否为 1.4+，并检查自定义格式／重采样配置。
 
-### 找不到 HomePod 或无法开始
+### 找不到 AirPlay 或无法开始
 
 确认 Avahi 正常运行、网卡选择正确、局域网允许组播通信；检查是否启用了访客网络或客户端隔离。手动填写接收器地址时也需要 Avahi。
 
