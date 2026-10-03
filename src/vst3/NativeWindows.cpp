@@ -5,8 +5,11 @@
 #include "pluginterfaces/gui/iplugview.h"
 #include <QWidget>
 #include <QWindow>
-#include <mmsystem.h>
+// mmsystem.h requires the Windows scalar types.
+// clang-format off
 #include <windows.h>
+#include <mmsystem.h>
+// clang-format on
 
 namespace vst3 {
 namespace {

@@ -297,6 +297,12 @@ class LinuxReadmeChecks(unittest.TestCase):
 
 
 class BuildScriptChecks(unittest.TestCase):
+    def test_windows_multimedia_headers_keep_windows_first(self):
+        text = (SCRIPTS.parents[1] / "src/vst3/NativeWindows.cpp").read_text(encoding="utf-8")
+        self.assertLess(text.index("#include <windows.h>"), text.index("#include <mmsystem.h>"))
+        self.assertIn("clang-format off", text)
+        self.assertIn("clang-format on", text)
+
     def test_windows_msys_root_conversion_includes_subdirectory(self):
         text = (SCRIPTS / "windows.sh").read_text(encoding="utf-8")
         start = text.index('plist=')
