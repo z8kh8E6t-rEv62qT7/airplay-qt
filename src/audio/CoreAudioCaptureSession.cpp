@@ -14,7 +14,7 @@ Layout layout(const CoreAudioApi &api, AudioDeviceID device,
   result.streams = list<AudioStreamID>(
       api, device, address(kAudioDevicePropertyStreams, scope));
   for (auto stream : result.streams) {
-    const auto f = property<AudioStreamBasicDescription>(
+    const auto f = readProperty<AudioStreamBasicDescription>(
         api, stream, address(kAudioStreamPropertyVirtualFormat));
     const bool planar = f.mFormatFlags & kAudioFormatFlagIsNonInterleaved;
     const bool floating = f.mFormatFlags & kAudioFormatFlagIsFloat;
@@ -63,7 +63,7 @@ QList<ChannelInfo> channels(const CoreAudioApi &api, AudioDeviceID device,
   const auto streams = list<AudioStreamID>(
       api, device, address(kAudioDevicePropertyStreams, scope));
   for (auto stream : streams) {
-    const auto f = property<AudioStreamBasicDescription>(
+    const auto f = readProperty<AudioStreamBasicDescription>(
         api, stream, address(kAudioStreamPropertyVirtualFormat));
     if (f.mChannelsPerFrame > 256 ||
         channels.size() + f.mChannelsPerFrame > 256)
@@ -259,7 +259,7 @@ CaptureStream CoreAudioCaptureSession::prepare(AudioDeviceID device, int left,
     if (device == kAudioObjectUnknown)
       throw i18n::MessageError(i18n::text(i18n::Id::InputDeviceUnavailable));
     observe(device, kAudioDevicePropertyScopeInput);
-    const auto rate = property<Float64>(
+    const auto rate = readProperty<Float64>(
         s.api, s.device, address(kAudioDevicePropertyNominalSampleRate));
     if (rate != 44100)
       throw i18n::MessageError(
@@ -289,8 +289,8 @@ CaptureStream CoreAudioCaptureSession::prepare(AudioDeviceID device, int left,
     if (!s.proc)
       throw i18n::MessageError(
           i18n::text(i18n::Id::CoreAudioDidNotReturnAnInput));
-    if (property<Float64>(s.api, s.device,
-                          address(kAudioDevicePropertyNominalSampleRate)) !=
+    if (readProperty<Float64>(s.api, s.device,
+                              address(kAudioDevicePropertyNominalSampleRate)) !=
             44100 ||
         s.changed.load())
       throw i18n::MessageError(

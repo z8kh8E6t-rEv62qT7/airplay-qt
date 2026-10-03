@@ -71,8 +71,8 @@ CaptureStream CoreAudioLoopbackCapture::prepare(int left, int right,
       throw i18n::MessageError(i18n::text(i18n::Id::InputDeviceUnavailable));
     // Observe the source before taking the format snapshot or creating taps.
     s.session.observe(s.source, kAudioDevicePropertyScopeOutput);
-    if (property<Float64>(s.api, s.source,
-                          address(kAudioDevicePropertyNominalSampleRate)) !=
+    if (readProperty<Float64>(s.api, s.source,
+                              address(kAudioDevicePropertyNominalSampleRate)) !=
         44100)
       throw i18n::MessageError(i18n::text(i18n::Id::LoopbackRequires44100));
     const auto sourceLayout =
@@ -115,10 +115,10 @@ CaptureStream CoreAudioLoopbackCapture::prepare(int left, int right,
         captured.streams.size() != sourceLayout.streams.size())
       throw i18n::MessageError(i18n::text(i18n::Id::LoopbackLayoutChanged));
     for (size_t index = 0; index < captured.streams.size(); ++index) {
-      const auto source = property<AudioStreamBasicDescription>(
+      const auto source = readProperty<AudioStreamBasicDescription>(
           s.api, sourceLayout.streams[index],
           address(kAudioStreamPropertyVirtualFormat));
-      const auto target = property<AudioStreamBasicDescription>(
+      const auto target = readProperty<AudioStreamBasicDescription>(
           s.api, captured.streams[index],
           address(kAudioStreamPropertyVirtualFormat));
       if (source.mChannelsPerFrame != target.mChannelsPerFrame)

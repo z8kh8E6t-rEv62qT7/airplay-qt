@@ -31,6 +31,8 @@ Sending requires **44.1 kHz** audio. On Linux, PipeWire converts input to this r
 
 The VST3 plugin keeps local audio passing through and reports zero local latency; remote playback has its own buffering delay. Closing the plugin editor leaves sending active. A streaming instance can reconnect once if valid host audio resumes within five seconds of suspension.
 
+Logs belong to the current editor window. Closing it discards its logs; reopening starts with an empty log and shows only new messages, without replaying messages produced while the editor was closed.
+
 On macOS, allow microphone access for input devices, system audio recording for auto loopback, and local network access for AirPlay.
 
 > **macOS audio capture:** Please use a loopback virtual audio device. **Loopback by Rogue Amoeba** has been tested; **BlackHole** has not been tested. In Loopback, connect the audio inputs to the output channels. AirPlayQt's built-in **auto loopback** may produce audio distortion.

@@ -354,8 +354,6 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
 
   retranslate();
   setTiming(app::Timing{});
-  for (const auto &text : session_.recentLog())
-    appendLog(text);
   bindText(state_, "text", session_.currentStatus());
   bindText(group_, "text", session_.currentGroup());
   volume_->setValue(session_.currentVolume());

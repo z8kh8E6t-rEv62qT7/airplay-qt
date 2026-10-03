@@ -17,11 +17,6 @@ SessionController::SessionController(QObject *parent)
           [this](i18n::Message text) { status_ = text; });
   connect(this, &SessionController::group, this,
           [this](i18n::Message text) { group_ = text; });
-  connect(this, &SessionController::log, this, [this](i18n::Message text) {
-    log_.append(text.render(language_));
-    if (log_.size() > 1000)
-      log_.removeFirst();
-  });
   connect(this, &SessionController::volumeApplied, this, [this](double db) {
     volume_ = db;
     if (db > -144)

@@ -27,7 +27,6 @@ public:
   bool streaming() const { return streaming_; }
   i18n::Message currentStatus() const { return status_; }
   i18n::Message currentGroup() const { return group_; }
-  QStringList recentLog() const { return log_; }
   double currentVolume() const { return volume_; }
   double restoreVolume() const { return restoreVolume_; }
   airplay::SessionEnd endReason() const { return endReason_; }
@@ -55,7 +54,6 @@ private:
   bool telemetryEnabled_ = true;
   bool busy_ = false, stopping_ = false, streaming_ = false;
   i18n::Message status_ = i18n::text(i18n::Id::Ready), group_;
-  QStringList log_;
   i18n::Language language_ = i18n::Language::English;
   double volume_ = 0, restoreVolume_ = 0;
   airplay::SessionEnd endReason_ = airplay::SessionEnd::Stopped;

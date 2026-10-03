@@ -16,8 +16,8 @@ address(AudioObjectPropertySelector selector,
   return {selector, scope, kAudioObjectPropertyElementMain};
 }
 template <class T>
-T property(const CoreAudioApi &api, AudioObjectID object,
-           AudioObjectPropertyAddress key) {
+T readProperty(const CoreAudioApi &api, AudioObjectID object,
+               AudioObjectPropertyAddress key) {
   T value{};
   UInt32 bytes = sizeof(value);
   check(api.get(object, &key, 0, nullptr, &bytes, &value),
@@ -49,7 +49,7 @@ std::vector<T> list(const CoreAudioApi &api, AudioObjectID object,
 }
 inline QString stringProperty(const CoreAudioApi &api, AudioObjectID object,
                               AudioObjectPropertySelector selector) {
-  const auto value = property<CFStringRef>(api, object, address(selector));
+  const auto value = readProperty<CFStringRef>(api, object, address(selector));
   if (!value)
     return {};
   const auto text = QString::fromCFString(value);

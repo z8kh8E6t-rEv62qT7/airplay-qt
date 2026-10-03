@@ -410,6 +410,8 @@ private slots:
     QVERIFY(panel->findChild<QPushButton *>("stop")->isEnabled());
     QVERIFY(!panel->findChild<QTabWidget *>("receiverModes")->isEnabled());
     if (scenario == "closed-editor") {
+      QVERIFY(!panel->findChild<QPlainTextEdit *>("sessionLog")
+                   ->toPlainText().isEmpty());
       runtime.close(id);
       panel = nullptr;
     }
@@ -478,6 +480,8 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(receiver.packets.size() > packets + 40, 2000);
         const auto receivedWhileClosed = receiver.packets.size() - packets;
         panel = runtime.open(processor->state(), unavailableDiscovery());
+        QVERIFY(panel->findChild<QPlainTextEdit *>("sessionLog")
+                    ->toPlainText().isEmpty());
         QVERIFY(panel->findChild<QPushButton *>("stop")->isEnabled());
         QVERIFY(!panel->findChild<QPushButton *>("pauseDisplay")->isChecked());
         QTRY_COMPARE(panel->findChild<QProgressBar *>("leftLevel")->value(), 125);

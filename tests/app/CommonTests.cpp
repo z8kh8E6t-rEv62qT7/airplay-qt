@@ -11,6 +11,27 @@
 class CommonAppTests : public QObject {
   Q_OBJECT
 private slots:
+  void logLifetimeMatchesPanel() {
+    app::SessionController session;
+    const auto message = i18n::text(i18n::Id::WaitingForPTPSynchronization);
+    emit session.log(message);
+    for (int cycle = 0; cycle < 3; ++cycle) {
+      {
+        ui::StreamingPanel panel(session);
+        auto *log = panel.findChild<QPlainTextEdit *>("sessionLog");
+        QVERIFY(log);
+        QVERIFY(log->toPlainText().isEmpty());
+        emit session.log(message);
+        const auto text = log->toPlainText();
+        QVERIFY(text.endsWith("  Waiting for PTP synchronization"));
+        QVERIFY(QTime::fromString(text.left(12), "HH:mm:ss.zzz").isValid());
+        QCOMPARE(log->document()->blockCount(), 1);
+        panel.showError(i18n::text(i18n::Id::SelectOneOrTwoReceivers));
+        QCOMPARE(log->document()->blockCount(), 2);
+      }
+      emit session.log(message);
+    }
+  }
   void pauseDisplayFreezesOnlyTelemetry() {
     app::SessionController session, otherSession;
     ui::StreamingPanel panel(session), other(otherSession);
@@ -303,12 +324,10 @@ private slots:
       translatedStats |= label->text().contains("Packets/receiver 123");
     }
     QVERIFY(translatedError && translatedStats);
-    QCOMPARE(session.recentLog().first(),
-             QString("Waiting for PTP synchronization"));
-    QCOMPARE(session.recentLog().last(), QString("等待 PTP 同步"));
+    const auto currentLog = log->toPlainText();
     ui::StreamingPanel reopened(session);
-    QVERIFY(reopened.findChild<QPlainTextEdit *>()->toPlainText().contains(
-        "等待 PTP 同步"));
+    QVERIFY(reopened.findChild<QPlainTextEdit *>()->toPlainText().isEmpty());
+    QCOMPARE(log->toPlainText(), currentLog);
   }
   void networkConfigurationAndUi() {
     app::Settings settings;
