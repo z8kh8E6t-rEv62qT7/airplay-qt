@@ -1,0 +1,80 @@
+# Explicit runtime verification of the package produced by package-macos.
+cmake_minimum_required(VERSION 3.25)
+set(SOURCE_ROOT "@PROJECT_SOURCE_DIR@")
+set(stage "@PROJECT_BINARY_DIR@/verify-package-macos-stage")
+set(app "${SOURCE_ROOT}/dist/macos-arm64/AirPlayQt.app")
+set(plugin "${SOURCE_ROOT}/dist/macos-arm64/AirPlayQt.vst3")
+file(LOCK "${SOURCE_ROOT}/dist/.package-macos.lock" GUARD PROCESS TIMEOUT 0)
+file(REMOVE_RECURSE "${stage}")
+file(MAKE_DIRECTORY "${stage}/checks")
+set(REPORT "${stage}/verification.txt")
+file(WRITE "${REPORT}" "")
+include("${SOURCE_ROOT}/cmake/MacBundle.cmake")
+
+set(relocated_app "${stage}/checks/独立 应用/AirPlayQt.app")
+set(relocated_plugin "${stage}/checks/独立 插件/AirPlayQt.vst3")
+mac_run("Relocate app" /usr/bin/ditto "${app}" "${relocated_app}")
+mac_run("Relocate plugin" /usr/bin/ditto "${plugin}" "${relocated_plugin}")
+foreach(bundle IN ITEMS "${relocated_app}" "${relocated_plugin}")
+  mac_audit("${bundle}")
+  mac_run("Relocated signature" /usr/bin/codesign --verify --deep --strict "${bundle}")
+endforeach()
+mac_run("Packaged app smoke" "${SMOKE}" "${relocated_app}" "${stage}/app-load.log")
+mac_verify_trace("${stage}/app-load.log" "${relocated_app}")
+
+set(test_host "${stage}/checks/test_vst3_module")
+file(COPY_FILE "${HOST}" "${test_host}")
+mac_rewrite("${test_host}" "${relocated_plugin}/Contents/Frameworks")
+mac_run("Sign test host" /usr/bin/codesign --force --sign - "${test_host}")
+foreach(mode IN ITEMS owned borrowed incompatible missing-platform)
+  if(mode STREQUAL "missing-platform")
+    file(RENAME "${relocated_plugin}/Contents/PlugIns/platforms/libqcocoa.dylib"
+      "${stage}/checks/libqcocoa.dylib")
+  endif()
+  set(qt_environment --unset=QT_PLUGIN_PATH --unset=QT_QPA_PLATFORM_PLUGIN_PATH)
+  if(mode STREQUAL "borrowed")
+    set(qt_environment "QT_PLUGIN_PATH=${relocated_plugin}/Contents/PlugIns"
+      "QT_QPA_PLATFORM_PLUGIN_PATH=${relocated_plugin}/Contents/PlugIns/platforms")
+  endif()
+  execute_process(COMMAND "@CMAKE_COMMAND@" -E env
+    --unset=DYLD_LIBRARY_PATH --unset=DYLD_FRAMEWORK_PATH --unset=DYLD_INSERT_LIBRARIES
+    --unset=DYLD_FALLBACK_LIBRARY_PATH --unset=DYLD_FALLBACK_FRAMEWORK_PATH
+    ${qt_environment}
+    QT_QPA_PLATFORM=cocoa DYLD_PRINT_LIBRARIES=1
+    "${test_host}" "${relocated_plugin}" "${mode}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 60)
+  set(log "${stage}/vst3-${mode}.log")
+  file(WRITE "${log}" "${output}${errors}")
+  if(mode STREQUAL "missing-platform")
+    file(RENAME "${stage}/checks/libqcocoa.dylib"
+      "${relocated_plugin}/Contents/PlugIns/platforms/libqcocoa.dylib")
+    mac_run("Restored test bundle signature" /usr/bin/codesign --verify --deep --strict "${relocated_plugin}")
+  endif()
+  if(NOT result STREQUAL "0")
+    message(FATAL_ERROR "Packaged VST3 ${mode} failed (${result}); see ${log}")
+  endif()
+  mac_verify_trace("${log}" "${relocated_plugin}" "${test_host}")
+  file(APPEND "${REPORT}" "\nPackaged native host ${mode}: passed, 5 load/unload cycles, 2 reopens each.\n")
+endforeach()
+mac_run("Packaged VST3 validator" "${VALIDATOR}" "${relocated_plugin}")
+
+set(damaged "${stage}/checks/damaged.app")
+mac_run("Stage failure checks" /usr/bin/ditto "${app}" "${damaged}")
+file(REMOVE "${damaged}/Contents/Frameworks/libcrypto.3.dylib")
+execute_process(COMMAND "@CMAKE_COMMAND@" "-DAUDIT_ROOT=${damaged}" "-DREPORT=${REPORT}"
+  -P "${SOURCE_ROOT}/cmake/MacBundle.cmake" RESULT_VARIABLE result
+  OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+if(result STREQUAL "0" OR NOT errors MATCHES "Unresolved dependency")
+  message(FATAL_ERROR "Missing-library gate did not reject the damaged bundle: ${output}${errors}")
+endif()
+execute_process(COMMAND /usr/bin/codesign --verify --deep --strict "${damaged}"
+  RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+if(result STREQUAL "0")
+  message(FATAL_ERROR "Signature gate accepted the damaged bundle")
+endif()
+file(APPEND "${REPORT}" "\nNegative checks passed: missing library and damaged signature rejected.\n")
+
+file(COPY "${REPORT}" "${stage}/app-load.log"
+  "${stage}/vst3-owned.log" "${stage}/vst3-borrowed.log" "${stage}/vst3-incompatible.log" "${stage}/vst3-missing-platform.log"
+  DESTINATION "${stage}/reports")
+message(STATUS "Verified package; reports: ${stage}/reports")

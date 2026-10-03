@@ -6,7 +6,7 @@
 
 ## 1. 安装依赖
 
-以下命令适用于已更新的 Arch Linux x86_64。需要 PipeWire 1.4+、WirePlumber 0.5+，以及运行中的桌面用户会话。手机和电脑通过蓝牙连接；电脑与 AirPlay 需要在能够互相通信的局域网中。
+以下命令适用于已更新的 Arch Linux x86_64。需要 PipeWire 1.4+、WirePlumber 0.5+；GUI 需要运行中的桌面用户会话，无桌面 CLI 见第 7 节。手机和电脑通过蓝牙连接；电脑与 AirPlay 需要在能够互相通信的局域网中。
 
 ```sh
 sudo pacman -S --needed qt6-base openssl libplist pipewire pipewire-audio wireplumber bluez bluez-utils avahi libcap
@@ -165,3 +165,88 @@ UDP 319/320 绑定失败时，确认程序权限正确且端口未被其他进�
 ### 配置文件位置
 
 AirPlayQt 设置保存在 `$XDG_CONFIG_HOME/AirPlayQt.json`；未设置该环境变量时为 `~/.config/AirPlayQt.json`。手动编辑前先关闭程序。
+
+## 7. 独立 CLI（前台运行）
+
+`AirPlayQtCli` 不读写 GUI 配置，必须手工指定输入设备 ID 和接收端 IPv4。
+
+### 单独构建和安装
+
+依赖为 Qt 6.5+、OpenSSL、libplist 2.7+ 和第 1 节的 Linux 音频组件。
+
+```sh
+sudo pacman -S --needed base-devel cmake ninja pkgconf qt6-base openssl libplist pipewire pipewire-audio wireplumber bluez bluez-utils avahi libcap
+cmake -S . -B build/linux-cli -G Ninja -DCMAKE_BUILD_TYPE=Release -DAIRPLAY_BUILD_STANDALONE=OFF -DAIRPLAY_BUILD_CLI=ON -DAIRPLAY_BUILD_VST3=OFF -DBUILD_TESTING=OFF
+cmake --build build/linux-cli --target AirPlayQtCli
+sudo cmake --install build/linux-cli --prefix /usr/local
+sudo setcap cap_net_bind_service=ep /usr/local/bin/AirPlayQtCli
+getcap /usr/local/bin/AirPlayQtCli
+```
+
+每次替换可执行文件后重新设置权限。手动 IP 发送仍需要运行 Avahi 来发布会话控制服务，并需要 UDP 319/320 端口权限。
+
+### 无桌面音频环境
+
+先按第 1、3、4 节启用系统蓝牙及 Avahi、配对并信任手机、配置 `bluez5.media-source-role = "input"`。
+
+```sh
+systemctl --user start pipewire.service wireplumber.service
+```
+
+纯 SSH 会话没有活动的本地 seat 时，可由用户在 `~/.config/wireplumber/wireplumber.conf.d/52-airplayqt-headless.conf` 中添加以下配置；若文件已经存在，合并配置而不是覆盖。此设置针对专门用于音频的用户，避免其他用户的音频会话同时争用蓝牙。
+
+```text
+wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+```
+
+这是 WirePlumber 提供的[无桌面蓝牙配置](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html#logind-integration)。修改后停止播放并执行 `systemctl --user restart wireplumber`，然后重新连接手机。应用不会自动创建配置、启动系统服务、执行配对或安装自启动服务。
+
+第 5 节 AVRCP 示例中的 `uaccess` 面向活动本地用户，不能保证为 SSH 用户授权。无桌面环境若需要相对音量按键，由管理员单独授予运行用户读取对应蓝牙 AVRCP 输入节点的权限；不要授予所有键盘节点权限。绝对音量仍经 BlueZ D-Bus 转发；按键不可读时记录日志，音频继续运行。
+
+### 查询与发送
+
+```sh
+/usr/local/bin/AirPlayQtCli --help
+/usr/local/bin/AirPlayQtCli --version
+/usr/local/bin/AirPlayQtCli --list-devices
+/usr/local/bin/AirPlayQtCli --list-interfaces
+```
+
+`--list-devices` 输出 ID、名称及连接状态。启动和设备列表查询都只检查首轮系统查询结果：指定设备不存在、查询失败或超过 5 秒未完成就退出，不等待设备以后上线。查询过程中设备目录变化而导致首轮 BlueZ 快照失效时也退出，请重新运行。已配对且仍在目录中的断开手机可以选中，之后保持与 GUI 相同的静音等待行为。
+
+将下面的设备 ID 与 IP 换成实际值。蓝牙 ID 包含适配器地址和手机地址，使用列表中的完整值。单台接收端：
+
+```sh
+/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9
+```
+
+已在接收端系统中建立的双机立体声组合：
+
+```sh
+/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9:7000 --receiver 192.168.8.10:7000
+```
+
+可选显式网卡绑定及交换输入声道：
+
+```sh
+/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9 --interface eth0 --local-ip 192.168.8.20 --left 2 --right 1
+```
+
+| 参数 | 行为 |
+| --- | --- |
+| `--device ID` | 发送时必填；精确匹配稳定设备 ID，不自动换设备 |
+| `--receiver IPv4[:port]` | 发送时必填；一至两个不同端点，默认端口 7000；不扫描接收端 |
+| `--interface NAME --local-ip IPv4` | 必须成对提供；省略时使用系统路由；指定后失效不切换其他网卡 |
+| `--left N --right N` | 默认 1/2（FL/FR）；只允许 1/2 或 2/1 |
+| `--list-devices`、`--list-interfaces` | 分别单独使用，输出查询结果后退出 |
+| `--help`、`--version` | 分别单独使用，不初始化音频 |
+
+除 `--receiver` 外不允许重复参数；拒绝未知参数、位置参数及查询与发送参数混用。时间参数沿用现有默认值，不加载 GUI 保存的高级设置。列表与帮助写到 stdout；带 UTC 时间的英文状态、错误和重试日志写到 stderr，不持续输出音频统计。
+
+首次设备检查、采集初始化或 AirPlay 建连失败，直接退出。首次进入发送状态（包括发送静音）后，AirPlay 会话中断、失败或被其他发送端抢占时，清理旧会话后等待 2 秒，用原参数无限重试整个接收端组合。手机暂停、断开或音频节点暂时失效，沿用 GUI 的静音及采集恢复逻辑，不视作 AirPlay 会话失败。重建会话的音量初始化也沿用现有会话行为。
+
+Ctrl+C 或 SIGTERM 取消重试，停止采集并清理网络会话后退出。退出码为：查询成功 `0`，初始化/运行失败 `1`，参数错误 `2`，SIGINT `130`，SIGTERM `143`。

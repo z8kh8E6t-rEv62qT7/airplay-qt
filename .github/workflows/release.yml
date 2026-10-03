@@ -1,0 +1,128 @@
+name: Release
+run-name: Release ${{ inputs.tag }} from ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'New release tag: X.Y.Z or vX.Y.Z'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airplayqt-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: validate
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/release.py validate
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: windows
+            runner: windows-2025-vs2026
+          - platform: macos
+            runner: xcode-27
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+      - if: matrix.platform == 'windows'
+        uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167 # v3
+        with:
+          miniforge-version: latest
+          activate-environment: release
+          auto-activate-base: false
+          channels: conda-forge
+          channel-priority: strict
+      - if: matrix.platform == 'windows'
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: CLANG64
+          path-type: inherit
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-libplist
+            mingw-w64-clang-x86_64-asiosdk
+      - name: Build and package Linux
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mkdir -p build/release-logs
+          bash scripts/release/linux.sh 2>&1 | tee build/release-logs/linux.log
+      - name: Build and package Windows
+        if: matrix.platform == 'windows'
+        env:
+          MSYS_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p build/release-logs
+          bash scripts/release/windows.sh 2>&1 | tee build/release-logs/windows.log
+      - name: Build and package macOS
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          mkdir -p build/release-logs
+          bash scripts/release/macos.sh 2>&1 | tee build/release-logs/macos.log
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-logs-${{ matrix.platform }}
+          path: build/release-logs/
+          if-no-files-found: ignore
+      - name: Upload packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/release/
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-@(linux|windows|macos)
+          path: dist/downloads
+      - name: Publish complete release
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/release.py publish --directory dist/downloads

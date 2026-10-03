@@ -63,7 +63,7 @@ The presets in [CMakePresets.json](CMakePresets.json) contain machine-specific p
 
 ### Linux
 
-See the Linux user guide ([English](doc/linux/README.en.md) / [中文](doc/linux/README.md)) for Bluetooth input, installation permissions and recovery behavior. Linux builds the standalone app; VST3 is not supported.
+See the Linux user guide ([English](doc/linux/README.en.md) / [中文](doc/linux/README.md)) for Bluetooth input, installation permissions and recovery behavior. Linux supports the standalone GUI and optional headless `AirPlayQtCli`; VST3 is not supported.
 
 ```sh
 cmake --preset linux-release
@@ -92,7 +92,7 @@ Development builds use local dependencies. To create bundles with their runtime 
 cmake --build --preset macos-release --target package-macos
 ```
 
-Packages are written to `dist/macos-arm64`. They are ad-hoc signed and not notarized. Native editor and packaging tests require a logged-in graphical session.
+Packages are written to `dist/macos-arm64`. They are ad-hoc signed.
 
 ### Windows
 
@@ -131,5 +131,6 @@ CLANG64 builds require their runtime DLLs and Qt plugins to be available to the 
 | `AIRPLAY_BUILD_VST3` | `ON` (`OFF` on Linux) | Build the VST3 plugin. |
 | `AIRPLAY_CLI_TEST` | `OFF` | Enable the macOS app's CLI test entry point. |
 | `AIRPLAY_VST_RATE_DIAGNOSTICS` | `OFF` | Enable VST input/send rate diagnostics. |
+| `AIRPLAY_RELEASE_VERSION` | `0.1.0` | Application, macOS bundle and VST3 version in `X.Y.Z` format. |
 
 Pass options during configuration, for example `cmake --preset macos-release -DAIRPLAY_BUILD_VST3=OFF`. A plugin-only build does not require the ASIO SDK.

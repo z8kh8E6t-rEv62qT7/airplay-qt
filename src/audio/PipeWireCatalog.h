@@ -25,7 +25,11 @@ public:
   pw_core *core() const { return core_; }
   BluezCatalog &bluetooth() { return bluez_; }
   static PipeWireCatalog &instance();
+  // Qt-thread result: nullopt while pending, empty string on success.
+  // Retained so callers also observe a synchronous connection failure.
+  const std::optional<QString> &initialQueryResult() const { return initialResult_; }
 signals:
+  void initialQueryFinished(QString error);
   void changed();
   void disconnecting();
 private:
@@ -34,9 +38,11 @@ private:
   void tick();
   void connectServer();
   void disconnectServer();
+  void finishInitialQuery(const QString &error);
   static void global(void *, uint32_t, uint32_t, const char *, uint32_t, const spa_dict *);
   static void removed(void *, uint32_t);
   static void coreError(void *, uint32_t, int, int, const char *);
+  static void coreDone(void *, uint32_t, int);
   pw_thread_loop *loop_ = nullptr;
   pw_context *context_ = nullptr;
   pw_core *core_ = nullptr;
@@ -45,6 +51,13 @@ private:
   std::map<uint32_t, std::unique_ptr<Node>> nodes_;
   std::map<uint32_t, std::unique_ptr<Device>> devices_;
   std::atomic<bool> lost_{false};
+  // PipeWire-loop state; Qt reads it only while holding PipeWireLock.
+  int initialSequence_ = -1;
+  bool registrySynced_ = false, snapshotReady_ = false;
+  QString snapshotError_;
+  // Qt-thread state, separate from the existing GUI recovery lifecycle.
+  bool bluezReady_ = false;
+  std::optional<QString> initialResult_;
   BluezCatalog bluez_{this};
   QTimer timer_;
   int retryTicks_ = 0;

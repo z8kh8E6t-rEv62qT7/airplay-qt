@@ -83,18 +83,27 @@ PipeWireCatalog::PipeWireCatalog(QObject *parent) : QObject(parent) {
   pw_init(nullptr, nullptr);
   connect(&timer_, &QTimer::timeout, this, &PipeWireCatalog::tick);
   connect(&bluez_, &BluezCatalog::changed, this, [this] { tick(); emit changed(); });
+  connect(&bluez_, &BluezCatalog::initialQueryFinished, this, [this](const QString &error) {
+    if (!error.isEmpty()) { finishInitialQuery(error); return; }
+    bluezReady_ = true;
+    tick();
+  });
   timer_.start(100);
   connectServer();
 }
 PipeWireCatalog::~PipeWireCatalog() { timer_.stop(); disconnectServer(); }
 void PipeWireCatalog::connectServer() {
   loop_ = pw_thread_loop_new("airplayqt-pipewire", nullptr);
-  if (!loop_) return;
+  if (!loop_) {
+    finishInitialQuery("Cannot create the PipeWire thread loop");
+    return;
+  }
   context_ = pw_context_new(pw_thread_loop_get_loop(loop_), nullptr, 0);
   if (context_) core_ = pw_context_connect(context_, nullptr, 0);
   if (core_) {
     static const pw_core_events events = [] {
-      pw_core_events e{}; e.version = PW_VERSION_CORE_EVENTS; e.error = coreError; return e;
+      pw_core_events e{}; e.version = PW_VERSION_CORE_EVENTS;
+      e.error = coreError; e.done = coreDone; return e;
     }();
     pw_core_add_listener(core_, &coreListener_, &events, this);
     registry_ = pw_core_get_registry(core_, PW_VERSION_REGISTRY, 0);
@@ -104,9 +113,22 @@ void PipeWireCatalog::connectServer() {
         e.global = global; e.global_remove = removed; return e;
       }();
       pw_registry_add_listener(registry_, &registryListener_, &events, this);
+      if (!initialResult_) {
+        initialSequence_ = pw_core_sync(core_, PW_ID_CORE, 0);
+        if (initialSequence_ < 0)
+          snapshotError_ = "Cannot synchronize the initial PipeWire device query";
+      }
     }
   }
-  if (!core_ || !registry_ || pw_thread_loop_start(loop_) < 0) disconnectServer();
+  if (!core_ || !registry_ || pw_thread_loop_start(loop_) < 0) {
+    disconnectServer();
+    finishInitialQuery("Cannot connect to the PipeWire server");
+  }
+}
+void PipeWireCatalog::finishInitialQuery(const QString &error) {
+  if (initialResult_) return;
+  initialResult_ = error;
+  emit initialQueryFinished(error);
 }
 void PipeWireCatalog::disconnectServer() {
   emit disconnecting();
@@ -121,9 +143,28 @@ void PipeWireCatalog::disconnectServer() {
   lost_.store(false);
   retryTicks_ = 10;
 }
-void PipeWireCatalog::coreError(void *data, uint32_t id, int, int result, const char *) {
+void PipeWireCatalog::coreError(void *data, uint32_t id, int, int result, const char *message) {
+  auto &self = *static_cast<PipeWireCatalog *>(data);
+  if (!self.snapshotReady_ && self.snapshotError_.isEmpty())
+    self.snapshotError_ = QString("PipeWire device query failed: %1")
+        .arg(QString::fromUtf8(message ? message : "unknown error"));
   if (id == PW_ID_CORE || result == -EPIPE)
-    static_cast<PipeWireCatalog *>(data)->lost_.store(true, std::memory_order_release);
+    self.lost_.store(true, std::memory_order_release);
+}
+void PipeWireCatalog::coreDone(void *data, uint32_t id, int sequence) {
+  auto &self = *static_cast<PipeWireCatalog *>(data);
+  if (id != PW_ID_CORE || sequence != self.initialSequence_ || self.snapshotReady_)
+    return;
+  if (!self.registrySynced_) {
+    // Registry callbacks bind nodes/devices. A second barrier includes the
+    // properties returned by those binds, not just the registry globals.
+    self.registrySynced_ = true;
+    self.initialSequence_ = pw_core_sync(self.core_, PW_ID_CORE, sequence);
+    if (self.initialSequence_ < 0)
+      self.snapshotError_ = "Cannot synchronize initial PipeWire device properties";
+  } else {
+    self.snapshotReady_ = true;
+  }
 }
 void PipeWireCatalog::global(void *data, uint32_t id, uint32_t, const char *type,
                               uint32_t version, const spa_dict *props) {
@@ -133,7 +174,11 @@ void PipeWireCatalog::global(void *data, uint32_t id, uint32_t, const char *type
     device->props = properties(props);
     device->proxy = static_cast<pw_device *>(pw_registry_bind(self.registry_, id, type,
         std::min(version, uint32_t(PW_VERSION_DEVICE)), 0));
-    if (!device->proxy) return;
+    if (!device->proxy) {
+      if (!self.snapshotReady_ && self.snapshotError_.isEmpty())
+        self.snapshotError_ = "Cannot bind a device in the initial PipeWire query";
+      return;
+    }
     static const pw_device_events events = [] {
       pw_device_events e{}; e.version = PW_VERSION_DEVICE_EVENTS; e.info = Device::info; return e;
     }();
@@ -148,7 +193,11 @@ void PipeWireCatalog::global(void *data, uint32_t id, uint32_t, const char *type
   node->props = std::move(values);
   node->proxy = static_cast<pw_node *>(pw_registry_bind(self.registry_, id, type,
       std::min(version, uint32_t(PW_VERSION_NODE)), 0));
-  if (!node->proxy) return;
+  if (!node->proxy) {
+    if (!self.snapshotReady_ && self.snapshotError_.isEmpty())
+      self.snapshotError_ = "Cannot bind an input node in the initial PipeWire query";
+    return;
+  }
   static const pw_node_events events = [] {
     pw_node_events e{}; e.version = PW_VERSION_NODE_EVENTS;
     e.info = Node::info; e.param = Node::param; return e;
@@ -163,14 +212,22 @@ void PipeWireCatalog::removed(void *data, uint32_t id) {
   self.nodes_.erase(id); self.devices_.erase(id);
 }
 void PipeWireCatalog::tick() {
-  if (lost_.load(std::memory_order_acquire)) { disconnectServer(); emit changed(); }
+  if (lost_.load(std::memory_order_acquire)) {
+    disconnectServer();
+    finishInitialQuery("PipeWire disconnected during the initial device query");
+    emit changed();
+  }
   if (!core_) {
     if (--retryTicks_ <= 0) { retryTicks_ = 10; connectServer(); }
     return;
   }
   QList<PipeWireSource> next;
+  bool snapshotReady;
+  QString snapshotError;
   {
     PipeWireLock lock(loop_);
+    snapshotReady = snapshotReady_;
+    snapshotError = snapshotError_;
     for (const auto &[id, node] : nodes_) {
       QVariantMap props;
       const auto device = devices_.find(node->props.value(PW_KEY_DEVICE_ID).toUInt());
@@ -181,6 +238,8 @@ void PipeWireCatalog::tick() {
     }
   }
   if (next != sources_) { sources_ = next; emit changed(); }
+  if (!snapshotError.isEmpty()) finishInitialQuery(snapshotError);
+  else if (snapshotReady && bluezReady_) finishInitialQuery({});
 }
 QList<DriverInfo> PipeWireCatalog::devices() const {
   QList<DriverInfo> result;

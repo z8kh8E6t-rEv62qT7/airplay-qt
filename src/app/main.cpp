@@ -13,6 +13,7 @@ int main(int argc, char **argv) {
   QApplication application(argc, argv);
   QApplication::setStyle("Fusion");
   QCoreApplication::setApplicationName("AirPlayQt");
+  QCoreApplication::setApplicationVersion(QStringLiteral(AIRPLAY_VERSION));
 #ifdef AIRPLAY_CLI_TEST
   if (application.arguments().contains("--cli"))
     return app::runCli(application);

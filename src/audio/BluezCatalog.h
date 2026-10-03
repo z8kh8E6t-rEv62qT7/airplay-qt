@@ -25,6 +25,8 @@ public:
   const QList<BluetoothSource> &inputSources() const { return inputSources_; }
   static QList<BluetoothSource> sourcesFromObjects(const DBusObjects &);
 signals:
+  // First GetManagedObjects result only; an empty error means success.
+  void initialQueryFinished(QString error);
   void changed();
   void volumeRequested(QString sourceId, double db);
   void volumeReset(QString sourceId);
@@ -45,6 +47,7 @@ private:
   QList<BluetoothSource> inputSources_;
   DBusObjects objects_;
   bool pending_ = false, dirty_ = false;
+  bool initialQueryCompleted_ = false;
 };
 } // namespace audio
 Q_DECLARE_METATYPE(audio::DBusInterfaces)

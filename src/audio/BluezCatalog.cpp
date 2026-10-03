@@ -43,10 +43,24 @@ void BluezCatalog::refresh() {
     QDBusPendingReply<DBusObjects> reply = *finished;
     finished->deleteLater();
     pending_ = false;
+    const bool first = !initialQueryCompleted_;
+    initialQueryCompleted_ = true;
+    const auto error = reply.isError()
+        ? QString("BlueZ device query failed: %1").arg(reply.error().message())
+        : QString{};
     // An owner/property change during the snapshot makes that snapshot stale.
-    if (dirty_) { dirty_ = false; schedule(); return; }
+    if (dirty_) {
+      dirty_ = false;
+      schedule();
+      if (first)
+        emit initialQueryFinished(error.isEmpty()
+            ? QString("BlueZ devices changed during the initial query; restart the CLI")
+            : error);
+      return;
+    }
     objects_ = reply.isError() ? DBusObjects{} : reply.value();
     updateSources();
+    if (first) emit initialQueryFinished(error);
   });
 }
 void BluezCatalog::updateSources() {

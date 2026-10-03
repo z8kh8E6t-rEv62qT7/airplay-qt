@@ -63,7 +63,7 @@ git submodule update --init --recursive
 
 ### Linux
 
-蓝牙输入、安装权限及断流恢复操作见 Linux 使用教程（[中文](doc/linux/README.md) / [English](doc/linux/README.en.md)）。Linux 仅构建独立应用，不支持 VST3。
+蓝牙输入、安装权限及断流恢复操作见 Linux 使用教程（[中文](doc/linux/README.md) / [English](doc/linux/README.en.md)）。Linux 支持独立 GUI 和可选的无界面 `AirPlayQtCli`，不支持 VST3。
 
 ```sh
 cmake --preset linux-release
@@ -92,7 +92,7 @@ ctest --preset macos-release
 cmake --build --preset macos-release --target package-macos
 ```
 
-产物写入 `dist/macos-arm64`，使用 ad-hoc 签名，未经公证。原生编辑器和打包测试需要已登录的图形会话。
+产物写入 `dist/macos-arm64`，使用 ad-hoc 签名。
 
 ### Windows
 
@@ -131,5 +131,6 @@ ctest --preset release
 | `AIRPLAY_BUILD_VST3` | `ON`（Linux 为 `OFF`） | 构建 VST3 插件。 |
 | `AIRPLAY_CLI_TEST` | `OFF` | 启用 macOS 应用的命令行测试入口。 |
 | `AIRPLAY_VST_RATE_DIAGNOSTICS` | `OFF` | 启用 VST 输入／发送速率诊断。 |
+| `AIRPLAY_RELEASE_VERSION` | `0.1.0` | `X.Y.Z` 格式的应用、macOS bundle 和 VST3 版本。 |
 
 配置时传入选项，例如 `cmake --preset macos-release -DAIRPLAY_BUILD_VST3=OFF`。仅构建插件时不需要 ASIO SDK。

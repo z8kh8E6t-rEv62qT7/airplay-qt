@@ -6,7 +6,7 @@ Send your phone's Bluetooth audio through AirPlayQt to an AirPlay receiver or a 
 
 ## 1. Install dependencies
 
-These commands target an up-to-date Arch Linux x86_64 installation. Use PipeWire 1.4+, WirePlumber 0.5+, and an active desktop user session. Connect the phone to the computer over Bluetooth, and place the computer and AirPlay receivers on a local network that allows them to communicate.
+These commands target an up-to-date Arch Linux x86_64 installation. Use PipeWire 1.4+ and WirePlumber 0.5+. The GUI requires an active desktop user session; see section 7 for the headless CLI. Connect the phone to the computer over Bluetooth, and place the computer and AirPlay receivers on a local network that allows them to communicate.
 
 ```sh
 sudo pacman -S --needed qt6-base openssl libplist pipewire pipewire-audio wireplumber bluez bluez-utils avahi libcap
@@ -165,3 +165,88 @@ If binding UDP 319/320 fails, check the executable's capability and whether anot
 ### Settings location
 
 AirPlayQt saves settings to `$XDG_CONFIG_HOME/AirPlayQt.json`, or `~/.config/AirPlayQt.json` when that variable is unset. Close the application before editing the file manually.
+
+## 7. Standalone CLI (foreground operation)
+
+`AirPlayQtCli` does not read or write GUI settings and requires an explicit input device ID and receiver IPv4 addresses.
+
+### Build and install separately
+
+Dependencies include Qt 6.5+, OpenSSL, libplist 2.7+ and the Linux audio components in section 1.
+
+```sh
+sudo pacman -S --needed base-devel cmake ninja pkgconf qt6-base openssl libplist pipewire pipewire-audio wireplumber bluez bluez-utils avahi libcap
+cmake -S . -B build/linux-cli -G Ninja -DCMAKE_BUILD_TYPE=Release -DAIRPLAY_BUILD_STANDALONE=OFF -DAIRPLAY_BUILD_CLI=ON -DAIRPLAY_BUILD_VST3=OFF -DBUILD_TESTING=OFF
+cmake --build build/linux-cli --target AirPlayQtCli
+sudo cmake --install build/linux-cli --prefix /usr/local
+sudo setcap cap_net_bind_service=ep /usr/local/bin/AirPlayQtCli
+getcap /usr/local/bin/AirPlayQtCli
+```
+
+Reapply the capability whenever the executable is replaced. Manual receiver addresses still require Avahi to publish the session control service and permission to bind UDP 319/320.
+
+### Headless audio environment
+
+Follow sections 1, 3 and 4 to enable system Bluetooth and Avahi, pair and trust the phone, and configure `bluez5.media-source-role = "input"`.
+
+```sh
+systemctl --user start pipewire.service wireplumber.service
+```
+
+For an SSH session without an active local seat, the user can add the following to `~/.config/wireplumber/wireplumber.conf.d/52-airplayqt-headless.conf`. Merge it with any existing file instead of overwriting it. Use this for a dedicated audio user and avoid competing Bluetooth audio sessions under other users.
+
+```text
+wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+```
+
+This is WirePlumber's documented [headless Bluetooth configuration](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html#logind-integration). Stop playback, run `systemctl --user restart wireplumber`, then reconnect the phone. The application does not create system configuration, start services, pair devices or install an autostart service.
+
+The optional AVRCP rule in section 5 uses `uaccess` for active local users; it does not guarantee access for an SSH user. If relative volume keys are needed without a desktop, an administrator must grant the runtime user read access specifically to the matching Bluetooth AVRCP input node, not to all keyboard devices. Absolute volume continues through BlueZ D-Bus. Unreadable keys produce a log message without interrupting audio.
+
+### Query and send
+
+```sh
+/usr/local/bin/AirPlayQtCli --help
+/usr/local/bin/AirPlayQtCli --version
+/usr/local/bin/AirPlayQtCli --list-devices
+/usr/local/bin/AirPlayQtCli --list-interfaces
+```
+
+`--list-devices` prints IDs, names and connection states. Startup and device listing inspect the initial system query only. A missing selected device, failed query or query taking more than 5 seconds causes an exit; the CLI does not wait for devices to appear later. If device changes invalidate the initial BlueZ snapshot, it also exits; run the command again. A paired but disconnected phone that remains in the catalogue can be selected, preserving the GUI's silence-while-waiting behavior.
+
+Replace the sample device ID and IP addresses with actual values. Bluetooth IDs contain both adapter and phone addresses; copy the complete ID from the list. One receiver:
+
+```sh
+/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9
+```
+
+A stereo pair already configured through the receivers' own system:
+
+```sh
+/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9:7000 --receiver 192.168.8.10:7000
+```
+
+Optional interface binding and reversed input channels:
+
+```sh
+/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9 --interface eth0 --local-ip 192.168.8.20 --left 2 --right 1
+```
+
+| Option | Behavior |
+| --- | --- |
+| `--device ID` | Required for sending; exact stable ID match, with no automatic device substitution |
+| `--receiver IPv4[:port]` | Required for sending; one or two distinct endpoints, default port 7000; no receiver scanning |
+| `--interface NAME --local-ip IPv4` | Supply together; omitted means system routing; a failed explicit binding never switches to another interface |
+| `--left N --right N` | Default 1/2 (FL/FR); only 1/2 or 2/1 accepted |
+| `--list-devices`, `--list-interfaces` | Use each alone; print results and exit |
+| `--help`, `--version` | Use each alone; no audio initialization |
+
+Only `--receiver` may be repeated. Unknown options, positional arguments and combining queries with sending options are rejected. Timing uses existing defaults, without loading advanced GUI settings. Lists and help go to stdout; English status, error and retry messages with UTC timestamps go to stderr. Audio statistics are not continuously printed.
+
+The first device check, capture initialization or AirPlay startup failure exits immediately. After the first streaming state, including silent streaming, a session failure, disconnection or takeover by another sender causes cleanup followed by a 2-second delay and unlimited retries of the entire receiver group using the original options. Phone pauses, disconnections and temporarily unavailable audio nodes keep the GUI's silence and capture recovery behavior; they do not count as AirPlay session failures. Recreated sessions also retain the existing session volume initialization behavior.
+
+Ctrl+C or SIGTERM cancels retries, stops capture and cleans up the network session before exiting. Exit codes: successful query `0`, initialization/runtime failure `1`, invalid arguments `2`, SIGINT `130`, SIGTERM `143`.
