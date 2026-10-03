@@ -10,7 +10,9 @@
 #include <QVBoxLayout>
 
 namespace ui {
-MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
+MainWindow::MainWindow(const airplay::DiscoveryApi &api,
+                       const audio::InputCaptureApi &captureApi)
+    : controller_(nullptr, captureApi) {
 #ifdef Q_OS_MACOS
   const QString backend = "Core Audio";
 #elif defined(Q_OS_LINUX)
@@ -42,7 +44,13 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   driver_ = new QComboBox;
   driver_->setObjectName("captureDevice");
   left_ = new QComboBox;
+  left_->setObjectName("leftInputChannel");
   right_ = new QComboBox;
+  right_->setObjectName("rightInputChannel");
+  refresh_ = new QPushButton;
+  refresh_->setObjectName("refreshAudioDevices");
+  refresh_->setEnabled(false);
+  streaming_->bindText(refresh_, "text", i18n::text(i18n::Id::Refresh));
   panel_ = new QPushButton;
 #ifdef Q_OS_LINUX
   panel_->hide();
@@ -56,6 +64,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
   );
   auto *row = new QHBoxLayout;
   row->addWidget(driver_, 1);
+  row->addWidget(refresh_);
   row->addWidget(panel_);
   form->addRow(label(i18n::text(
 #ifdef Q_OS_MACOS
@@ -81,6 +90,14 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
           &MainWindow::setChannels);
   connect(&controller_, &app::Controller::devicesChanged, this,
           &MainWindow::setDevices);
+  connect(refresh_, &QPushButton::clicked, this, &MainWindow::refreshDevices);
+  connect(&controller_, &app::Controller::devicesRefreshed, this,
+          [this](const QList<audio::DriverInfo> &devices) {
+    const auto selected = driver_->currentData().toString();
+    fillDevices(devices, selected);
+    if (driver_->currentIndex() < 0)
+      saved_.driverId.clear(); // Do not restore a discarded selection on hotplug.
+  });
   connect(&controller_, &app::Controller::error, streaming_,
           &StreamingPanel::showError);
   connect(&controller_, &app::Controller::busyChanged, this,
@@ -131,11 +148,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
       saved_ = controller_.initialize();
       streaming_->setLanguage(saved_.language);
       streaming_->setNetworkBinding(saved_.networkBinding);
-      for (const auto &driver : controller_.drivers()) {
-        const auto name = driver.displayName();
-        driver_->addItem(name.render(streaming_->language()), driver.id);
-        driver_->setItemData(driver_->count() - 1, QJsonArray(name), Qt::UserRole + 1);
-      }
+      fillDevices(controller_.drivers(), saved_.driverId);
       streaming_->setTiming(saved_.timing);
       streaming_->setRememberedReceivers(saved_.receiverSelection);
       const auto index =
@@ -162,8 +175,31 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
       streaming_->showError(i18n::fromException(e));
     }
     loading_ = false;
+    setBusy(controller_.busy());
     streaming_->beginDiscovery();
   });
+}
+void MainWindow::fillDevices(const QList<audio::DriverInfo> &devices,
+                             const QString &selected) {
+  QSignalBlocker blocker(driver_);
+  driver_->clear();
+  for (const auto &device : devices) {
+    const auto label = device.displayName();
+    driver_->addItem(label.render(streaming_->language()), device.id);
+    driver_->setItemData(driver_->count() - 1, QJsonArray(label), Qt::UserRole + 1);
+  }
+  driver_->setCurrentIndex(driver_->findData(selected));
+}
+void MainWindow::refreshDevices() {
+  if (loading_ || closing_ || refreshing_ || controller_.busy())
+    return;
+  {
+    QScopedValueRollback<bool> refreshing(refreshing_, true);
+    refresh_->setEnabled(false);
+    controller_.refreshDevices(driver_->currentData().toString(),
+                               reinterpret_cast<void *>(winId()));
+  }
+  setBusy(controller_.busy());
 }
 void MainWindow::setDevices(const QList<audio::DriverInfo> &devices) {
   if (loading_ || closing_) return;
@@ -172,12 +208,7 @@ void MainWindow::setDevices(const QList<audio::DriverInfo> &devices) {
   const auto oldLabel = driver_->currentData(Qt::UserRole + 1);
   {
     QSignalBlocker blocker(driver_);
-    driver_->clear();
-    for (const auto &device : devices) {
-      const auto label = device.displayName();
-      driver_->addItem(label.render(streaming_->language()), device.id);
-      driver_->setItemData(driver_->count() - 1, QJsonArray(label), Qt::UserRole + 1);
-    }
+    fillDevices(devices, selected);
     // An active selection survives disappearance; it must never fall back to
     // another input. Reappearance is handled by the capture backend itself.
     if (!previous.isEmpty() && driver_->findData(previous) < 0) {
@@ -217,9 +248,9 @@ void MainWindow::setChannels(const QList<audio::ChannelInfo> &channels) {
                          Qt::UserRole + 1);
     }
   }
-  const int l = loading_ ? saved_.left : (previousLeft >= 0 ? previousLeft : 0),
+  const int l = loading_ ? saved_.left : (refreshing_ || previousLeft >= 0 ? previousLeft : 0),
             r = loading_ ? saved_.right
-                         : (previousRight >= 0 ? previousRight : 1);
+                         : (refreshing_ || previousRight >= 0 ? previousRight : 1);
   left_->setCurrentIndex(left_->findData(l));
   right_->setCurrentIndex(right_->findData(r));
   if (!channels.isEmpty() &&
@@ -232,11 +263,13 @@ void MainWindow::setBusy(bool busy) {
   for (QWidget *widget :
        std::array<QWidget *, 4>{driver_, left_, right_, panel_})
     widget->setEnabled(!busy);
+  refresh_->setEnabled(!busy && !loading_ && !closing_ && !refreshing_);
   streaming_->setBusy(busy);
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
   if (!closing_) {
     closing_ = true;
+    refresh_->setEnabled(false);
     streaming_->cancelDiscovery();
     controller_.stop();
   }

@@ -7,8 +7,9 @@
 #endif
 
 namespace app {
-Controller::Controller(QObject *parent)
-    : QObject(parent), capture_(audio::createInputCapture()) {
+Controller::Controller(QObject *parent, const audio::InputCaptureApi &api)
+    : QObject(parent), captureApi_(api),
+      capture_(captureApi_.create(audio::CaptureKind::Input)) {
   connectCapture();
   connect(&session_, &SessionController::status, this, &Controller::status);
   connect(&session_, &SessionController::log, this, &Controller::log);
@@ -43,12 +44,12 @@ void Controller::connectCapture() {
   connect(capture_.get(), &audio::InputCapture::volumeStepRequested, &session_, &SessionController::inputVolumeStep);
   connect(capture_.get(), &audio::InputCapture::log, &session_, &SessionController::log);
   connect(capture_.get(), &audio::InputCapture::devicesChanged, this, [this] {
-    drivers_ = audio::inputDevices();
+    drivers_ = captureApi_.devices();
     emit devicesChanged(drivers_);
   }, Qt::QueuedConnection);
 }
 Settings Controller::initialize() {
-  drivers_ = audio::inputDevices();
+  drivers_ = captureApi_.devices();
   try {
     return settings_.load();
   } catch (const std::exception &e) {
@@ -73,21 +74,56 @@ void Controller::selectDriver(const QString &id, void *window) {
   selectedId_.clear();
   window_ = window;
   try {
-    const auto drivers = audio::inputDevices();
+    const auto drivers = captureApi_.devices();
     const auto selected = std::find_if(
         drivers.begin(), drivers.end(),
         [&](const auto &driver) { return driver.id == id; });
     if (selected == drivers.end())
       throw i18n::MessageError(i18n::text(i18n::Id::SelectAValidInputDevice));
-    if (const auto error = capture_->close(); !error.isEmpty())
-      throw i18n::MessageError(error);
-    capture_ = audio::createInputCapture(selected->kind);
-    connectCapture();
-    const auto list = capture_->open(id, window);
-    selectedKind_ = selected->kind;
-    selectedId_ = id;
-    emit channels(list);
-    emit session_.status(i18n::text(i18n::Id::DriverLoadedReadyToStart));
+    openDriver(*selected, window);
+  } catch (const std::exception &e) {
+    emit channels({});
+    emit error(i18n::fromException(e));
+  }
+}
+void Controller::openDriver(const audio::DriverInfo &driver, void *window) {
+  if (const auto error = capture_->close(); !error.isEmpty())
+    throw i18n::MessageError(error);
+  capture_ = captureApi_.create(driver.kind);
+  connectCapture();
+  const auto list = capture_->open(driver.id, window);
+  selectedKind_ = driver.kind;
+  selectedId_ = driver.id;
+  window_ = window;
+  emit channels(list);
+  emit session_.status(i18n::text(i18n::Id::DriverLoadedReadyToStart));
+}
+void Controller::refreshDevices(const QString &id, void *window) {
+  if (busy())
+    return;
+  // Enumeration failure must leave both the list and current input intact.
+  try {
+    drivers_ = captureApi_.devices();
+  } catch (const std::exception &e) {
+    emit error(i18n::fromException(e));
+    return;
+  }
+  emit devicesRefreshed(drivers_);
+  selectedId_.clear();
+  try {
+    const auto selected = std::find_if(
+        drivers_.begin(), drivers_.end(),
+        [&](const auto &driver) { return driver.id == id; });
+    if (selected != drivers_.end()) {
+      openDriver(*selected, window);
+    } else {
+      if (const auto error = capture_->close(); !error.isEmpty())
+        throw i18n::MessageError(error);
+      emit channels({});
+      if (!id.isEmpty())
+        emit error(i18n::text(i18n::Id::InputDeviceUnavailable) + "; " +
+                   i18n::text(i18n::Id::SelectAValidInputDevice));
+    }
   } catch (const std::exception &e) {
     emit channels({});
     emit error(i18n::fromException(e));

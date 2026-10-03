@@ -5,6 +5,7 @@
 #include <QString>
 #include <QObject>
 #include <memory>
+#include <functional>
 #include <optional>
 
 namespace audio {
@@ -49,4 +50,9 @@ signals:
 QList<DriverInfo> inputDevices();
 std::unique_ptr<InputCapture>
 createInputCapture(CaptureKind kind = CaptureKind::Input);
+// Native enumeration and construction can be supplied by deterministic tests.
+struct InputCaptureApi {
+  std::function<QList<DriverInfo>()> devices = inputDevices;
+  std::function<std::unique_ptr<InputCapture>(CaptureKind)> create = createInputCapture;
+};
 } // namespace audio

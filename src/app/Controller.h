@@ -11,7 +11,8 @@ namespace app {
 class Controller : public QObject {
   Q_OBJECT
 public:
-  explicit Controller(QObject *parent = nullptr);
+  explicit Controller(QObject *parent = nullptr,
+                      const audio::InputCaptureApi &api = {});
   ~Controller() override;
   Settings initialize();
   void saveLanguage(i18n::Language);
@@ -21,6 +22,7 @@ public:
   QList<audio::DriverInfo> drivers() const { return drivers_; }
   void selectDriver(const QString &id, void *window);
   void controlPanel();
+  void refreshDevices(const QString &id, void *window);
   void start(
       const Settings &settings,
       const QList<airplay::ReceiverEndpoint> &endpoints,
@@ -32,6 +34,7 @@ public:
   SessionController &session() { return session_; }
 signals:
   void devicesChanged(QList<audio::DriverInfo> devices);
+  void devicesRefreshed(QList<audio::DriverInfo> devices);
   void channels(QList<audio::ChannelInfo> channels);
   void status(QJsonArray text);
   void log(QJsonArray text);
@@ -45,9 +48,12 @@ signals:
   void stopped();
 
 private:
+  friend class ControllerTestAccess;
   void connectCapture();
+  void openDriver(const audio::DriverInfo &, void *window);
   void stopCapture();
   SessionController session_;
+  audio::InputCaptureApi captureApi_;
   std::unique_ptr<audio::InputCapture> capture_;
   QList<audio::DriverInfo> drivers_;
   QString selectedId_;
