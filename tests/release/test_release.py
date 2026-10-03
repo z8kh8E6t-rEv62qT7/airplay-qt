@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -296,6 +297,55 @@ class LinuxReadmeChecks(unittest.TestCase):
 
 
 class BuildScriptChecks(unittest.TestCase):
+    def test_windows_msys_root_conversion_includes_subdirectory(self):
+        text = (SCRIPTS / "windows.sh").read_text(encoding="utf-8")
+        start = text.index('plist=')
+        end = text.index("printf 'Dependency paths:", start)
+        # Model the runner's mount mapping, including '/' for its install root.
+        mapping = '''
+cygpath() {
+  [[ "$1" == -u ]]
+  case "$2" in
+    "$MSYS_ROOT") printf '/' ;;
+    "$MSYS_ROOT/clang64") printf '/clang64' ;;
+    *) return 91 ;;
+  esac
+}
+'''
+        for root in ("D:/a/_temp/msys64", "C:/path with spaces/msys64"):
+            with self.subTest(root=root):
+                result = self.run_script(f'MSYS_ROOT="{root}"\n' + mapping + text[start:end]
+                                         + 'printf "%s" "$asio/common/iasiodrv.h"\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "/clang64/include/asiosdk/common/iasiodrv.h")
+
+    def test_macos_version_audit_rejects_either_incorrect_bundle_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            info = {"CFBundleVersion": "1.0.1", "CFBundleShortVersionString": "1.0.1",
+                    "LSMinimumSystemVersion": "27.0"}
+            plists = []
+            for name in ("AirPlayQt.app", "AirPlayQt.vst3"):
+                path = root / name / "Contents/Info.plist"
+                path.parent.mkdir(parents=True)
+                with path.open("wb") as file:
+                    plistlib.dump(info, file)
+                plists.append(path)
+            resources = root / "AirPlayQt.vst3/Contents/Resources"
+            resources.mkdir()
+            (resources / "moduleinfo.json").write_text(
+                '{"Version":"1.0.1","Classes":[{"Version":"1.0.1"}]}', encoding="utf-8")
+            check_version.check(root, "1.0.1", "macos")
+            for path in plists:
+                for key in ("CFBundleVersion", "CFBundleShortVersionString"):
+                    with self.subTest(bundle=path.parent.parent.name, key=key):
+                        with path.open("wb") as file:
+                            plistlib.dump(dict(info, **{key: "0.1.0"}), file)
+                        with self.assertRaisesRegex(ValueError, key):
+                            check_version.check(root, "1.0.1", "macos")
+                        with path.open("wb") as file:
+                            plistlib.dump(info, file)
+
     def run_script(self, body):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / "fixture.sh"

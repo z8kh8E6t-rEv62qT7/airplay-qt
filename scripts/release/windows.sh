@@ -27,7 +27,9 @@ set +x
 conda install --yes --override-channels --channel conda-forge 'qt6-main=6.8.3' openssl
 set -x
 prefix="$(cygpath -u "$CONDA_PREFIX")/Library"
-plist="$(cygpath -u "$MSYS_ROOT")/clang64"
+# Convert the complete path: the MSYS root itself becomes '/', so appending
+# '/clang64' after conversion would produce a UNC-style '//clang64' path.
+plist="$(cygpath -u "$MSYS_ROOT/clang64")"
 asio="$plist/include/asiosdk"
 printf 'Dependency paths: conda=%s libplist=%s asio=%s\n' "$prefix" "$plist" "$asio"
 export PATH="$prefix/bin:$prefix/lib/qt6/bin:$PATH"

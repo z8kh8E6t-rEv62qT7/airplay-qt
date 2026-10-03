@@ -60,6 +60,11 @@ else()
   smtg_add_vst3plugin(AirPlayQtVst3 PACKAGE_NAME "AirPlayQt" SOURCES_LIST Factory.cpp)
   target_link_libraries(AirPlayQtVst3 PRIVATE airplay_vst3)
 endif()
+if(APPLE)
+  set_target_properties(AirPlayQtVst3 PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+endif()
 if(BUILD_TESTING)
   if(MSVC)
     add_executable(test_vst3_native "${PROJECT_SOURCE_DIR}/tests/vst3/NativeHost.cpp")
