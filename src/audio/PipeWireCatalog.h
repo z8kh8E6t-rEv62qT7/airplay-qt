@@ -23,6 +23,7 @@ public:
   const QList<PipeWireSource> &sources() const { return sources_; }
   pw_thread_loop *loop() const { return loop_; }
   pw_core *core() const { return core_; }
+  BluezCatalog &bluetooth() { return bluez_; }
   static PipeWireCatalog &instance();
 signals:
   void changed();

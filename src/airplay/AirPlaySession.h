@@ -45,6 +45,8 @@ public:
   void stop(const i18n::Message &error = {},
             SessionEnd reason = SessionEnd::Stopped);
   void volume(double db);
+  void inputVolume(double db);
+  void inputVolumeStep(int direction);
   void setTelemetryEnabled(bool enabled, quint64 revision);
 signals:
   void status(QJsonArray text);

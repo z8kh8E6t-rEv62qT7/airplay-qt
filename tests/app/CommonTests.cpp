@@ -32,6 +32,47 @@ private slots:
       emit session.log(message);
     }
   }
+  void inputVolumeCrossesNetworkThreadAndUpdatesDisplay() {
+    app::SessionController session;
+    ui::StreamingPanel panel(session);
+    QSignalSpy errors(&session, &app::SessionController::error);
+    connect(&session, &app::SessionController::startCapture, &session,
+            &app::SessionController::captureStarted);
+    for (int run = 0; run < 2; ++run) {
+      test::Receiver left("left"), right("right");
+      app::Timing timing;
+      timing.settle = 0;
+      timing.prebuffer = .008;
+      audio::CaptureStream stream{
+          std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
+          audio::format(16), audio::format(16), 352};
+      stream.gapPolicy = audio::GapPolicy::Silence;
+      session.inputVolume(-5);
+      session.inputVolumeStep(1);
+      session.start(timing, stream,
+                    {{QHostAddress::LocalHost, left.port()}, {QHostAddress::LocalHost, right.port()}},
+                    {[] {}, [] {}, false});
+      session.inputVolume(-5); // Connecting is not a valid volume-control state.
+      QTRY_VERIFY(session.streaming());
+      QCOMPARE(session.currentVolume(), -30.);
+      session.inputVolume(-25);
+      for (int i = 0; i < 5; ++i) session.inputVolumeStep(1);
+      QTRY_COMPARE(session.currentVolume(), -20.);
+      QCOMPARE(left.volumes.last(), -20.);
+      QCOMPARE(right.volumes.last(), -20.);
+      bool displayed = false;
+      for (auto *spin : panel.findChildren<QDoubleSpinBox *>())
+        if (spin->suffix() == " dB") { QCOMPARE(spin->value(), -20.); displayed = true; }
+      QVERIFY(displayed);
+      const auto count = left.volumeRequests;
+      session.stop();
+      session.inputVolume(-10);
+      session.inputVolumeStep(-1);
+      QTRY_VERIFY(!session.busy());
+      QCOMPARE(left.volumeRequests, count);
+      QVERIFY(errors.isEmpty());
+    }
+  }
   void pauseDisplayFreezesOnlyTelemetry() {
     app::SessionController session, otherSession;
     ui::StreamingPanel panel(session), other(otherSession);

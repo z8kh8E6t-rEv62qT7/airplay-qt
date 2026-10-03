@@ -21,6 +21,8 @@ public:
   void stop(const i18n::Message &reason = {},
             airplay::SessionEnd end = airplay::SessionEnd::Stopped);
   void volume(double db);
+  void inputVolume(double db);
+  void inputVolumeStep(int direction);
   void setTelemetryEnabled(bool enabled);
   bool telemetryEnabled() const { return telemetryEnabled_; }
   bool busy() const { return busy_; }

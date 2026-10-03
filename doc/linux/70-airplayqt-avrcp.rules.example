@@ -1,0 +1,4 @@
+# Optional: allow the active local desktop user to read Bluetooth AVRCP keys.
+# Install as /etc/udev/rules.d/70-airplayqt-avrcp.rules, reload udev rules,
+# then disconnect and reconnect the phone. Do not grant all input devices access.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="* (AVRCP)", ATTRS{id/bustype}=="0005", TAG+="uaccess"

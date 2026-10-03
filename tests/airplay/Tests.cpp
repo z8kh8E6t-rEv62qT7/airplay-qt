@@ -87,6 +87,55 @@ struct SessionFixture {
 class ProtocolTests : public QObject {
   Q_OBJECT
 private slots:
+  void inputVolumeUsesLatestTargetAndIgnoresInactiveSessions() {
+    SessionFixture f;
+    f.stream.gapPolicy = audio::GapPolicy::Silence;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    connect(&session, &AirPlaySession::startCapture, &session, &AirPlaySession::captureStarted);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    QSignalSpy applied(&session, &AirPlaySession::volumeApplied);
+    session.inputVolume(-10);
+    session.inputVolumeStep(1);
+    session.start();
+    session.inputVolume(-5);
+    session.inputVolumeStep(-1);
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    QCOMPARE(f.left.volumes.first(), -30.);
+    session.inputVolume(-25);
+    for (int i = 0; i < 8; ++i) session.inputVolumeStep(1);
+    session.inputVolumeStep(-1);
+    session.inputVolumeStep(-1);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -19.);
+    QCOMPARE(f.left.volumes.last(), -19.);
+    QCOMPARE(f.right.volumes.last(), -19.);
+    // Unlike a DACP echo, a new input request can intentionally return to an
+    // earlier in-flight value.
+    session.inputVolume(-25);
+    session.inputVolume(-20);
+    session.inputVolume(-25);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -25.);
+    session.inputVolume(-144);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -144.);
+    session.inputVolumeStep(-1);
+    session.inputVolumeStep(1);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -24.);
+    session.inputVolume(0);
+    session.inputVolumeStep(1);
+    session.inputVolumeStep(-1);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -1.);
+    const auto count = f.left.volumeRequests;
+    session.inputVolume(1);
+    session.inputVolume(-145);
+    session.inputVolume(std::numeric_limits<double>::quiet_NaN());
+    session.inputVolumeStep(0);
+    session.inputVolumeStep(2);
+    session.stop();
+    session.inputVolume(-10);
+    session.inputVolumeStep(1);
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(f.left.volumeRequests, count);
+    QVERIFY(i18n::Message(done[0][0].toJsonArray()).isEmpty());
+  }
   void continuousInputKeepsSessionAndDiscardsOldGenerations() {
     SessionFixture f;
     f.timing.inputTimeout = .1;

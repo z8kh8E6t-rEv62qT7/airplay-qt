@@ -7,6 +7,7 @@ struct SessionController::NetworkContext {
   airplay::AirPlaySession *session = nullptr;
   bool telemetryEnabled = true;
   quint64 telemetryRevision = 0;
+  quint64 generation = 0;
 };
 SessionController::SessionController(QObject *parent)
     : QObject(parent), network_(std::make_shared<NetworkContext>()),
@@ -74,6 +75,7 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
     auto *session = new airplay::AirPlaySession(timing, stream, endpoints,
                                                 worker_, environment, route);
     context->session = session;
+    context->generation = generation;
     session->setTelemetryEnabled(context->telemetryEnabled,
                                  context->telemetryRevision);
     // Every delivery is tagged; events from a prior session cannot update a
@@ -166,6 +168,20 @@ void SessionController::volume(double db) {
   QMetaObject::invokeMethod(worker_, [context = network_, db] {
     if (context->session)
       context->session->volume(db);
+  });
+}
+void SessionController::inputVolume(double db) {
+  if (!streaming_ || !busy_ || stopping_) return;
+  QMetaObject::invokeMethod(worker_, [context = network_, generation = generation_, db] {
+    if (context->session && context->generation == generation)
+      context->session->inputVolume(db);
+  });
+}
+void SessionController::inputVolumeStep(int direction) {
+  if (!streaming_ || !busy_ || stopping_) return;
+  QMetaObject::invokeMethod(worker_, [context = network_, generation = generation_, direction] {
+    if (context->session && context->generation == generation)
+      context->session->inputVolumeStep(direction);
   });
 }
 } // namespace app

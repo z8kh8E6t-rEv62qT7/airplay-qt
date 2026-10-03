@@ -18,6 +18,9 @@ Controller::Controller(QObject *parent)
           &Controller::busyChanged);
   connect(&session_, &SessionController::streamingChanged, this,
           &Controller::streamingChanged);
+  connect(&session_, &SessionController::streamingChanged, this, [this](bool streaming) {
+    capture_->setVolumeControlEnabled(streaming);
+  });
   connect(&session_, &SessionController::volumeApplied, this,
           &Controller::volumeApplied);
   connect(&session_, &SessionController::telemetry, this,
@@ -36,6 +39,8 @@ Controller::Controller(QObject *parent)
 }
 Controller::~Controller() { capture_->stop(); }
 void Controller::connectCapture() {
+  connect(capture_.get(), &audio::InputCapture::volumeRequested, &session_, &SessionController::inputVolume);
+  connect(capture_.get(), &audio::InputCapture::volumeStepRequested, &session_, &SessionController::inputVolumeStep);
   connect(capture_.get(), &audio::InputCapture::log, &session_, &SessionController::log);
   connect(capture_.get(), &audio::InputCapture::devicesChanged, this, [this] {
     drivers_ = audio::inputDevices();

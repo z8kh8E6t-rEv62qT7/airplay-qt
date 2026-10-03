@@ -103,6 +103,21 @@ systemctl --user restart wireplumber
 
 可以先开始发送，再让手机播放。手机暂停或断开时程序保持发送静音；同一手机恢复后自动接流。默认预缓冲为 40 ms，可先保持默认值。
 
+### 手机音量键
+
+发送期间，当前所选手机的蓝牙音量请求会直接调整 AirPlay 音量，立体声组合两端同步。绝对音量 `0` 对应静音（`-144 dB`），`1–127` 映射为 `-30 + 30 × 值 / 127 dB`；只有加减按键时，每次按下或重复请求调整 `1 dB`，释放不重复调整。相对按键等待 100 ms，同一窗口的绝对音量优先。应用不额外缩放 PCM，也不把 AirPlay 音量反向写回手机。
+
+初次连接和重连只建立音量状态，不覆盖 AirPlay 当前音量；停止、换设备或断连会丢弃待处理按键。设备必须通过 BlueZ 暴露绝对音量或 AVRCP 按键；如果手机只在本机改变音频幅度，应用无法从音频中还原按键。
+
+绝对音量不需要读取输入设备。仅加减按键需要读取对应的 AVRCP 输入节点；若日志提示 `Cannot read AVRCP volume keys`，可安装以下可选规则，授权当前本地桌面用户访问蓝牙 AVRCP 节点：
+
+```sh
+sudo install -m 0644 /usr/local/share/doc/AirPlayQt/70-airplayqt-avrcp.rules.example /etc/udev/rules.d/70-airplayqt-avrcp.rules
+sudo udevadm control --reload-rules
+```
+
+随后断开并重新连接手机。应用不会自行修改系统权限，也无需以 root 运行或加入可读取所有键盘的 `input` 组。无法读取或唯一识别 AVRCP 设备时会记录日志，音频继续播放。同一适配器上的同名设备可能无法区分；普通电脑键盘不参与透传。应用不独占按键，桌面环境仍可能响应相同媒体键。
+
 ## 6. 常见问题
 
 ### iPhone 搜不到电脑

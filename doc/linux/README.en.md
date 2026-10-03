@@ -103,6 +103,21 @@ Launch the installed application as your normal desktop user, without `sudo`:
 
 You can start sending before the phone begins playback. Pausing or disconnecting the phone keeps the session sending silence; audio resumes when the same phone returns. Leave the prebuffer at its default of 40 ms initially.
 
+### Phone volume keys
+
+While streaming, Bluetooth volume requests from the selected phone control AirPlay volume, including both members of a stereo pair. Absolute volume `0` mutes (`-144 dB`); values `1–127` map to `-30 + 30 × value / 127 dB`. If only up/down keys are available, each press or repeat changes volume by `1 dB`; release does not add a step. Relative keys wait 100 ms so absolute volume takes priority in the same window. The application does not add PCM gain or send AirPlay volume changes back to the phone.
+
+Initial connection and reconnection establish a baseline without overriding AirPlay volume. Stopping, changing inputs, or disconnecting discards pending keys. The phone must expose absolute volume or AVRCP keys through BlueZ; changes made only to the phone's audio samples cannot be recovered as key requests.
+
+Absolute volume does not require input-device access. Up/down keys require read access to the corresponding AVRCP input node. If the log reports `Cannot read AVRCP volume keys`, this optional rule grants the active local desktop user access to Bluetooth AVRCP nodes:
+
+```sh
+sudo install -m 0644 /usr/local/share/doc/AirPlayQt/70-airplayqt-avrcp.rules.example /etc/udev/rules.d/70-airplayqt-avrcp.rules
+sudo udevadm control --reload-rules
+```
+
+Disconnect and reconnect the phone afterward. The application does not change system permissions itself and needs neither root nor membership in the `input` group that exposes all keyboards. Unreadable or ambiguous AVRCP devices are logged without stopping audio. Devices with identical names on the same adapter may be indistinguishable; ordinary computer keyboards are excluded. Keys are not grabbed exclusively, so the desktop may also respond to the same media keys.
+
 ## 6. Troubleshooting
 
 ### iPhone cannot find the computer

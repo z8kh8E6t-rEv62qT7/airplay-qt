@@ -1,6 +1,8 @@
 #include "PipeWireCapture.h"
+#include "BluetoothVolume.h"
 #include "PipeWireBuffer.h"
 #include "PipeWireCatalog.h"
+#include "PipeWireRecovery.h"
 #include <QTimer>
 #include <spa/buffer/meta.h>
 #include <spa/param/audio/format-utils.h>
@@ -11,11 +13,12 @@ namespace audio {
 struct PipeWireCapture::State {
   PipeWireCapture &owner;
   PipeWireCatalog &catalog = PipeWireCatalog::instance();
+  BluetoothVolume volume{catalog.bluetooth()};
   QString selected, lastLog;
   PipeWireSource bound;
   QTimer timer;
   bool running = false;
-  int retryTicks = 0;
+  PipeWireRetry retry;
   std::shared_ptr<CaptureQueue> queue;
   std::unique_ptr<PipeWireBuffer> buffer;
   pw_stream *stream = nullptr;
@@ -31,6 +34,11 @@ struct PipeWireCapture::State {
   uint64_t loggedFrames = 0;
   int left = 0;
   explicit State(PipeWireCapture &o) : owner(o) {
+    QObject::connect(&volume, &BluetoothVolume::absoluteRequested, &owner, &InputCapture::volumeRequested);
+    QObject::connect(&volume, &BluetoothVolume::stepRequested, &owner, &InputCapture::volumeStepRequested);
+    QObject::connect(&volume, &BluetoothVolume::log, &owner, [this](const QString &text) {
+      emit owner.log(i18n::text(i18n::Id::LinuxInputLog).arg(text));
+    });
     QObject::connect(&timer, &QTimer::timeout, &owner, [this] { tick(); });
     QObject::connect(&catalog, &PipeWireCatalog::changed, &owner, [this] {
       emit owner.devicesChanged();
@@ -64,7 +72,7 @@ struct PipeWireCapture::State {
     s.state = state;
     s.receiving.store(state == PW_STREAM_STATE_STREAMING, std::memory_order_release);
     s.nativeError = QString::fromUtf8(error ? error : "");
-    if (state != PW_STREAM_STATE_STREAMING && s.queue)
+    if (pipeWireStateInvalidates(previous, state) && s.queue)
       s.queue->generation.fetch_add(1, std::memory_order_acq_rel);
     if (state == PW_STREAM_STATE_UNCONNECTED && previous != PW_STREAM_STATE_UNCONNECTED)
       s.processError.store(ENOTCONN, std::memory_order_release);
@@ -72,17 +80,18 @@ struct PipeWireCapture::State {
   static void paramChanged(void *data, uint32_t id, const spa_pod *param) {
     if (id != SPA_PARAM_Format) return;
     auto &s = *static_cast<State *>(data);
-    s.formatValid.store(false, std::memory_order_release);
-    s.format = {};
-    if (s.queue) s.queue->generation.fetch_add(1, std::memory_order_acq_rel);
-    if (!param) return;
-    if (spa_format_audio_raw_parse(param, &s.format) < 0 ||
-        s.format.format != SPA_AUDIO_FORMAT_F32 || s.format.rate != 44100 || s.format.channels != 2 ||
-        s.format.position[0] != SPA_AUDIO_CHANNEL_FL || s.format.position[1] != SPA_AUDIO_CHANNEL_FR) {
+    spa_audio_info_raw next{};
+    const bool valid = param && spa_format_audio_raw_parse(param, &next) >= 0 &&
+        next.format == SPA_AUDIO_FORMAT_F32 && next.rate == 44100 && next.channels == 2 &&
+        next.position[0] == SPA_AUDIO_CHANNEL_FL && next.position[1] == SPA_AUDIO_CHANNEL_FR;
+    // Repeated notifications of the fixed negotiated format are not gaps.
+    const bool wasValid = s.formatValid.exchange(valid, std::memory_order_acq_rel);
+    s.format = next;
+    if (wasValid && !valid && s.queue)
+      s.queue->generation.fetch_add(1, std::memory_order_acq_rel);
+    if (param && !valid) {
       s.processError.store(EINVAL, std::memory_order_release);
-      return;
     }
-    s.formatValid.store(true, std::memory_order_release);
   }
   static void process(void *data) {
     auto &s = *static_cast<State *>(data);
@@ -162,13 +171,18 @@ struct PipeWireCapture::State {
     const auto found = std::find_if(sources.begin(), sources.end(), [this](const auto &s) { return s.id == selected; });
     if (found == sources.end() || !catalog.core()) {
       if (stream) destroyStream();
-      log("Waiting: " + selected + "; AirPlay continues with silence");
+      retry.clear();
+      log("Waiting: " + selected + (catalog.core() ? "; selected node absent" : "; PipeWire server unavailable") +
+          "; AirPlay continues with silence");
       return;
     }
-    if (stream && (bound.serial != found->serial || bound.rate != found->rate || bound.codec != found->codec))
+    if (stream && !samePipeWireTarget(bound, *found)) {
+      log("Rebuilding selected input: target node or codec changed");
       destroyStream();
+    }
+    if (stream) bound = *found;
     if (!stream) {
-      if (retryTicks > 0) { --retryTicks; return; }
+      if (retry.waiting(*found)) return;
       log(QString("Negotiating %1; codec=%2; source PCM rate=%3; requested=44100 Hz, Float32, FL/FR")
           .arg(selected, found->codec.isEmpty() ? "unknown" : found->codec,
                found->rate ? QString::number(found->rate) : "unknown"));
@@ -183,13 +197,17 @@ struct PipeWireCapture::State {
     }
     const int failure = processError.load(std::memory_order_acquire);
     if (failure || current == PW_STREAM_STATE_ERROR) {
-      log(QString("Input unavailable: %1 (code %2); actual=%3 Hz, %4 channels, format=%5; sending silence")
+      const auto reason = failure == EINVAL ? "format mismatch" :
+          failure == ENOTCONN ? "capture stream disconnected" : "capture stream failure";
+      log(QString("Input unavailable (%6): %1 (code %2); actual=%3 Hz, %4 channels, format=%5; retry in 2000 ms unless target changes; sending silence")
           .arg(error.isEmpty() ? QString::fromLocal8Bit(std::strerror(failure ? failure : EIO)) : error)
           .arg(failure)
           .arg(actual.rate ? QString::number(actual.rate) : "unknown")
           .arg(actual.channels ? QString::number(actual.channels) : "unknown")
-          .arg(actual.format == SPA_AUDIO_FORMAT_UNKNOWN ? "unknown" : QString::number(actual.format)));
-      destroyStream(); retryTicks = 20;
+          .arg(actual.format == SPA_AUDIO_FORMAT_UNKNOWN ? "unknown" : QString::number(actual.format))
+          .arg(reason));
+      retry.failed(*found);
+      destroyStream();
     } else if (current == PW_STREAM_STATE_STREAMING && actual.rate && processed.load() != loggedFrames) {
       loggedFrames = processed.load();
       log(QString("Receiving %1; codec=%2; source PCM rate=%3; requested=44100 Hz; obtained=%4 Hz, %5 channels, Float32")
@@ -225,16 +243,20 @@ CaptureStream PipeWireCapture::prepare(int left, int right, double maxBacklog) {
 void PipeWireCapture::start() {
   if (!state_->queue) throw i18n::MessageError(i18n::text(i18n::Id::AudioInputIsNotReady));
   state_->running = true;
-  state_->retryTicks = 0;
+  state_->retry.clear();
   state_->timer.start(100);
   state_->tick();
 }
 i18n::Message PipeWireCapture::stop() noexcept {
+  state_->volume.setSource({});
   state_->running = false;
   state_->timer.stop();
   state_->destroyStream();
   state_->queue.reset();
   return {};
+}
+void PipeWireCapture::setVolumeControlEnabled(bool enabled) {
+  state_->volume.setSource(enabled && state_->running ? state_->selected : QString{});
 }
 i18n::Message PipeWireCapture::close() noexcept { auto error = stop(); state_->selected.clear(); return error; }
 QList<DriverInfo> inputDevices() { return PipeWireCatalog::instance().devices(); }

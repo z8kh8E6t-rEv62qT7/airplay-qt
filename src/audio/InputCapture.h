@@ -39,9 +39,12 @@ public:
   virtual void start() = 0;
   virtual i18n::Message stop() noexcept = 0;
   virtual i18n::Message close() noexcept = 0;
+  virtual void setVolumeControlEnabled(bool) {}
 signals:
   void log(QJsonArray text);
   void devicesChanged();
+  void volumeRequested(double db);
+  void volumeStepRequested(int direction);
 };
 QList<DriverInfo> inputDevices();
 std::unique_ptr<InputCapture>

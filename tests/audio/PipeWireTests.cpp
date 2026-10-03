@@ -2,6 +2,7 @@
 #include "audio/PipeWireBuffer.h"
 #include "audio/PipeWireCapture.h"
 #include "audio/PipeWireCatalog.h"
+#include "audio/PipeWireRecovery.h"
 #include <QFile>
 #include <QProcess>
 #include <QTemporaryDir>
@@ -18,6 +19,49 @@ public:
 class Tests : public QObject {
   Q_OBJECT
 private slots:
+  void recoveryTracksTargetsAndElapsedTime() {
+    PipeWireSource source{"bluez:adapter/phone", "Phone", "50", "aac", 10, 0, 0};
+    PipeWireRetry retry;
+    const auto now = PipeWireRetry::Clock::now();
+    QVERIFY(!retry.waiting(source, now));
+    retry.failed(source, now);
+    auto metadata = source;
+    metadata.rate = 44100; metadata.channels = 2; metadata.name = "Renamed phone";
+    QVERIFY(samePipeWireTarget(source, metadata));
+    QVERIFY(retry.waiting(metadata, now + std::chrono::milliseconds(1999)));
+    QVERIFY(!retry.waiting(metadata, now + std::chrono::seconds(2)));
+    metadata.rate = 48000;
+    QVERIFY(samePipeWireTarget(source, metadata));
+    // A replacement node or codec can recover immediately, even if the old
+    // failed source never disappeared from a catalog snapshot.
+    auto replaced = metadata;
+    replaced.serial = "51";
+    QVERIFY(!retry.waiting(replaced, now));
+    replaced = metadata; replaced.node = 11;
+    QVERIFY(!retry.waiting(replaced, now));
+    replaced = metadata; replaced.codec = "sbc";
+    QVERIFY(!retry.waiting(replaced, now));
+    replaced = metadata; replaced.id = "bluez:adapter/other";
+    QVERIFY(!retry.waiting(replaced, now));
+    retry.clear(); // Observed disappearance, followed by the same target.
+    QVERIFY(!retry.waiting(source, now));
+  }
+  void streamStateTransitions_data() {
+    QTest::addColumn<int>("previous");
+    QTest::addColumn<int>("next");
+    QTest::addColumn<bool>("invalidates");
+    QTest::newRow("connect") << int(PW_STREAM_STATE_UNCONNECTED) << int(PW_STREAM_STATE_CONNECTING) << false;
+    QTest::newRow("negotiate") << int(PW_STREAM_STATE_CONNECTING) << int(PW_STREAM_STATE_PAUSED) << false;
+    QTest::newRow("pause") << int(PW_STREAM_STATE_STREAMING) << int(PW_STREAM_STATE_PAUSED) << false;
+    QTest::newRow("resume") << int(PW_STREAM_STATE_PAUSED) << int(PW_STREAM_STATE_STREAMING) << false;
+    QTest::newRow("error") << int(PW_STREAM_STATE_STREAMING) << int(PW_STREAM_STATE_ERROR) << true;
+    QTest::newRow("disconnect") << int(PW_STREAM_STATE_PAUSED) << int(PW_STREAM_STATE_UNCONNECTED) << true;
+    QTest::newRow("already-invalid") << int(PW_STREAM_STATE_ERROR) << int(PW_STREAM_STATE_UNCONNECTED) << false;
+  }
+  void streamStateTransitions() {
+    QFETCH(int, previous); QFETCH(int, next); QFETCH(bool, invalidates);
+    QCOMPARE(pipeWireStateInvalidates(pw_stream_state(previous), pw_stream_state(next)), invalidates);
+  }
   void variableBlocksAndDiscontinuities() {
     CaptureQueue queue(352, 1408, 1408, 8);
     PipeWireBuffer buffer(queue, 1);
@@ -184,6 +228,10 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
     policy.setProcessEnvironment(environment);
     policy.start("wireplumber", {});
     QVERIFY(policy.waitForStarted());
+    // Each data row uses a different server/socket. Do not inherit a catalog
+    // snapshot (or a pending server-loss event) from the previous row.
+    auto *catalog = &PipeWireCatalog::instance();
+    const auto disposeCatalog = qScopeGuard([&] { delete catalog; });
     auto available = [] {
       const auto devices = inputDevices();
       return std::any_of(devices.begin(), devices.end(), [](const auto &d) { return d.id == "pipewire:test-source"; });
@@ -213,7 +261,21 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
       });
     };
     QTRY_VERIFY_WITH_TIMEOUT(logged("obtained=44100 Hz, 2 channels, Float32"), 3000);
+    // Drain at device speed so the test itself does not cause queue overflow.
+    // Let catalog format updates settle: metadata must not reopen the stream.
+    const auto initialEpoch = stream.queue->generation.load();
+    QElapsedTimer stable;
+    stable.start();
+    while (stable.elapsed() < 400) {
+      while (stream.queue->peek(l, r)) stream.queue->pop();
+      QTest::qWait(5);
+    }
+    QCOMPARE(stream.queue->generation.load(), initialEpoch);
     QVERIFY(logged("source PCM rate=" + QString::number(sourceRate)));
+    const auto initialNegotiations = std::count_if(logs.begin(), logs.end(), [](const auto &entry) {
+      return i18n::Message(entry[0].toJsonArray()).render().contains("Negotiating ");
+    });
+    QCOMPARE(initialNegotiations, 1);
     const auto oldEpoch = stream.queue->generation.load();
     server.terminate(); QVERIFY(server.waitForFinished(3000));
     QTRY_VERIFY_WITH_TIMEOUT(stream.queue->generation.load() > oldEpoch, 3000);

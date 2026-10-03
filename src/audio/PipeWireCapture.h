@@ -11,6 +11,7 @@ public:
   void start() override;
   i18n::Message stop() noexcept override;
   i18n::Message close() noexcept override;
+  void setVolumeControlEnabled(bool) override;
 private:
   struct State;
   std::unique_ptr<State> state_;

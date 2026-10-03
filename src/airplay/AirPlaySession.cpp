@@ -839,6 +839,14 @@ void AirPlaySession::prepared() {
            i18n::text(i18n::Id::WaitingForPTPSynchronization));
   settle_.start(int(std::ceil(timing_.settle * 1000)));
 }
+void AirPlaySession::inputVolume(double db) {
+  if (state_ == State::Streaming && std::isfinite(db) && db >= -144 && db <= 0)
+    volume(db);
+}
+void AirPlaySession::inputVolumeStep(int direction) {
+  if (direction == 1 || direction == -1)
+    remoteVolume(direction == 1 ? "volumeup" : "volumedown", 0);
+}
 void AirPlaySession::remoteVolume(const QString &action, double value) {
   if (state_ != State::Streaming)
     return;
