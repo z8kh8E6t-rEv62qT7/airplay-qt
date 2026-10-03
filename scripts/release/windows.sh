@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -eo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/release/logging.sh
 : "${CONDA:?setup-miniconda must provide CONDA}"
+release_phase conda-initialization
+# Conda's generated activation code exports environment values. Keep it out
+# of command traces; inherited error traps still report failures inside it.
+set +x
 # Initialize the MSYS2 shell explicitly; do not depend on login profiles.
 # Capture first so a failed hook cannot be hidden by eval's exit status.
 conda_hook="$("$(cygpath -u "$CONDA")/Scripts/conda.exe" shell.bash hook)"
 eval "$conda_hook"
 conda activate release
+set -x
 set -u
 : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
 : "${MSYS_ROOT:?MSYS_ROOT is required}"
@@ -16,10 +22,14 @@ stage="$root/build/release-windows-stage"
 output="$root/dist/release"
 mkdir -p "$output" "$stage" build/release-logs
 
+release_phase dependencies
+set +x
 conda install --yes --override-channels --channel conda-forge 'qt6-main=6.8.3' openssl
+set -x
 prefix="$(cygpath -u "$CONDA_PREFIX")/Library"
 plist="$(cygpath -u "$MSYS_ROOT")/clang64"
 asio="$plist/include/asiosdk"
+printf 'Dependency paths: conda=%s libplist=%s asio=%s\n' "$prefix" "$plist" "$asio"
 export PATH="$prefix/bin:$prefix/lib/qt6/bin:$PATH"
 asio_package="$(pacman -Q mingw-w64-clang-x86_64-asiosdk)"
 if [[ ! "$asio_package" =~ ^mingw-w64-clang-x86_64-asiosdk\ 2\.3\.4-[0-9]+$ ]]; then
@@ -36,9 +46,12 @@ test -f "$asio/common/iasiodrv.h"
 
 # Use native Windows paths for CMake cache entries; /c/... paths must not
 # leak into MSVC's generated project files or the deployment scripts.
+release_phase configure
 cmake -S "$(cygpath -m "$root")" -B "$(cygpath -m "$build")" -G 'Visual Studio 18 2026' -A x64 -T v143 -DCMAKE_CONFIGURATION_TYPES=Release "-DCMAKE_PREFIX_PATH=$(cygpath -m "$prefix")" "-DOPENSSL_ROOT_DIR=$(cygpath -m "$prefix")" "-DLIBPLIST_ROOT=$(cygpath -m "$plist")" "-DASIO_SDK_ROOT=$(cygpath -m "$asio")" "-DCMAKE_IGNORE_PREFIX_PATH=$(cygpath -m "$plist")" -DBUILD_TESTING=OFF -DSMTG_RUN_VST_VALIDATOR=OFF -DAIRPLAY_BUILD_STANDALONE=ON -DAIRPLAY_BUILD_VST3=ON "-DAIRPLAY_RELEASE_VERSION=$RELEASE_VERSION"
-cmake --build "$build" --config Release --parallel 4
+release_phase build
+cmake --build "$build" --config Release --parallel 4 --verbose
 
+release_phase package
 # The existing runtime manifest is the application payload allowlist. Avoid
 # copying import libraries, intermediate files or the separate VST3 engine.
 app="$stage/AirPlayQt"
@@ -65,6 +78,7 @@ for file in "$app/AirPlayQt.exe" "$app/platforms/qwindows.dll" "$runtime/AirPlay
 done
 python scripts/release/check_version.py windows "$stage" "$RELEASE_VERSION"
 
+release_phase licenses
 licenses="$app/ThirdPartyLicenses"
 mkdir -p "$licenses"
 # Use each installed Conda package's recorded source cache for its notices.
@@ -99,6 +113,8 @@ cp -R "$licenses" "$plugin/Contents/Resources/ThirdPartyLicenses"
   7z a -t7z "$output/AirPlayQt-windows.7z" AirPlayQt
   7z a -t7z "$output/AirPlayQt.vst3-windows.7z" AirPlayQt.vst3
 )
+release_phase verify-package
 7z t "$output/AirPlayQt-windows.7z"
 7z t "$output/AirPlayQt.vst3-windows.7z"
+release_phase manifest
 python scripts/release/release.py record windows --directory "$output" --dependencies build/release-logs/dependencies.txt

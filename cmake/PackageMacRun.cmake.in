@@ -23,6 +23,7 @@ get_filename_component(qt_bin "@AIRPLAY_MACDEPLOYQT@" DIRECTORY)
 execute_process(COMMAND "${qt_bin}/qtpaths" --query QT_INSTALL_PLUGINS
   OUTPUT_VARIABLE qt_plugins OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
 set(cocoa "${qt_plugins}/platforms/libqcocoa.dylib")
+message(STATUS "Qt platform plugin source: ${cocoa}")
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_PLATFORM macos+macho)
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_TOOL otool)
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND /usr/bin/otool)
@@ -39,7 +40,10 @@ set(plugin "${payload}/AirPlayQt.vst3")
 mac_run("Stage app" /usr/bin/ditto "${APP}" "${app}")
 mac_run("Stage VST3" /usr/bin/ditto "${PLUGIN}" "${plugin}")
 file(MAKE_DIRECTORY "${app}/Contents/PlugIns/platforms")
-file(COPY "${cocoa}" DESTINATION "${app}/Contents/PlugIns/platforms")
+# Homebrew may expose the plugin through a relative compatibility symlink.
+# Copy its contents so the bundle does not retain a link into the build host.
+file(COPY_FILE "${cocoa}" "${app}/Contents/PlugIns/platforms/libqcocoa.dylib")
+message(STATUS "Qt platform plugin staged: ${app}/Contents/PlugIns/platforms/libqcocoa.dylib")
 mac_run("Qt official deployment" "@AIRPLAY_MACDEPLOYQT@" "${app}"
   -no-plugins -no-strip -no-codesign
   "-executable=${app}/Contents/PlugIns/platforms/libqcocoa.dylib")

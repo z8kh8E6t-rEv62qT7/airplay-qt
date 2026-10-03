@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts/release"
 sys.path.insert(0, str(SCRIPTS))
 import release
 import check_version
+import linux_readme
 
 SHA = "a" * 40
 ENV = {
@@ -127,6 +129,13 @@ class ReleaseChecks(unittest.TestCase):
         self.assertEqual(self.api.request.call_args.args, ("PATCH", "/releases/42", {"draft": False}))
         self.assertFalse(any("heads/master" in call.args[1] for call in self.api.request.call_args_list))
 
+    def test_release_notes_describe_arch_runtime_requirements(self):
+        assets, manifests = release.collect_assets(self.root, "1.2.3", SHA)
+        notes = release.release_notes("1.2.3", SHA, assets, manifests)
+        self.assertIn("built in Arch Linux with precompiled system packages", notes)
+        self.assertIn("runtime libraries are NOT included", notes)
+        self.assertNotIn("Ubuntu 24.04", notes)
+
     def test_corrupt_missing_or_unexpected_assets_prevent_all_writes(self):
         directory = self.root / "release-linux"
         path = directory / release.ASSETS["linux"][0]
@@ -220,6 +229,139 @@ class ReleaseChecks(unittest.TestCase):
         metadata.write_text(text.replace('"Version":"1.2.3", "Name"', '"Version":"0.1.0", "Name"'))
         with self.assertRaisesRegex(ValueError, "factory class version"):
             check_version.check(self.root, "1.2.3", "windows")
+
+
+class LinuxReadmeChecks(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        binary = self.root / "AirPlayQt"
+        binary.write_bytes(b"test executable")
+        self.responses = {
+            ("readelf", "-h", str(binary)): "Machine: Advanced Micro Devices X86-64\n",
+            ("readelf", "-d", str(binary)): "(NEEDED) Shared library: [libQt6Core.so.6]\n",
+            ("ldd", str(binary)): "libQt6Core.so.6 => /usr/lib/libQt6Core.so.6\n",
+            ("readelf", "--version-info", str(binary)):
+                "GLIBC_2.9 GLIBC_2.39 GLIBCXX_3.4.9 GLIBCXX_3.4.33 CXXABI_1.3.15\n",
+            ("pkg-config", "--modversion", "Qt6Core", "openssl", "libplist-2.0", "libpipewire-0.3"):
+                "6.11.2\n3.6.0\n2.7.0\n1.6.9\n",
+        }
+        for patcher in (
+            patch.dict(os.environ, ENV, clear=True),
+            patch.object(sys, "argv", ["linux_readme.py", str(self.root)]),
+            patch.object(linux_readme, "output", side_effect=lambda *args: self.responses[args]),
+            patch.object(linux_readme.platform, "freedesktop_os_release",
+                         return_value={"PRETTY_NAME": "Arch Linux"}),
+            patch("builtins.print"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_readme_uses_actual_distribution_and_dependency_versions(self):
+        linux_readme.main()
+        text = (self.root / "README.md").read_text(encoding="utf-8")
+        for expected in ("Built on: Arch Linux", "Qt 6.11.2", "OpenSSL 3.6.0",
+                         "libplist 2.7.0", "PipeWire 1.6.9",
+                         "ELF requirements: GLIBC_2.39, GLIBCXX_3.4.33, CXXABI_1.3.15",
+                         "Compatibility with older distributions is not guaranteed",
+                         f"/blob/{SHA}/doc/linux/README.md"):
+            self.assertIn(expected, text)
+        self.assertNotIn("Ubuntu 24.04", text)
+        self.assertNotIn("Qt 6.8.3+", text)
+        self.assertEqual({item.name for item in self.root.iterdir()}, {"AirPlayQt", "README.md"})
+
+    def test_invalid_elf_or_missing_library_prevents_readme_creation(self):
+        binary = str(self.root / "AirPlayQt")
+        cases = (
+            (("readelf", "-h", binary), "Machine: AArch64", "x86_64"),
+            (("readelf", "-d", binary), "(RPATH) Library rpath: [/workspace/build]", "runtime path"),
+            (("readelf", "-d", binary), "(RUNPATH) Library runpath: [/usr/local/lib]", "runtime path"),
+            (("readelf", "-d", binary), "", "dependency names"),
+            (("readelf", "-d", binary), "(NEEDED) Shared library: [/tmp/libQt6Core.so.6]", "dependency names"),
+            (("ldd", binary), "libQt6Core.so.6 => not found", "Unresolved"),
+        )
+        for command, response, error in cases:
+            with self.subTest(command=command, response=response):
+                with patch.dict(self.responses, {command: response}):
+                    with self.assertRaisesRegex(ValueError, error):
+                        linux_readme.main()
+                self.assertFalse((self.root / "README.md").exists())
+
+    def test_missing_system_information_fails_instead_of_inventing_build_environment(self):
+        with patch.object(linux_readme.platform, "freedesktop_os_release", side_effect=OSError):
+            with self.assertRaises(OSError):
+                linux_readme.main()
+        self.assertFalse((self.root / "README.md").exists())
+
+
+class BuildScriptChecks(unittest.TestCase):
+    def run_script(self, body):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "fixture.sh"
+            script.write_text('set -euo pipefail\nsource "$1"\n' + body, encoding="utf-8")
+            return subprocess.run(
+                ["bash", str(script), str(SCRIPTS / "logging.sh")],
+                capture_output=True, text=True, check=False,
+            )
+
+    def test_logging_reports_success_without_changing_stdout(self):
+        result = self.run_script('release_phase configure\nprintf "payload\\n"\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "payload\n")
+        self.assertIn("starting=configure", result.stderr)
+        self.assertRegex(result.stderr, r"fixture.sh:4")
+        self.assertRegex(result.stderr, r"total_elapsed=\d+s status=0")
+
+    def test_logging_preserves_failures_and_reports_location(self):
+        for body, status in (
+            ('bash -c "exit 23"', 23),
+            ('value=$(bash -c "exit 24")', 24),
+            ('(bash -c "exit 25")', 25),
+            ('bash -c "exit 26" | cat', 26),
+            # Like a failure inside Conda activation with xtrace disabled.
+            ('set +x\nactivate_fixture() { test -f /missing-release-fixture; }\nactivate_fixture', 1),
+        ):
+            with self.subTest(body=body):
+                result = self.run_script('release_phase dependencies\n' + body + '\nprintf "unreachable"\n')
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertNotIn("unreachable", result.stdout)
+                self.assertIn(f"ERROR phase=dependencies status={status}", result.stderr)
+                self.assertRegex(result.stderr, r"at=.*fixture.sh:\d+ command=")
+                self.assertRegex(result.stderr, rf"finished .*status={status}")
+
+    def test_logging_reports_explicit_exit_and_unbound_variable(self):
+        for body, status in (('exit 27', 27), ('printf "%s" "$RELEASE_UNSET_FIXTURE"', 1)):
+            with self.subTest(body=body):
+                result = self.run_script('unset RELEASE_UNSET_FIXTURE\n' + body)
+                self.assertEqual(result.returncode, status)
+                self.assertRegex(result.stderr, rf"finished .*status={status}")
+
+    def test_macos_plugin_copy_materializes_symlink_and_rejects_missing_target(self):
+        template = (SCRIPTS.parents[1] / "cmake/PackageMacRun.cmake.in").read_text(encoding="utf-8")
+        start = template.index('file(MAKE_DIRECTORY "${app}/Contents/PlugIns/platforms")')
+        end = template.index('mac_run("Qt official deployment"', start)
+        # Exercise the actual staging commands without compiling or deploying Qt.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real = root / "qt-real.dylib"
+            real.write_bytes(b"fixture plugin payload")
+            link = root / "libqcocoa.dylib"
+            link.symlink_to(real.name)
+            script = root / "copy.cmake"
+            script.write_text(
+                'cmake_minimum_required(VERSION 3.25)\n'
+                f'set(app "{root.as_posix()}/AirPlayQt.app")\n'
+                f'set(cocoa "{link.as_posix()}")\n' + template[start:end], encoding="utf-8",
+            )
+            result = subprocess.run(["cmake", "-P", str(script)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            target = root / "AirPlayQt.app/Contents/PlugIns/platforms/libqcocoa.dylib"
+            real.unlink()
+            self.assertFalse(target.is_symlink())
+            self.assertEqual(target.read_bytes(), b"fixture plugin payload")
+            result = subprocess.run(["cmake", "-P", str(script)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

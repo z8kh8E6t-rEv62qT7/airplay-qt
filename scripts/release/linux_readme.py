@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import platform
 import re
 import subprocess
 import sys
@@ -38,14 +39,17 @@ def main():
     qt, openssl, plist, pipewire = output(
         "pkg-config", "--modversion", "Qt6Core", "openssl", "libplist-2.0", "libpipewire-0.3"
     ).splitlines()
+    distribution = platform.freedesktop_os_release()["PRETTY_NAME"]
     text = f"""# AirPlayQt {os.environ['RELEASE_VERSION']} — Linux x86_64
 
 运行库不随包提供 / Runtime libraries are NOT included.
-Built on Ubuntu 24.04 (glibc 2.39); its default repositories do not supply all required library versions.
+构建系统 / Built on: {distribution}.
 构建版本 / Built with: Qt {qt} (Core/Gui/Widgets/Network/DBus + system Qt platform plugin), OpenSSL {openssl}, libplist {plist}, PipeWire {pipewire}.
-Install ABI-compatible system libraries (Qt 6.8.3+, libplist 2.7+, PipeWire 1.4+); use ldconfig-managed paths, not LD_LIBRARY_PATH.
+Install ABI-compatible system libraries matching the build versions above; use ldconfig-managed paths, not LD_LIBRARY_PATH.
 ELF requirements: {', '.join(requirements)}.
 Direct dependencies: {', '.join(sonames)}.
+以上 ELF 要求来自程序本身，依赖库可能有更高要求；不保证兼容旧版发行版。
+These ELF requirements describe the executable; its libraries may require newer versions. Compatibility with older distributions is not guaranteed.
 
 需要运行中的桌面用户会话、PipeWire、WirePlumber 0.5+、Avahi 和 D-Bus；蓝牙输入另需 BlueZ 与对应音频 codec。
 Use a running desktop user session with PipeWire, WirePlumber 0.5+, Avahi and D-Bus; Bluetooth capture also needs BlueZ and its audio codecs.

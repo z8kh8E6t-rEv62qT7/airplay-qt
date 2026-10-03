@@ -145,7 +145,7 @@ def collect_assets(directory, version, sha):
 
 def release_notes(version, sha, assets, manifests):
     lines = [f"AirPlayQt {version}", "", f"Source commit: `{sha}`", "",
-             "- Linux x86_64: built on Ubuntu 24.04; runtime libraries are NOT included. See the bundled README.",
+             "- Linux x86_64: built in Arch Linux with precompiled system packages; runtime libraries are NOT included. See the bundled README for compatibility requirements.",
              "- Windows x64: application and VST3 include runtime libraries; ASIO driver required for capture.",
              "- macOS arm64: macOS 27.0+, ad-hoc signed.", "",
              "CI builds and packages only; it does not run application tests or VST3 validator.", "",

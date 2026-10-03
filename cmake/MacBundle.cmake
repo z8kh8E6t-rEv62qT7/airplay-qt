@@ -1,6 +1,7 @@
 # Shared deployment/audit primitives. All paths are arguments, never shell text.
 cmake_minimum_required(VERSION 3.25)
 function(mac_run label)
+  message(STATUS "${label}: ${ARGN}")
   execute_process(COMMAND ${ARGN} RESULT_VARIABLE result OUTPUT_VARIABLE output
     ERROR_VARIABLE errors TIMEOUT 180)
   file(APPEND "${REPORT}" "\n## ${label}\n${output}${errors}\n")

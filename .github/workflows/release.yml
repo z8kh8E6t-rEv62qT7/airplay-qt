@@ -76,8 +76,17 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p build/release-logs
-          bash scripts/release/linux.sh 2>&1 | tee build/release-logs/linux.log
+          {
+            source scripts/release/logging.sh
+            release_phase docker-pull
+            docker pull --platform linux/amd64 archlinux:latest
+            ARCH_IMAGE="$(docker image inspect archlinux:latest --format '{{index .RepoDigests 0}}')"
+            printf 'Arch image: %s\n' "$ARCH_IMAGE"
+            release_phase docker-build
+            docker run --rm --platform linux/amd64 --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" --workdir /workspace --env RELEASE_VERSION --env GITHUB_SHA --env GITHUB_REPOSITORY --env ARCH_IMAGE="$ARCH_IMAGE" "$ARCH_IMAGE" bash scripts/release/linux.sh
+          } 2>&1 | tee build/release-logs/linux.log
       - name: Build and package Windows
         if: matrix.platform == 'windows'
         env:
@@ -91,6 +100,7 @@ jobs:
         if: matrix.platform == 'macos'
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p build/release-logs
           bash scripts/release/macos.sh 2>&1 | tee build/release-logs/macos.log
       - name: Preserve diagnostics
@@ -98,7 +108,14 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-logs-${{ matrix.platform }}
-          path: build/release-logs/
+          path: |
+            build/release-logs/
+            build/linux-release/CMakeFiles/CMakeConfigureLog.yaml
+            build/release-windows/CMakeFiles/CMakeConfigureLog.yaml
+            build/macos-release/CMakeFiles/CMakeConfigureLog.yaml
+            build/macos-release/package-macos-stage/packaging.txt
+            build/macos-release/PackageMacRun.cmake
+            dist/macos-arm64/packaging.txt
           if-no-files-found: ignore
       - name: Upload packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

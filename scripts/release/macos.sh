@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/release/logging.sh
 : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
 [[ "$(uname -m)" == arm64 ]]
 [[ "$(sw_vers -productVersion)" == 27.* ]]
+release_phase dependencies
 brew install cmake ninja pkg-config qt openssl@3 libplist sevenzip
 mkdir -p build/release-logs dist/release
 {
@@ -11,8 +13,11 @@ mkdir -p build/release-logs dist/release
   xcodebuild -version
   brew list --versions
 } > build/release-logs/dependencies.txt
+release_phase configure
 cmake --preset macos-release -DBUILD_TESTING=OFF -DSMTG_RUN_VST_VALIDATOR=OFF -DAIRPLAY_CLI_TEST=OFF -DAIRPLAY_RELEASE_VERSION="$RELEASE_VERSION"
-cmake --build --preset macos-release --target package-macos
+release_phase build
+cmake --build --preset macos-release --target package-macos --verbose
+release_phase package
 python3 scripts/release/check_version.py macos dist/macos-arm64 "$RELEASE_VERSION"
 root="$PWD"
 (
@@ -21,6 +26,7 @@ root="$PWD"
   7zz a -t7z -snl "$root/dist/release/AirPlayQt.app-macos.7z" AirPlayQt.app
   7zz a -t7z -snl "$root/dist/release/AirPlayQt.vst3-macos.7z" AirPlayQt.vst3
 )
+release_phase verify-package
 for archive in dist/release/*.7z; do
   7zz t "$archive"
   7zz x "$archive" "-o$root/build/release-macos-archive-check" -y
@@ -29,4 +35,5 @@ for bundle in AirPlayQt.app AirPlayQt.vst3; do
   codesign --verify --deep --strict "$root/build/release-macos-archive-check/$bundle"
   cmake "-DAUDIT_ROOT=$root/build/release-macos-archive-check/$bundle" "-DREPORT=$root/build/release-logs/archive-audit.txt" -P cmake/MacBundle.cmake
 done
+release_phase manifest
 python3 scripts/release/release.py record macos --directory dist/release --dependencies build/release-logs/dependencies.txt
