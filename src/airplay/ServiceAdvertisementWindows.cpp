@@ -3,8 +3,11 @@
 #include "app/Message.h"
 #include <QTimer>
 #include <atomic>
-#include <windns.h>
+// windns.h needs the Windows scalar types provided by winsock2.h.
+// clang-format off
 #include <winsock2.h>
+#include <windns.h>
+// clang-format on
 
 namespace airplay {
 // Native completion never touches Qt. Drain native work before releasing the
