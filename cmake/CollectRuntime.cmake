@@ -37,7 +37,12 @@ function(airplay_collect_runtime binary platform destination)
   file(SHA256 "${platform}" hash)
   string(APPEND checksums "${hash}  platforms/qwindows.dll\n")
   file(SHA256 "${binary}" hash)
-  string(APPEND checksums "${hash}  ${name}\n")
-  file(WRITE "${destination}/runtime-sha256.txt" "${checksums}")
-  file(WRITE "${destination}/runtime-dependencies.txt" "${manifest}${platform}\n${binary}\n")
+  string(APPEND checksums "${hash}  ${name}")
+  # MSYS2 checksum verification and payload copying require LF-delimited paths.
+  # Substitute whole values once so path text is not treated as a template;
+  # file(CONFIGURE) supplies each file's final newline.
+  file(CONFIGURE OUTPUT "${destination}/runtime-sha256.txt"
+    CONTENT "@checksums@" @ONLY NEWLINE_STYLE LF)
+  file(CONFIGURE OUTPUT "${destination}/runtime-dependencies.txt"
+    CONTENT "@manifest@@platform@\n@binary@" @ONLY NEWLINE_STYLE LF)
 endfunction()
