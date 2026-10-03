@@ -361,3 +361,4 @@ MESSAGE(LinuxInputWaiting, "Waiting for selected input; sending silence", "等�
 MESSAGE(LinuxInputBuffering, "Buffering selected input; sending silence", "缓冲所选输入；发送静音")
 MESSAGE(LinuxInputPlaying, "Selected input is playing", "所选输入正在播放")
 MESSAGE(LinuxInputReset, "Input discontinuity; discarding local audio and buffering again", "输入中断；清除本地音频并重新缓冲")
+MESSAGE(WaitingForSavedInputDevice, "Waiting for saved input device; selection will be restored when it appears.", "等待已保存的输入设备；设备出现后自动恢复选择。")

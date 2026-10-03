@@ -144,10 +144,17 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api) {
       if (index >= 0)
         controller_.selectDriver(saved_.driverId,
                                  reinterpret_cast<void *>(winId()));
-      else if (!saved_.driverId.isEmpty())
+      else if (!saved_.driverId.isEmpty()) {
+#ifdef Q_OS_LINUX
+        // BlueZ/PipeWire enumerate asynchronously. An empty initial list is
+        // not evidence that the saved device disappeared.
+        streaming_->appendLog(
+            i18n::text(i18n::Id::WaitingForSavedInputDevice));
+#else
         streaming_->appendLog(
             i18n::text(i18n::Id::SavedDriverIsUnavailableSelectAnotherDriver));
-      else
+#endif
+      } else
         streaming_->appendLog(
             i18n::text(i18n::Id::SelectAnInputDeviceAndTwoInput) +
             app::Settings::path());
