@@ -186,7 +186,7 @@ MESSAGE(CapturePrebufferMustBeLessThanMaximum, "Capture prebuffer must be less t
 MESSAGE(AtMostTwoReceiversCanBeSaved, "At most two receivers can be saved", "保存的接收端最多为两台")
 MESSAGE(InvalidSavedReceiverName, "Invalid saved receiver name", "保存的接收端名称无效")
 MESSAGE(InvalidSavedReceiverAddressFormat, "Invalid saved receiver address format", "保存的接收端地址格式无效")
-MESSAGE(SelectTwoDifferentValidInputChannels, "Select two different valid input channels", "请选择两个不同的有效输入通道")
+MESSAGE(SelectTwoValidInputChannels, "Select two valid input channels", "请选择两个有效输入通道")
 MESSAGE(InvalidConfigurationStructureOrVersion, "Invalid configuration structure or version", "配置结构或版本无效")
 MESSAGE(InvalidSavedReceiverList, "Invalid saved receiver list", "保存的接收端列表无效")
 MESSAGE(InvalidSavedReceiverStructure, "Invalid saved receiver structure", "保存的接收端结构无效")

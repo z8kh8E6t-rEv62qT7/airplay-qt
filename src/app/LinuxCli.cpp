@@ -51,8 +51,8 @@ Options options(QCommandLineParser &parser, const QStringList &arguments) {
       {"receiver", "Required IPv4[:port], default port 7000; repeat for a stereo pair.", "endpoint"},
       {"interface", "Sending interface name; requires --local-ip.", "name"},
       {"local-ip", "Sending interface IPv4; requires --interface.", "ipv4"},
-      {"left", "Left input channel (1 or 2); must differ from --right.", "channel", "1"},
-      {"right", "Right input channel (1 or 2); must differ from --left.", "channel", "2"}});
+      {"left", "Left input channel (1 or 2).", "channel", "1"},
+      {"right", "Right input channel (1 or 2).", "channel", "2"}});
   if (!parser.parse(arguments))
     throw std::invalid_argument(parser.errorText().toStdString());
   if (!parser.positionalArguments().isEmpty())
@@ -84,8 +84,6 @@ Options options(QCommandLineParser &parser, const QStringList &arguments) {
   };
   result.settings.left = channel("left");
   result.settings.right = channel("right");
-  if (result.settings.left == result.settings.right)
-    throw std::invalid_argument("Select two different input channels");
   if (parser.isSet("interface") != parser.isSet("local-ip"))
     throw std::invalid_argument("--interface and --local-ip must be supplied together");
   if (parser.isSet("interface")) {

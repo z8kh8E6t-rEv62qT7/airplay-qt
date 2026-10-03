@@ -75,8 +75,8 @@ i18n::Message Settings::validate() const {
   } catch (const std::exception &e) {
     return i18n::fromException(e);
   }
-  if (left < 0 || right < 0 || left == right)
-    return i18n::text(i18n::Id::SelectTwoDifferentValidInputChannels);
+  if (left < 0 || right < 0)
+    return i18n::text(i18n::Id::SelectTwoValidInputChannels);
   return timing.validate();
 }
 QJsonObject Settings::json() const {

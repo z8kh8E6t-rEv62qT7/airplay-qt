@@ -123,7 +123,7 @@ void AsioCapture::controlPanel() {
   check(driver_->controlPanel(), "controlPanel");
 }
 CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
-  if (!driver_ || buffers_ || timing_ || left == right || left < 0 ||
+  if (!driver_ || buffers_ || timing_ || left < 0 ||
       right < 0 || left >= channels_.size() || right >= channels_.size())
     fail(i18n::text(i18n::Id::InvalidASIODriverOrInputChannelSelection));
   if (!std::isfinite(backlog) || backlog < .01 || backlog > 1)
@@ -173,9 +173,13 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
         preferred, preferred * formats[0].bytes, preferred * formats[1].bytes,
         size_t(std::ceil(backlog * 44100 / preferred)) + 2);
     callbacks_ = {bufferSwitch, rateChanged, message, timeSwitch};
-    check(driver_->createBuffers(bufferInfo_, 2, preferred, &callbacks_),
+    check(driver_->createBuffers(bufferInfo_, left == right ? 1 : 2, preferred,
+                                 &callbacks_),
           "createBuffers");
     buffers_ = true;
+    // Both output sides share one driver buffer when the input is identical.
+    if (left == right)
+      bufferInfo_[1] = bufferInfo_[0];
     for (const auto &info : bufferInfo_)
       if (!info.buffers[0] || !info.buffers[1])
         fail(i18n::text(i18n::Id::ASIOReturnedANullInputBuffer));

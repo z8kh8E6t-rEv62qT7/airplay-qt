@@ -106,7 +106,7 @@ QList<DriverInfo> enumerate(const CoreAudioApi &api, CaptureKind kind) {
   return devices;
 }
 void validateSelection(int left, int right, double backlog, int count) {
-  if (left < 0 || right < 0 || left == right || left >= count ||
+  if (left < 0 || right < 0 || left >= count ||
       right >= count || !std::isfinite(backlog) || backlog < .01 || backlog > 1)
     throw i18n::MessageError(
         i18n::text(i18n::Id::InvalidInputDeviceChannelsOrBacklogSetting));

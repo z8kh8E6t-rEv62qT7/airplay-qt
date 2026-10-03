@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
             right = QString::fromLocal8Bit(argv[2]).toInt(&rightOk);
   const int duration = QString::fromLocal8Bit(argv[3]).toInt(&durationOk);
   if (!leftOk || !rightOk || !durationOk || left < 1 || right < 1 ||
-      left > 65536 || right > 65536 || left == right || duration < 1 ||
+      left > 65536 || right > 65536 || duration < 1 ||
       duration > 3600)
     return 2;
   try {

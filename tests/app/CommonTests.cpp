@@ -630,6 +630,11 @@ private slots:
     QVERIFY(!settings.validate().isEmpty());
     settings = {};
     settings.left = settings.right;
+    QVERIFY(settings.validate().isEmpty());
+    settings.left = -1;
+    QVERIFY(!settings.validate().isEmpty());
+    settings.left = 0;
+    settings.right = -1;
     QVERIFY(!settings.validate().isEmpty());
   }
   void roundTrip() {
@@ -640,6 +645,9 @@ private slots:
     settings.driverId = "{driver-id}";
     settings.left = 30;
     settings.right = 31;
+    settings.save(path);
+    QCOMPARE(app::Settings::load(path).json(), settings.json());
+    settings.right = settings.left;
     settings.save(path);
     QCOMPARE(app::Settings::load(path).json(), settings.json());
     QVERIFY(!settings.json().contains("volume"));

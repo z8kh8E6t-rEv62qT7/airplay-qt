@@ -10,7 +10,8 @@ namespace audio {
 // atomic generation. A new generation drops a partial block and PLL history.
 class PipeWireBuffer {
 public:
-  explicit PipeWireBuffer(CaptureQueue &queue, int left) : queue_(queue), left_(left) { reset(); }
+  explicit PipeWireBuffer(CaptureQueue &queue, int left, int right)
+      : queue_(queue), left_(left), right_(right) { reset(); }
   void reset() noexcept {
     generation_ = queue_.generation.load(std::memory_order_acquire);
     count_ = 0;
@@ -21,7 +22,7 @@ public:
   bool append(const float *interleaved, size_t frames) noexcept {
     if (generation_ != queue_.generation.load(std::memory_order_acquire)) reset();
     for (size_t i = 0; i < frames; ++i) {
-      const float l = interleaved[2 * i + left_], r = interleaved[2 * i + 1 - left_];
+      const float l = interleaved[2 * i + left_], r = interleaved[2 * i + right_];
       if (!std::isfinite(l) || !std::isfinite(r)) { invalidate(); return false; }
       leftSamples_[count_] = l; rightSamples_[count_] = r;
       if (++count_ != 352) continue;
@@ -48,7 +49,7 @@ public:
   }
 private:
   CaptureQueue &queue_;
-  int left_;
+  int left_, right_;
   uint64_t generation_ = 0;
   size_t count_ = 0;
   std::array<float, 352> leftSamples_{}, rightSamples_{};

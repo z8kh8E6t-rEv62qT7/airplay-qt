@@ -241,7 +241,7 @@ Optional interface binding and reversed input channels:
 | `--device ID` | Required for sending; exact stable ID match, with no automatic device substitution |
 | `--receiver IPv4[:port]` | Required for sending; one or two distinct endpoints, default port 7000; no receiver scanning |
 | `--interface NAME --local-ip IPv4` | Supply together; omitted means system routing; a failed explicit binding never switches to another interface |
-| `--left N --right N` | Default 1/2 (FL/FR); only 1/2 or 2/1 accepted |
+| `--left N --right N` | Default 1/2 (FL/FR); each side accepts 1 or 2, including the same channel |
 | `--list-devices`, `--list-interfaces` | Use each alone; print results and exit |
 | `--help`, `--version` | Use each alone; no audio initialization |
 

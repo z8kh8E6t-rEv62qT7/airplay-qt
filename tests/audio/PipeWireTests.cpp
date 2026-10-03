@@ -62,9 +62,36 @@ private slots:
     QFETCH(int, previous); QFETCH(int, next); QFETCH(bool, invalidates);
     QCOMPARE(pipeWireStateInvalidates(pw_stream_state(previous), pw_stream_state(next)), invalidates);
   }
+  void channelMapping_data() {
+    QTest::addColumn<int>("left");
+    QTest::addColumn<int>("right");
+    QTest::newRow("normal") << 0 << 1;
+    QTest::newRow("reversed") << 1 << 0;
+    QTest::newRow("same-first") << 0 << 0;
+    QTest::newRow("same-second") << 1 << 1;
+  }
+  void channelMapping() {
+    QFETCH(int, left);
+    QFETCH(int, right);
+    CaptureQueue queue(352, 1408, 1408, 8);
+    PipeWireBuffer buffer(queue, left, right);
+    std::array<float, 704> samples{};
+    for (size_t i = 0; i < samples.size(); ++i) samples[i] = float(i);
+    QVERIFY(buffer.append(samples.data(), 127));
+    QVERIFY(buffer.append(samples.data() + 254, 225));
+    std::span<const std::byte> l, r;
+    QVERIFY(queue.peek(l, r));
+    for (size_t i = 0; i < 352; ++i) {
+      float a, b;
+      std::memcpy(&a, l.data() + i * sizeof(float), sizeof(float));
+      std::memcpy(&b, r.data() + i * sizeof(float), sizeof(float));
+      QCOMPARE(a, samples[2 * i + left]);
+      QCOMPARE(b, samples[2 * i + right]);
+    }
+  }
   void variableBlocksAndDiscontinuities() {
     CaptureQueue queue(352, 1408, 1408, 8);
-    PipeWireBuffer buffer(queue, 1);
+    PipeWireBuffer buffer(queue, 1, 0);
     std::array<float, 2048> samples;
     for (size_t i = 0; i < samples.size() / 2; ++i) { samples[i*2] = .1f; samples[i*2+1] = -.2f; }
     QVERIFY(buffer.append(samples.data(), 127));
@@ -88,7 +115,7 @@ private slots:
   }
   void overflowAndInvalidSamplesInvalidateInput() {
     CaptureQueue queue(352, 1408, 1408, 2);
-    PipeWireBuffer buffer(queue, 0);
+    PipeWireBuffer buffer(queue, 0, 1);
     std::array<float, 704> samples{};
     QVERIFY(buffer.append(samples.data(), 352));
     QVERIFY(buffer.append(samples.data(), 352));
@@ -109,7 +136,7 @@ private slots:
   void adaptiveClockConverges() {
     QFETCH(double, ppm);
     CaptureQueue queue(352, 1408, 1408, 8);
-    PipeWireBuffer buffer(queue, 0);
+    PipeWireBuffer buffer(queue, 0, 1);
     constexpr double target = 1764;
     double backlog = target, correction = 1.;
     // Two simulated hours; model the documented resampler output/input ratio.

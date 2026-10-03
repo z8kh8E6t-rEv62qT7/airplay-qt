@@ -241,7 +241,7 @@ wireplumber.profiles = {
 | `--device ID` | 发送时必填；精确匹配稳定设备 ID，不自动换设备 |
 | `--receiver IPv4[:port]` | 发送时必填；一至两个不同端点，默认端口 7000；不扫描接收端 |
 | `--interface NAME --local-ip IPv4` | 必须成对提供；省略时使用系统路由；指定后失效不切换其他网卡 |
-| `--left N --right N` | 默认 1/2（FL/FR）；只允许 1/2 或 2/1 |
+| `--left N --right N` | 默认 1/2（FL/FR）；左右均可选择 1 或 2，允许相同 |
 | `--list-devices`、`--list-interfaces` | 分别单独使用，输出查询结果后退出 |
 | `--help`、`--version` | 分别单独使用，不初始化音频 |
 

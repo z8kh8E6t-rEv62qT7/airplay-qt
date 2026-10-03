@@ -120,9 +120,10 @@ public:
                           ASIOCallbacks *cb) override {
     if (createResult != ASE_OK)
       return createResult;
-    if (count != 2 || size != frames)
+    if ((count != 1 && count != 2) || size != frames ||
+        (count == 2 && info[0].channelNum == info[1].channelNum))
       return ASE_InvalidParameter;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < count; ++i) {
       if (!info[i].isInput || info[i].channelNum < 0 ||
           info[i].channelNum >= 32)
         return ASE_InvalidParameter;
@@ -130,10 +131,11 @@ public:
       for (int half = 0; half < 2; ++half)
         info[i].buffers[half] = data[selected[i]][half].data();
     }
+    if (count == 1) selected[1] = selected[0];
     callbacks = *cb;
     allocated = true;
     if (nullBuffer)
-      info[1].buffers[1] = nullptr;
+      info[count - 1].buffers[1] = nullptr;
     return ASE_OK;
   }
   ASIOError disposeBuffers() override {
@@ -289,6 +291,8 @@ private slots:
     QTest::newRow("timed-31-32") << true << 30 << 31;
     QTest::newRow("timed-32-31") << true << 31 << 30;
     QTest::newRow("timed-1-2") << true << 0 << 1;
+    QTest::newRow("legacy-same-first") << false << 0 << 0;
+    QTest::newRow("timed-same-last") << true << 31 << 31;
   }
   void asioCallbackCopiesOwnedBytes() {
     QFETCH(bool, timed);

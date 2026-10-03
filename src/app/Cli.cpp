@@ -52,8 +52,6 @@ Options options(const QCommandLineParser &parser) {
   o.startupTimeout = number(parser, "startup-timeout", 3600);
   if (o.device.isEmpty())
     throw std::invalid_argument("--device UID is required; use --list-devices");
-  if (o.left == o.right)
-    throw std::invalid_argument("Select two different input channels");
   try {
     for (const auto &value : parser.values("receiver"))
       o.receivers.append(airplay::parseReceiverEndpoint(value));

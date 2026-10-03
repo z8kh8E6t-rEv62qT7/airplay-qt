@@ -352,7 +352,7 @@ private slots:
     QVERIFY_THROWS_EXCEPTION(std::runtime_error,
                              capture.open("device-2", nullptr));
     QCOMPARE(capture.open("loopback:device-2", nullptr).size(), 4);
-    for (auto pair : {std::pair{-1, 1}, std::pair{0, 0}, std::pair{0, 4}})
+    for (auto pair : {std::pair{-1, 1}, std::pair{0, -1}, std::pair{0, 4}})
       QVERIFY_THROWS_EXCEPTION(std::runtime_error,
                                capture.prepare(pair.first, pair.second, .1));
     f.rate = 48000;
@@ -376,16 +376,22 @@ private slots:
   }
   void capturesAcrossStreams_data() {
     QTest::addColumn<bool>("planar");
-    QTest::newRow("interleaved") << false;
-    QTest::newRow("planar") << true;
+    QTest::addColumn<int>("leftChannel");
+    QTest::addColumn<int>("rightChannel");
+    QTest::newRow("interleaved") << false << 3 << 0;
+    QTest::newRow("planar") << true << 3 << 0;
+    QTest::newRow("interleaved-same") << false << 3 << 3;
+    QTest::newRow("planar-same") << true << 0 << 0;
   }
   void capturesAcrossStreams() {
     QFETCH(bool, planar);
+    QFETCH(int, leftChannel);
+    QFETCH(int, rightChannel);
     FakeAudio f;
     f.planar = planar;
     CoreAudioLoopbackCapture capture(f.api);
     capture.open("loopback:device-2", nullptr);
-    auto stream = capture.prepare(3, 0, .1);
+    auto stream = capture.prepare(leftChannel, rightChannel, .1);
     capture.start();
     std::array<std::array<float, 352>, 4> channels;
     std::array<std::array<float, 704>, 2> interleaved;
@@ -407,8 +413,8 @@ private slots:
                &timestamp, &output, &timestamp, f.context);
     std::span<const std::byte> left, right;
     QVERIFY(stream.queue->peek(left, right));
-    QCOMPARE(std::memcmp(left.data(), channels[3].data(), left.size()), 0);
-    QCOMPARE(std::memcmp(right.data(), channels[0].data(), right.size()), 0);
+    QCOMPARE(std::memcmp(left.data(), channels[leftChannel].data(), left.size()), 0);
+    QCOMPARE(std::memcmp(right.data(), channels[rightChannel].data(), right.size()), 0);
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(f.clean());
     QVERIFY(f.contractValid);

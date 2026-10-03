@@ -22,7 +22,7 @@ Built with C++20 and Qt Widgets for Windows x64, macOS, and 64-bit Linux.
 For Bluetooth audio input and AirPlay playback on Linux, see the [Linux user guide](doc/linux/README.en.md) ([中文](doc/linux/README.md)).
 
 1. Open the app, or insert AirPlayQt as an effect on a stereo track or bus in your DAW.
-2. For the app, select a capture device and two distinct channels. On macOS, output devices are labeled `(auto loopback)`. For VST3, use a 44.1 kHz project with real-time processing enabled.
+2. For the app, select a capture device and left and right input channels (which may be the same). On macOS, output devices are labeled `(auto loopback)`. For VST3, use a 44.1 kHz project with real-time processing enabled.
 3. Select one receiver or both members of an existing AirPlay stereo pair. Manual addresses use `IPv4[:port]`, with port `7000` as the default.
 4. Choose a network interface if needed, then click **Start**.
 5. Adjust receiver volume or mute during playback. Click **Stop** to end the session.
@@ -39,7 +39,7 @@ On macOS, allow microphone access for input devices, system audio recording for 
 >
 > **Windows audio capture:** Please install an ASIO-compatible virtual audio device, such as **VB-Audio Matrix**, and connect the audio inputs to the outputs in its routing configuration, similarly to Loopback on macOS.
 
-Auto loopback captures applications playing through the selected output device using native Core Audio taps; no virtual audio driver is required. Local playback of the tapped audio is muted while capture runs and resumes when capture stops. Selecting a device alone does not mute it. AirPlayQt does not change the system default output, device volume, or sample rate. Set the output device to **44.1 kHz** in **Audio MIDI Setup** before starting. Multi-stream output channels are listed in device stream order; choose two distinct channels. Devices with fewer than two channels are listed but cannot start a stereo session. Device removal or format changes stop sending; select the device again before restarting. Any native cleanup failure is reported and must be retried before switching capture devices.
+Auto loopback captures applications playing through the selected output device using native Core Audio taps; no virtual audio driver is required. Local playback of the tapped audio is muted while capture runs and resumes when capture stops. Selecting a device alone does not mute it. AirPlayQt does not change the system default output, device volume, or sample rate. Set the output device to **44.1 kHz** in **Audio MIDI Setup** before starting. Multi-stream output channels are listed in device stream order; choose left and right input channels (which may be the same). For a mono device, select its channel for both inputs. Device removal or format changes stop sending; select the device again before restarting. Any native cleanup failure is reported and must be retried before switching capture devices.
 
 The Windows app requests real-time process priority and exits if that request fails; elevated execution may be required.
 

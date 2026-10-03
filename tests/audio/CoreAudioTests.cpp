@@ -136,22 +136,29 @@ private slots:
     QVERIFY(!f.callback);
     QVERIFY(f.listeners.empty());
     f.rate = 44100;
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 0, .1));
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 4, .1));
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(-1, 1, .1));
   }
   void channelMappingAndPartialBlocks_data() {
     QTest::addColumn<bool>("planar");
-    QTest::newRow("interleaved") << false;
-    QTest::newRow("noninterleaved") << true;
+    QTest::addColumn<int>("leftChannel");
+    QTest::addColumn<int>("rightChannel");
+    QTest::newRow("interleaved") << false << 3 << 1;
+    QTest::newRow("noninterleaved") << true << 3 << 1;
+    QTest::newRow("interleaved-same-first") << false << 0 << 0;
+    QTest::newRow("interleaved-same-last") << false << 3 << 3;
+    QTest::newRow("noninterleaved-same-first") << true << 0 << 0;
+    QTest::newRow("noninterleaved-same-last") << true << 3 << 3;
   }
   void channelMappingAndPartialBlocks() {
     QFETCH(bool, planar);
+    QFETCH(int, leftChannel);
+    QFETCH(int, rightChannel);
     FakeAudio f;
     f.planar = planar;
     CoreAudioCapture capture(f.api);
     capture.open("test-device", nullptr);
-    auto stream = capture.prepare(3, 1, .1);
+    auto stream = capture.prepare(leftChannel, rightChannel, .1);
     capture.start();
     std::array<std::array<float, 400>, 4> data{};
     std::array<float, 1600> interleaved{};
@@ -171,8 +178,8 @@ private slots:
     QCOMPARE(stream.queue->capturedFrames(), uint64_t(352));
     std::span<const std::byte> left, right;
     QVERIFY(stream.queue->peek(left, right));
-    QCOMPARE(std::memcmp(left.data(), data[3].data(), left.size()), 0);
-    QCOMPARE(std::memcmp(right.data(), data[1].data(), right.size()), 0);
+    QCOMPARE(std::memcmp(left.data(), data[leftChannel].data(), left.size()), 0);
+    QCOMPARE(std::memcmp(right.data(), data[rightChannel].data(), right.size()), 0);
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(!f.callback);
     QVERIFY(f.listeners.empty());

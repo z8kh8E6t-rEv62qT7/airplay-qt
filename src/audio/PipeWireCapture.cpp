@@ -32,7 +32,7 @@ struct PipeWireCapture::State {
   std::atomic<int> processError{0};
   std::atomic<uint64_t> processed{0};
   uint64_t loggedFrames = 0;
-  int left = 0;
+  int left = 0, right = 1;
   explicit State(PipeWireCapture &o) : owner(o) {
     QObject::connect(&volume, &BluetoothVolume::absoluteRequested, &owner, &InputCapture::volumeRequested);
     QObject::connect(&volume, &BluetoothVolume::stepRequested, &owner, &InputCapture::volumeStepRequested);
@@ -138,7 +138,7 @@ struct PipeWireCapture::State {
     processError.store(0);
     processed.store(0);
     loggedFrames = 0;
-    buffer = std::make_unique<PipeWireBuffer>(*queue, left);
+    buffer = std::make_unique<PipeWireBuffer>(*queue, left, right);
     PipeWireLock lock(catalog.loop());
     state = PW_STREAM_STATE_UNCONNECTED; nativeError.clear(); format = {};
     const auto serial = source.serial.toUtf8();
@@ -230,10 +230,11 @@ QList<ChannelInfo> PipeWireCapture::open(const QString &id, void *) {
 }
 CaptureStream PipeWireCapture::prepare(int left, int right, double maxBacklog) {
   stop();
-  if (state_->selected.isEmpty() || left < 0 || left > 1 || right != 1 - left ||
+  if (state_->selected.isEmpty() || left < 0 || left > 1 || right < 0 || right > 1 ||
       !std::isfinite(maxBacklog) || maxBacklog <= 0 || maxBacklog > 1)
     throw i18n::MessageError(i18n::text(i18n::Id::SelectAValidInputDevice));
   state_->left = left;
+  state_->right = right;
   const auto blocks = size_t(std::ceil(maxBacklog * 44100 / 352)) + 2;
   state_->queue = std::make_shared<CaptureQueue>(352, 352 * sizeof(float), 352 * sizeof(float), blocks);
   CaptureStream result{state_->queue, {4, 32, false, true}, {4, 32, false, true}, 352};
