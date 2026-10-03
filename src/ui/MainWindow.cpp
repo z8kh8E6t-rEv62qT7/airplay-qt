@@ -8,6 +8,10 @@
 #include <QSignalBlocker>
 #include <QScopedValueRollback>
 #include <QVBoxLayout>
+#ifdef Q_OS_MACOS
+#include <QApplication>
+#include <QMenuBar>
+#endif
 
 namespace ui {
 MainWindow::MainWindow(const airplay::DiscoveryApi &api,
@@ -77,6 +81,40 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api,
   form->addRow(label(i18n::text(i18n::Id::RightInputChannel)), right_);
   streaming_->addInputWidget(input);
   layout->addWidget(streaming_, 1);
+#ifdef Q_OS_MACOS
+  qApp->setQuitOnLastWindowClosed(false);
+  auto *windowMenu = menuBar()->addMenu(QString());
+  streaming_->bindText(windowMenu, "title", i18n::text(i18n::Id::WindowMenu));
+  auto *closeWindow = windowMenu->addAction(QString());
+  closeWindow->setObjectName("closeWindow");
+  streaming_->bindText(closeWindow, "text", i18n::text(i18n::Id::CloseWindow));
+  // Qt maps CTRL to the Command key on macOS.
+  closeWindow->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
+  connect(closeWindow, &QAction::triggered, this, &QWidget::close);
+  auto *quit = windowMenu->addAction(QString());
+  quit->setObjectName("quitApplication");
+  quit->setMenuRole(QAction::QuitRole);
+  quit->setShortcut(QKeySequence::Quit);
+  quit->setShortcutContext(Qt::ApplicationShortcut);
+  streaming_->bindText(quit, "text", i18n::text(i18n::Id::QuitAirPlayQt));
+  connect(quit, &QAction::triggered, qApp, &QCoreApplication::quit);
+  connect(qApp, &QGuiApplication::applicationStateChanged, this,
+          [this](Qt::ApplicationState state) {
+    if (state == Qt::ApplicationActive && !closing_ &&
+        (!isVisible() || isMinimized())) {
+      showNormal();
+      raise();
+      activateWindow();
+    }
+  });
+  connect(qApp, &QCoreApplication::aboutToQuit, this, [this] {
+    closing_ = true;
+    refresh_->setEnabled(false);
+    streaming_->cancelDiscovery();
+    controller_.stop();
+    controller_.session().shutdown();
+  });
+#endif
   connect(streaming_, &StreamingPanel::languageChanged, this, [this] {
     if (!loading_)
       controller_.saveLanguage(streaming_->language());
@@ -267,6 +305,11 @@ void MainWindow::setBusy(bool busy) {
   streaming_->setBusy(busy);
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
+#ifdef Q_OS_MACOS
+  // Closing only hides the widget; the controller and its session stay alive.
+  // Explicit application quit is cleaned up by aboutToQuit above.
+  event->accept();
+#else
   if (!closing_) {
     closing_ = true;
     refresh_->setEnabled(false);
@@ -277,5 +320,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     event->ignore();
   else
     event->accept();
+#endif
 }
 } // namespace ui

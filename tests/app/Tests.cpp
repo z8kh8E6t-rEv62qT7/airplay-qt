@@ -6,6 +6,11 @@
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest>
+#ifdef Q_OS_MACOS
+#include "../airplay/TestReceiver.h"
+#include <QAction>
+#include <QProcess>
+#endif
 namespace app {
 class ControllerTestAccess {
 public:
@@ -43,7 +48,7 @@ airplay::DiscoveryApi unavailableDiscovery() {
 struct CaptureState {
   QList<audio::DriverInfo> devices{{"a", "Same name"}, {"b", "Same name"}};
   QList<audio::ChannelInfo> channels{{0, "First", 0}, {1, "Second", 0}, {2, "Third", 0}};
-  int enumerations = 0, creations = 0, opens = 0, closes = 0;
+  int enumerations = 0, creations = 0, opens = 0, closes = 0, starts = 0, stops = 0;
   bool failEnumeration = false, failOpen = false, failClose = false;
   QString openedId;
   QPointer<audio::InputCapture> capture;
@@ -63,8 +68,8 @@ public:
     state_.openedId.clear();
     return {};
   }
-  i18n::Message stop() noexcept override { return {}; }
-  void start() override {}
+  i18n::Message stop() noexcept override { ++state_.stops; return {}; }
+  void start() override { ++state_.starts; }
   void controlPanel() override {}
   audio::CaptureStream prepare(int, int, double) override { return {}; }
 private:
@@ -351,10 +356,101 @@ private slots:
     app::ControllerTestAccess::permissionPending(test.controller(), false);
     QVERIFY(test.refresh()->isEnabled());
     test.window->close();
+#ifdef Q_OS_MACOS
+    // The reusable window is hidden, so its controls remain ready on reopen.
+    QVERIFY(test.refresh()->isEnabled());
+#else
     QVERIFY(!test.refresh()->isEnabled());
     test.refresh()->click();
     QCOMPARE(test.state.enumerations, queries);
+#endif
   }
+#ifdef Q_OS_MACOS
+  void macCloseKeepsStreamingAndDockRestores_data() {
+    QTest::addColumn<int>("method");
+    QTest::newRow("window-close") << 0;
+    QTest::newRow("command-w") << 1;
+  }
+  void macCloseKeepsStreamingAndDockRestores() {
+    QFETCH(int, method);
+    RefreshWindow fixture;
+    QTRY_VERIFY(fixture.refresh()->isEnabled());
+    QVERIFY(!qApp->quitOnLastWindowClosed());
+    fixture.window->show();
+    fixture.window->activateWindow();
+    QTRY_VERIFY(fixture.window->isActiveWindow());
+    test::Receiver receiver("background");
+    app::Timing timing;
+    timing.settle = 0;
+    timing.prebuffer = .008;
+    audio::CaptureStream stream{
+        std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
+        audio::format(16), audio::format(16), 352};
+    stream.gapPolicy = audio::GapPolicy::Silence;
+    auto &session = fixture.controller().session();
+    session.start(timing, stream, {{QHostAddress::LocalHost, receiver.port()}},
+                  {[] {}, [] {}, false});
+    QTRY_VERIFY(session.streaming());
+    QTRY_VERIFY(!receiver.packets.isEmpty());
+    const auto stops = fixture.state.stops;
+    const auto opens = fixture.state.opens;
+    const auto config = fixture.config();
+    auto *log = fixture.window->findChild<QPlainTextEdit *>("sessionLog");
+    QVERIFY(log);
+    emit session.log(i18n::Message("background-log-marker"));
+    if (method == 0)
+      fixture.window->close();
+    else
+      QTest::keyClick(fixture.window.get(), Qt::Key_W, Qt::ControlModifier);
+    QVERIFY(!fixture.window->isVisible());
+    const auto packets = receiver.packets.size();
+    QTRY_VERIFY(receiver.packets.size() > packets + 2);
+    QCOMPARE(fixture.state.stops, stops);
+    QVERIFY(session.streaming());
+    // Qt's Cocoa delegate emits this on every Dock reopen, even when active.
+    qApp->applicationStateChanged(Qt::ApplicationActive);
+    QVERIFY(fixture.window->isVisible());
+    QVERIFY(session.streaming());
+    QVERIFY(log->toPlainText().contains("background-log-marker"));
+    QCOMPARE(fixture.state.opens, opens);
+    QCOMPARE(fixture.devices()->currentData().toString(), QString("b"));
+    QCOMPARE(fixture.left()->currentData().toInt(), 2);
+    QCOMPARE(fixture.config(), config);
+    fixture.controller().stop();
+    QTRY_VERIFY(!session.busy());
+    QVERIFY(fixture.state.stops > stops);
+  }
+  void macCloseDuringInitializationAndPermission() {
+    RefreshWindow fixture;
+    fixture.window->show();
+    fixture.window->close();
+    QTRY_VERIFY(fixture.refresh()->isEnabled());
+    QVERIFY(!fixture.window->isVisible());
+    app::ControllerTestAccess::permissionPending(fixture.controller(), true);
+    const auto stops = fixture.state.stops;
+    fixture.window->show();
+    fixture.window->close();
+    QVERIFY(fixture.controller().busy());
+    QCOMPARE(fixture.state.stops, stops);
+    qApp->applicationStateChanged(Qt::ApplicationActive);
+    QVERIFY(fixture.window->isVisible());
+    QVERIFY(!fixture.refresh()->isEnabled());
+    app::ControllerTestAccess::permissionPending(fixture.controller(), false);
+  }
+  void macQuit_data() {
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("visible") << QString("visible");
+    QTest::newRow("hidden") << QString("hidden");
+  }
+  void macQuit() {
+    QFETCH(QString, mode);
+    QProcess child;
+    child.start(QCoreApplication::applicationFilePath(), {"--quit-child", mode});
+    QVERIFY(child.waitForFinished(10000));
+    QCOMPARE(child.exitStatus(), QProcess::NormalExit);
+    QVERIFY2(child.exitCode() == 0, child.readAllStandardError().constData());
+  }
+#endif
   void guiSmoke() {
     const auto api = unavailableDiscovery();
     ui::MainWindow window(api);
@@ -368,7 +464,7 @@ private slots:
     QVERIFY(panel && toggle && input && refresh);
     QCOMPARE(refresh->text(), QString("Refresh"));
     QVERIFY(!refresh->isEnabled());
-    const auto widgetCount = window.findChildren<QWidget *>().size();
+    const auto widgetCount = window.centralWidget()->findChildren<QWidget *>().size();
     const auto originalTitle = input->title();
     auto *devices = window.findChild<QComboBox *>("captureDevice");
     QVERIFY(devices);
@@ -398,7 +494,7 @@ private slots:
     QCOMPARE(devices->currentText(), QString("MacBook Speakers(自动环回)"));
     QCOMPARE(devices->currentData().toString(), loopback.id);
     QCOMPARE(selectionChanged.count(), 0);
-    QCOMPARE(window.findChildren<QWidget *>().size(), widgetCount);
+    QCOMPARE(window.centralWidget()->findChildren<QWidget *>().size(), widgetCount);
     QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
                                "/MainWindow-zh.png"));
     toggle->click();
@@ -409,5 +505,58 @@ private slots:
     window.close();
   }
 };
+#ifdef Q_OS_MACOS
+int main(int argc, char **argv) {
+  QApplication application(argc, argv);
+  if (application.arguments().contains("--quit-child")) {
+    RefreshWindow fixture;
+    fixture.window->show();
+    test::Receiver receiver("quit");
+    QTimer quitWhenStreaming;
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(&watchdog, &QTimer::timeout, &application,
+                     [] { QCoreApplication::exit(2); });
+    watchdog.start(5000);
+    bool requested = false, cleaned = false;
+    QObject::connect(&application, &QCoreApplication::aboutToQuit, &application, [&] {
+      cleaned = !fixture.controller().busy() && fixture.state.stops > 0;
+      // Activation during termination must not bring the window back.
+      application.applicationStateChanged(Qt::ApplicationActive);
+      cleaned = cleaned && !fixture.window->isVisible();
+    });
+    QTimer::singleShot(0, &application, [&] {
+      app::Timing timing;
+      timing.settle = 0;
+      timing.prebuffer = .008;
+      audio::CaptureStream stream{
+          std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
+          audio::format(16), audio::format(16), 352};
+      stream.gapPolicy = audio::GapPolicy::Silence;
+      fixture.controller().session().start(
+          timing, stream, {{QHostAddress::LocalHost, receiver.port()}},
+          {[] {}, [] {}, false});
+      quitWhenStreaming.start(10);
+    });
+    QObject::connect(&quitWhenStreaming, &QTimer::timeout, &application, [&] {
+      if (!fixture.controller().session().streaming() || receiver.packets.isEmpty()) return;
+      quitWhenStreaming.stop();
+      if (application.arguments().contains("hidden")) fixture.window->close();
+      auto *quit = fixture.window->findChild<QAction *>("quitApplication");
+      if (!quit || quit->menuRole() != QAction::QuitRole) {
+        application.exit(3);
+        return;
+      }
+      requested = true;
+      quit->trigger();
+    });
+    const auto result = application.exec();
+    return result ? result : (requested && cleaned ? 0 : 4);
+  }
+  AppTests tests;
+  return QTest::qExec(&tests, argc, argv);
+}
+#else
 QTEST_MAIN(AppTests)
+#endif
 #include "Tests.moc"
