@@ -376,6 +376,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
             setLevels(l, r);
             bindText(stats_, "text",
                      i18n::text(i18n::Id::Statistics)
+                         .arg(backlog * 44100, 0, 'f', 0)
                          .arg(backlog * 1000, 0, 'f', 1)
                          .arg(packets)
                          .arg(retransmitted)
