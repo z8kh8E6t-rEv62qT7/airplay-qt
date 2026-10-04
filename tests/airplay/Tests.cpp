@@ -39,13 +39,14 @@ struct SessionFixture {
   uint64_t captureRate = 44100;
   std::array<int16_t, 176> l{}, r{};
   SessionFixture() {
-    timing.settle = 0;
-    timing.prebuffer = .008;
-    timing.backlog = .5;
-    timing.late = .5;
-    timing.requestTimeout = .2;
-    timing.connectTimeout = .2;
-    timing.teardownTimeout = .1;
+    timing.settleMs = 0;
+    timing.packetSamples = 352;
+    timing.prebufferSamples = 512;
+    timing.backlogSamples = 32768;
+    timing.lateMs = 500;
+    timing.requestTimeoutMs = 200;
+    timing.connectTimeoutMs = 200;
+    timing.teardownTimeoutMs = 100;
     stream = {std::make_shared<audio::CaptureQueue>(176, 352, 352, 128),
               audio::format(16), audio::format(16), 176};
     endpoints = {ReceiverEndpoint{QHostAddress::LocalHost, left.port()},
@@ -138,10 +139,10 @@ private slots:
   }
   void continuousInputKeepsSessionAndDiscardsOldGenerations() {
     SessionFixture f;
-    f.timing.inputTimeout = .1;
-    f.timing.late = 1;
-    f.timing.prebuffer = .016;
-    f.timing.backlog = .1;
+    f.timing.inputTimeoutMs = 100;
+    f.timing.lateMs = 1000;
+    f.timing.prebufferSamples = 1024;
+    f.timing.backlogSamples = 8192;
     f.stream = {std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
                 audio::format(16), audio::format(16), 352};
     f.stream.gapPolicy = audio::GapPolicy::Silence;
@@ -210,8 +211,8 @@ private slots:
       f.endpoints.removeLast();
     // Feed exact packet-sized blocks, leaving room for telemetry waits without
     // turning the deliberately idle input into a transport timeout.
-    f.timing.late = 1;
-    f.timing.inputTimeout = 5;
+    f.timing.lateMs = 1000;
+    f.timing.inputTimeoutMs = 5000;
     f.stream = {std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
                 audio::format(16), audio::format(16), 352};
     AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
@@ -805,7 +806,7 @@ private slots:
     SessionFixture f;
     f.endpoints.removeLast();
     f.left.stereo.clear();
-    f.timing.keepAlive = 1;
+    f.timing.keepAliveMs = 1000;
     AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
                            f.environment);
     f.attach(session);
@@ -885,7 +886,7 @@ private slots:
     SessionFixture f;
     f.stream.rateDiagnostics = true;
     f.captureRate = 88200;
-    f.timing.backlog = .2;
+    f.timing.backlogSamples = 16384;
     AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
                            f.environment);
     f.attach(session);
@@ -940,7 +941,7 @@ private slots:
   }
   void keepAliveSerializesVolume() {
     SessionFixture f;
-    f.timing.keepAlive = 1;
+    f.timing.keepAliveMs = 1000;
     f.left.optionsDelay = f.right.optionsDelay = 100;
     AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
                            f.environment);
@@ -963,7 +964,7 @@ private slots:
   }
   void keepAliveFailureStopsGroup() {
     SessionFixture f;
-    f.timing.keepAlive = 1;
+    f.timing.keepAliveMs = 1000;
     f.right.failure = Receiver::Failure::KeepAlive;
     AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
                            f.environment);
@@ -1081,8 +1082,110 @@ private slots:
     QVERIFY_THROWS_EXCEPTION(Error, alac({}));
     std::array<int16_t, 705> odd{};
     QVERIFY_THROWS_EXCEPTION(Error, alac(odd));
-    std::array<int16_t, 704> full{};
-    QCOMPARE(alac(full).size(), qsizetype(1416));
+    std::array<int16_t, 706> tooMany{};
+    QVERIFY_THROWS_EXCEPTION(Error, alac(tooMany));
+    for (int frames : {1, 64, 352}) {
+      std::vector<int16_t> pcm(size_t(frames) * 2);
+      for (size_t i = 0; i < pcm.size(); ++i)
+        pcm[i] = int16_t(i % 2 ? -int(i) : int(i));
+      const auto encoded = alac(pcm);
+      size_t position = 0;
+      const auto bits = [&](int count) {
+        uint32_t value = 0;
+        for (int i = 0; i < count; ++i, ++position)
+          value = (value << 1) | ((uint8_t(encoded[qsizetype(position / 8)]) >>
+                                   (7 - position % 8)) &
+                                  1);
+        return value;
+      };
+      QCOMPARE(bits(3), 1u);
+      QCOMPARE(bits(4), 0u);
+      QCOMPARE(bits(12), 0u);
+      QCOMPARE(bits(1), 1u);
+      QCOMPARE(bits(2), 0u);
+      QCOMPARE(bits(1), 1u);
+      QCOMPARE(bits(32), uint32_t(frames));
+      for (int16_t value : pcm)
+        QCOMPARE(bits(16), uint32_t(uint16_t(value)));
+      QCOMPARE(bits(3), 7u);
+      const QByteArray key(32, 'k');
+      const auto first = audioPacket(key, pcm, 65535, UINT32_MAX, 0, true);
+      const auto next = audioPacket(
+          key, pcm, 0, uint32_t(UINT32_MAX + uint32_t(frames)), 1, false);
+      QCOMPARE(readBe(first, 2, 2), uint64_t(65535));
+      QCOMPARE(readBe(next, 2, 2), uint64_t(0));
+      QCOMPARE(readBe(next, 4, 4), uint64_t(frames - 1));
+      QCOMPARE(unseal(key, QByteArray(4, '\0') + next.right(8),
+                      next.mid(12, next.size() - 20), next.mid(4, 8)),
+               encoded);
+    }
+  }
+  void configuredPacketTimeline_data() {
+    QTest::addColumn<int>("packetSamples");
+    QTest::addColumn<bool>("continuous");
+    for (int packet : {1, 64, 352})
+      for (bool continuous : {false, true})
+        QTest::newRow(qPrintable(QString("%1-%2").arg(packet).arg(continuous)))
+            << packet << continuous;
+  }
+  void configuredPacketTimeline() {
+    QFETCH(int, packetSamples);
+    QFETCH(bool, continuous);
+    SessionFixture f;
+    f.timing.packetSamples = packetSamples;
+    f.timing.prebufferSamples = 1;
+    f.stream = {std::make_shared<audio::CaptureQueue>(
+                    packetSamples, size_t(packetSamples) * 2,
+                    size_t(packetSamples) * 2, 512),
+                audio::format(16), audio::format(16), packetSamples};
+    if (continuous)
+      f.stream.gapPolicy = audio::GapPolicy::Silence;
+    std::vector<int16_t> left(packetSamples, 123), right(packetSamples, -234);
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
+                           f.environment);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    connect(&session, &AirPlaySession::startCapture, &session, [&] {
+      if (!continuous)
+        for (int i = 0; i < 32; ++i)
+          QVERIFY(f.stream.queue->push(left.data(), right.data()));
+      session.captureStarted();
+    });
+    session.start();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        f.left.packets.size() >= 4 && f.right.packets.size() >= 4, 4000);
+    QCOMPARE(f.left.error,
+             QString{}); // Test receiver independently requires SETUP spf=352.
+    QCOMPARE(f.right.error, QString{});
+    const uint32_t initial = uint32_t(readBe(f.left.packets[0], 4, 4));
+    for (int i = 0; i < 4; ++i) {
+      const auto a = f.left.packets[i], b = f.right.packets[i];
+      QCOMPARE(a.left(12), b.left(12));
+      QCOMPARE(readBe(a, 4, 4),
+               uint64_t(uint32_t(initial + uint32_t(i * packetSamples))));
+      const auto decoded =
+          unseal(f.left.srp.key.left(32), QByteArray(4, '\0') + a.right(8),
+                 a.mid(12, a.size() - 20), a.mid(4, 8));
+      uint32_t actualFrames = 0;
+      for (int bit = 23; bit < 55; ++bit)
+        actualFrames = (actualFrames << 1) |
+                       ((uint8_t(decoded[bit / 8]) >> (7 - bit % 8)) & 1);
+      QCOMPARE(actualFrames, uint32_t(packetSamples));
+      std::vector<int16_t> expected;
+      for (int j = 0; j < packetSamples; ++j) {
+        expected.push_back(continuous ? 0 : 123);
+        expected.push_back(continuous ? 0 : -234);
+      }
+      QCOMPARE(decoded, alac(expected));
+    }
+    const auto retransmitted = f.left.packets.last();
+    f.left.retransmit(uint16_t(readBe(retransmitted, 2, 2)), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(f.left.retransmits.size(), 1, 1000);
+    QCOMPARE(f.left.retransmits[0].mid(4), retransmitted);
+    session.stop();
+    QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
+    const auto count = f.left.packets.size();
+    QTest::qWait(10);
+    QCOMPARE(f.left.packets.size(), count);
   }
   void successfulGroupAndRetransmit() {
     SessionFixture f;
@@ -1255,8 +1358,8 @@ private slots:
   }
   void inputTimeout() {
     SessionFixture f;
-    f.timing.inputTimeout = .1;
-    f.timing.late = 1;
+    f.timing.inputTimeoutMs = 100;
+    f.timing.lateMs = 1000;
     AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr,
                            f.environment);
     f.attach(session);

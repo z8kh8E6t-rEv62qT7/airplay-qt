@@ -131,34 +131,52 @@ private slots:
     CoreAudioCapture capture(f.api);
     QCOMPARE(capture.open("test-device", nullptr).size(), 4);
     f.rate = 48000;
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 1, 352, 8192));
     QCOMPARE(f.rate, 48000.);
     QVERIFY(!f.callback);
     QVERIFY(f.listeners.empty());
     f.rate = 44100;
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 4, .1));
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(-1, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 4, 352, 8192));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(-1, 1, 352, 8192));
   }
   void channelMappingAndPartialBlocks_data() {
     QTest::addColumn<bool>("planar");
+    QTest::addColumn<int>("packetSamples");
     QTest::addColumn<int>("leftChannel");
     QTest::addColumn<int>("rightChannel");
-    QTest::newRow("interleaved") << false << 3 << 1;
-    QTest::newRow("noninterleaved") << true << 3 << 1;
-    QTest::newRow("interleaved-same-first") << false << 0 << 0;
-    QTest::newRow("interleaved-same-last") << false << 3 << 3;
-    QTest::newRow("noninterleaved-same-first") << true << 0 << 0;
-    QTest::newRow("noninterleaved-same-last") << true << 3 << 3;
+    for (int packetSamples : {1, 64, 352}) {
+      QTest::newRow(qPrintable(QString("interleaved-%1").arg(packetSamples)))
+          << false << packetSamples << 3 << 1;
+      QTest::newRow(qPrintable(QString("noninterleaved-%1").arg(packetSamples)))
+          << true << packetSamples << 3 << 1;
+      QTest::newRow(
+          qPrintable(QString("interleaved-same-first-%1").arg(packetSamples)))
+          << false << packetSamples << 0 << 0;
+      QTest::newRow(
+          qPrintable(QString("interleaved-same-last-%1").arg(packetSamples)))
+          << false << packetSamples << 3 << 3;
+      QTest::newRow(qPrintable(
+          QString("noninterleaved-same-first-%1").arg(packetSamples)))
+          << true << packetSamples << 0 << 0;
+      QTest::newRow(
+          qPrintable(QString("noninterleaved-same-last-%1").arg(packetSamples)))
+          << true << packetSamples << 3 << 3;
+    }
   }
   void channelMappingAndPartialBlocks() {
     QFETCH(bool, planar);
+    QFETCH(int, packetSamples);
     QFETCH(int, leftChannel);
     QFETCH(int, rightChannel);
     FakeAudio f;
     f.planar = planar;
     CoreAudioCapture capture(f.api);
     capture.open("test-device", nullptr);
-    auto stream = capture.prepare(leftChannel, rightChannel, .1);
+    auto stream =
+        capture.prepare(leftChannel, rightChannel, packetSamples, 8193);
     capture.start();
     std::array<std::array<float, 400>, 4> data{};
     std::array<float, 1600> interleaved{};
@@ -175,15 +193,26 @@ private slots:
                    : static_cast<void *>(interleaved.data() + part.first * 4)};
       f.feed(b.get());
     }
-    QCOMPARE(stream.queue->capturedFrames(), uint64_t(352));
+    QCOMPARE(stream.queue->capturedFrames(),
+             uint64_t(400 / packetSamples * packetSamples));
     std::span<const std::byte> left, right;
-    QVERIFY(stream.queue->peek(left, right));
-    QCOMPARE(std::memcmp(left.data(), data[leftChannel].data(), left.size()), 0);
-    QCOMPARE(std::memcmp(right.data(), data[rightChannel].data(), right.size()), 0);
+    size_t offset = 0;
+    while (stream.queue->peek(left, right)) {
+      QCOMPARE(left.size(), size_t(packetSamples) * sizeof(float));
+      QCOMPARE(std::memcmp(left.data(), data[leftChannel].data() + offset,
+                           left.size()),
+               0);
+      QCOMPARE(std::memcmp(right.data(), data[rightChannel].data() + offset,
+                           right.size()),
+               0);
+      offset += packetSamples;
+      stream.queue->pop();
+    }
+    QCOMPARE(offset, size_t(400 / packetSamples * packetSamples));
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(!f.callback);
     QVERIFY(f.listeners.empty());
-    auto next = capture.prepare(0, 2, .1);
+    auto next = capture.prepare(0, 2, 352, 8192);
     QVERIFY(next.queue != stream.queue);
     QCOMPARE(next.queue->capturedFrames(), uint64_t(0));
     capture.start();
@@ -195,12 +224,12 @@ private slots:
     FakeAudio f;
     CoreAudioCapture capture(f.api);
     capture.open("test-device", nullptr);
-    auto stream = capture.prepare(0, 1, .01);
+    auto stream = capture.prepare(0, 1, 352, 512);
     capture.start();
     Buffers invalid{};
     f.feed(invalid.get());
     QVERIFY(stream.queue->fault.load());
-    stream = capture.prepare(0, 1, .01);
+    stream = capture.prepare(0, 1, 352, 512);
     capture.start();
     std::array<float, 352 * 4> data{};
     Buffers b{1, {{4, sizeof(data), data.data()}}};
@@ -212,7 +241,7 @@ private slots:
     FakeAudio f;
     CoreAudioCapture capture(f.api);
     capture.open("test-device", nullptr);
-    auto stream = capture.prepare(0, 1, .1);
+    auto stream = capture.prepare(0, 1, 352, 8192);
     capture.start();
     const auto listener = f.listeners.front();
     listener.callback(listener.object, 1, &listener.key, listener.context);
@@ -225,22 +254,24 @@ private slots:
     CoreAudioCapture capture(f.api);
     capture.open("test-device", nullptr);
     f.createError = -1;
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 1, 352, 8192));
     QVERIFY(f.listeners.empty());
     QVERIFY(!f.callback);
     f.createError = 0;
-    capture.prepare(0, 1, .1);
+    capture.prepare(0, 1, 352, 8192);
     f.startError = -1;
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.start());
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(!f.callback);
     f.startError = 0;
-    capture.prepare(0, 1, .1);
+    capture.prepare(0, 1, 352, 8192);
     capture.start();
     f.stopError = -1;
     QVERIFY(!capture.stop().isEmpty());
     QVERIFY(f.callback);
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 1, 352, 8192));
     f.stopError = 0;
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(!f.callback);

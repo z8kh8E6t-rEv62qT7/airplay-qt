@@ -16,7 +16,8 @@ public:
     generation_ = queue_.generation.load(std::memory_order_acquire);
     count_ = 0;
     spa_dll_init(&dll_);
-    spa_dll_set_bw(&dll_, SPA_DLL_BW_MIN, 352, 44100);
+    spa_dll_set_bw(&dll_, SPA_DLL_BW_MIN, uint32_t(queue_.blockSamples()),
+                   44100);
     correction_ = 1.;
   }
   bool append(const float *interleaved, size_t frames) noexcept {
@@ -25,7 +26,8 @@ public:
       const float l = interleaved[2 * i + left_], r = interleaved[2 * i + right_];
       if (!std::isfinite(l) || !std::isfinite(r)) { invalidate(); return false; }
       leftSamples_[count_] = l; rightSamples_[count_] = r;
-      if (++count_ != 352) continue;
+      if (++count_ != queue_.blockSamples())
+        continue;
       count_ = 0;
       if (!queue_.push(leftSamples_.data(), rightSamples_.data(), nullptr, generation_)) {
         invalidate(); return false;

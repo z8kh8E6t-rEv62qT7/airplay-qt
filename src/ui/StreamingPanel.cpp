@@ -8,7 +8,9 @@
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -21,6 +23,12 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
       session_(session) {
   session_.setTelemetryEnabled(true);
   auto *languageRow = new QHBoxLayout;
+  auto *toggleLog = toggleLog_ = button(i18n::text(i18n::Id::HideLog));
+  toggleLog->setObjectName("toggleLog");
+  languageRow->addWidget(toggleLog);
+  auto *clearLog = button(i18n::text(i18n::Id::ClearLog));
+  clearLog->setObjectName("clearLog");
+  languageRow->addWidget(clearLog);
   languageRow->addStretch();
   pauseDisplay_ = button(i18n::text(i18n::Id::PauseDisplay));
   pauseDisplay_->setObjectName("pauseDisplay");
@@ -40,12 +48,21 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
                     ? i18n::Language::Chinese
                     : i18n::Language::English);
   });
-  auto *columns = new QHBoxLayout(this);
+  auto *outer = new QHBoxLayout(this);
+  auto *columns = columns_ = new QSplitter(Qt::Horizontal);
+  outer->addWidget(columns);
+  columns->setObjectName("streamingColumns");
+  columns->setChildrenCollapsible(false);
+  columns->setHandleWidth(8);
+  auto *controlGroup = new QWidget;
+  auto *controlColumns = new QHBoxLayout(controlGroup);
+  controlColumns->setContentsMargins(0, 0, 0, 0);
+  columns->addWidget(controlGroup);
   auto *controlsPane = new QWidget;
   controlsPane->setObjectName("controlsPane");
   auto *layout = new QVBoxLayout(controlsPane);
   layout->setContentsMargins(0, 0, 0, 0);
-  columns->addWidget(controlsPane, 1);
+  controlColumns->addWidget(controlsPane, 1);
   inputLayout_ = new QVBoxLayout;
   layout->addLayout(inputLayout_);
   auto *networkRow = new QHBoxLayout;
@@ -100,24 +117,36 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   for (int page = 0; page < 2; ++page) {
     auto *widget = new QWidget;
     auto *fields = new QFormLayout(widget);
-    for (size_t i = page ? 6 : 0; i < (page ? app::timingFields.size() : 6);
+    for (size_t i = page ? 4 : 0; i < (page ? app::timingMsFields.size() : 4);
          ++i) {
-      const auto &f = app::timingFields[i];
+      if (i == 2) {
+        for (size_t j = 0; j < sampleInputs_.size(); ++j) {
+          const auto &f = app::timingSamplesFields[j];
+          auto *row = new QHBoxLayout;
+          auto *input = new QSpinBox;
+          input->setObjectName(f.key);
+          input->setRange(f.minimum, f.maximum);
+          input->setSuffix(" samples");
+          input->setSingleStep(f.member == &app::Timing::packetSamples ? 32 : 256);
+          input->setMinimumWidth(64);
+          input->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+          row->addWidget(input, 1);
+          sampleInputs_[j] = input;
+          samplePreviews_[j] = new QLabel;
+          samplePreviews_[j]->setObjectName(QString(f.key) + "Preview");
+          samplePreviews_[j]->setWordWrap(false);
+          row->addWidget(samplePreviews_[j]);
+          fields->addRow(label(f.label), row);
+        }
+      }
+      const auto &f = app::timingMsFields[i];
       auto *spin = new QDoubleSpinBox;
       timings_[i] = spin;
+      spin->setObjectName(f.key);
       spin->setDecimals(3);
-      spin->setRange(f.minimum * 1000, f.maximum * 1000);
+      spin->setRange(f.minimum, f.maximum);
       spin->setSuffix(" ms");
       spin->setSingleStep(f.powerOfTwo ? 15.625 : 10);
-      spin->setValue(app::Timing{}.*(f.member) * 1000);
-      connect(spin, &QDoubleSpinBox::valueChanged, this, [this] {
-        if (std::all_of(timings_.begin(), timings_.end(),
-                        [](auto *p) { return p != nullptr; })) {
-          const auto value = timing();
-          if (value.validate().isEmpty())
-            emit timingChanged();
-        }
-      });
       if (f.powerOfTwo)
         bindText(spin, "toolTip", i18n::text(i18n::Id::PowerOfTwoIntervalHint));
       fields->addRow(label(f.label), spin);
@@ -155,21 +184,47 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   volume_->setEnabled(false);
   applyVolume_->setEnabled(false);
   mute_->setEnabled(false);
-  auto *meters = new QHBoxLayout;
-  leftLevel_ = new QProgressBar;
-  rightLevel_ = new QProgressBar;
-  leftLevel_->setObjectName("leftLevel");
-  rightLevel_->setObjectName("rightLevel");
-  for (auto *meter : {leftLevel_, rightLevel_}) {
+  auto *metersPane = new QWidget;
+  metersPane->setObjectName("metersPane");
+  auto *meters = new QHBoxLayout(metersPane);
+  meters->setContentsMargins(0, 0, 0, 0);
+  meters->setSpacing(8);
+  for (size_t i = 0; i < levels_.size(); ++i) {
+    auto *channel = new QVBoxLayout;
+    channel->setSpacing(2);
+    auto *name = new QLabel(i == 0 ? "L" : "R");
+    name->setFixedWidth(40);
+    name->setAlignment(Qt::AlignCenter);
+    channel->addWidget(name);
+    auto *meter = new QProgressBar;
+    levels_[i] = meter;
+    meter->setObjectName(i == 0 ? "leftLevel" : "rightLevel");
     meter->setRange(0, 1000);
-    meter->setValue(0);
-    bindText(meter, "format", i18n::text(i18n::Id::Mute));
+    meter->setOrientation(Qt::Vertical);
+    meter->setInvertedAppearance(false);
+    meter->setTextVisible(false);
+    // Keep the meter body visibly thick while preserving the vertical scale.
+    meter->setFixedWidth(40);
+    meter->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    channel->addWidget(meter, 1);
+    auto *readout = new QPushButton;
+    levelReadouts_[i] = readout;
+    readout->setObjectName(i == 0 ? "leftLevelReadout" : "rightLevelReadout");
+    readout->setFlat(true);
+    readout->setAutoDefault(false);
+    readout->setFixedSize(40, readout->fontMetrics().lineSpacing() * 2 + 8);
+    bindText(readout, "toolTip", i18n::text(i18n::Id::ClearStereoPeaks));
+    bindText(readout, "accessibleName", i18n::text(i18n::Id::ClearStereoPeaks));
+    connect(readout, &QPushButton::clicked, this, [this] {
+      levelPeaks_.fill(0);
+      setLevels(0, 0);
+    });
+    channel->addWidget(readout);
+    meters->addLayout(channel);
   }
-  meters->addWidget(new QLabel("L"));
-  meters->addWidget(leftLevel_);
-  meters->addWidget(new QLabel("R"));
-  meters->addWidget(rightLevel_);
-  layout->addLayout(meters);
+  setLevels(0, 0);
+  metersPane->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+  controlColumns->addWidget(metersPane);
   state_ = label(i18n::text(i18n::Id::Ready));
   stats_ = label(i18n::text(i18n::Id::InitialStatistics));
   state_->setObjectName("sessionStatus");
@@ -185,7 +240,24 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
   log_->setReadOnly(true);
   log_->setMaximumBlockCount(1000);
   log_->setLineWrapMode(QPlainTextEdit::WidgetWidth);
-  columns->addWidget(log_, 1);
+  connect(clearLog, &QPushButton::clicked, log_, &QPlainTextEdit::clear);
+  columns->addWidget(log_);
+  columns->setStretchFactor(0, 0);
+  columns->setStretchFactor(1, 1);
+  connect(toggleLog, &QPushButton::clicked, this, [this] {
+    const bool show = log_->isHidden();
+    if (!show)
+      expandedSplitterSizes_ = columns_->sizes();
+    const int removedWidth = show ? 0 : log_->width() + columns_->handleWidth();
+    setLogVisible(show);
+    this->layout()->activate();
+    emit logVisibilityChanged(show, removedWidth);
+    if (show)
+      columns_->setSizes(expandedSplitterSizes_);
+    emit layoutChanged();
+  });
+  connect(columns, &QSplitter::splitterMoved, this,
+          [this] { emit layoutChanged(); });
   connect(&discovery_, &airplay::ReceiverDiscovery::cleared, this,
           &StreamingPanel::clearDiscoveredReceivers);
   connect(
@@ -301,15 +373,7 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
                  quint64 retransmitted, quint64 expired) {
             if (!session_.telemetryEnabled())
               return;
-            for (auto [meter, value] :
-                 {std::pair{leftLevel_, l}, std::pair{rightLevel_, r}}) {
-              meter->setValue(int(value * 1000));
-              bindText(meter, "format",
-                       value > 0
-                           ? QString::number(20 * std::log10(value), 'f', 1) +
-                                 " dBFS"
-                           : i18n::text(i18n::Id::Mute));
-            }
+            setLevels(l, r);
             bindText(stats_, "text",
                      i18n::text(i18n::Id::Statistics)
                          .arg(backlog * 1000, 0, 'f', 1)
@@ -318,9 +382,8 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
                          .arg(expired));
           });
   connect(defaults_, &QPushButton::clicked, this, [this] {
-    app::Timing defaults;
-    for (size_t i = 0; i < timings_.size(); ++i)
-      timings_[i]->setValue(defaults.*(app::timingFields[i].member) * 1000);
+    setTiming(app::Timing{});
+    timingEdited();
   });
   connect(start_, &QPushButton::clicked, this, [this] {
     QSignalBlocker block(mute_);
@@ -352,6 +415,12 @@ StreamingPanel::StreamingPanel(app::SessionController &session, QWidget *parent,
     session_.volume(muted ? -144 : restoreVolume_);
   });
 
+  for (auto *spin : timings_)
+    connect(spin, &QDoubleSpinBox::valueChanged, this,
+            &StreamingPanel::timingEdited);
+  for (auto *input : sampleInputs_)
+    connect(input, &QSpinBox::valueChanged, this,
+            &StreamingPanel::timingEdited);
   retranslate();
   setTiming(app::Timing{});
   bindText(state_, "text", session_.currentStatus());
@@ -521,6 +590,8 @@ void StreamingPanel::restoreReceivers() {
 }
 void StreamingPanel::updateTargets() {
   try {
+    if (const auto error = timing().validate(); !error.isEmpty())
+      throw i18n::MessageError(error);
     airplay::NetworkRoute::resolve(networkBinding());
     const auto selected = endpoints();
     QStringList addresses;
@@ -559,7 +630,9 @@ void StreamingPanel::scan() {
 app::Timing StreamingPanel::timing() const {
   app::Timing value;
   for (size_t i = 0; i < timings_.size(); ++i)
-    value.*(app::timingFields[i].member) = timings_[i]->value() / 1000;
+    value.*(app::timingMsFields[i].member) = timings_[i]->value();
+  for (size_t i = 0; i < sampleInputs_.size(); ++i)
+    value.*(app::timingSamplesFields[i].member) = sampleInputs_[i]->value();
   return value;
 }
 void StreamingPanel::setBusy(bool busy) {
@@ -571,16 +644,14 @@ void StreamingPanel::setBusy(bool busy) {
   defaults_->setEnabled(!engaged);
   for (auto *field : timings_)
     field->setEnabled(!engaged);
+  for (auto *input : sampleInputs_)
+    input->setEnabled(!engaged);
   stop_->setEnabled(engaged);
   updateTargets();
   if (!busy) {
     volumePending_ = false;
-    if (session_.telemetryEnabled()) {
-      leftLevel_->setValue(0);
-      rightLevel_->setValue(0);
-      bindText(leftLevel_, "format", i18n::text(i18n::Id::Mute));
-      bindText(rightLevel_, "format", i18n::text(i18n::Id::Mute));
-    }
+    if (session_.telemetryEnabled())
+      setLevels(0, 0);
   }
 }
 void StreamingPanel::setRecoveryPending(bool pending) {
@@ -596,13 +667,75 @@ void StreamingPanel::setRecoveryPending(bool pending) {
 void StreamingPanel::appendLog(const i18n::Message &text) {
   log_->appendPlainText(QDateTime::currentDateTime().toString("HH:mm:ss.zzz") +
                         "  " + text.render(language()));
+  auto *scroll = log_->verticalScrollBar();
+  scroll->setValue(scroll->maximum());
+}
+app::WindowLayout StreamingPanel::windowLayout(QSize size, int expandedWidth) const {
+  const bool visible = !log_->isHidden();
+  const auto sizes = visible ? columns_->sizes() : expandedSplitterSizes_;
+  return {size.width(), size.height(), sizes.value(0), sizes.value(1),
+          visible ? size.width() : std::max(size.width(), expandedWidth), visible};
+}
+void StreamingPanel::setWindowLayout(const app::WindowLayout &value) {
+  if (!value.valid())
+    return;
+  setLogVisible(value.logVisible);
+  if (value.controlWidth > 0 && value.logWidth > 0) {
+    expandedSplitterSizes_ = {value.controlWidth, value.logWidth};
+    columns_->setSizes(expandedSplitterSizes_);
+  }
+}
+void StreamingPanel::setLogVisible(bool visible) {
+  log_->setVisible(visible);
+  bindText(toggleLog_, "text",
+           i18n::text(visible ? i18n::Id::HideLog : i18n::Id::ShowLog));
+}
+void StreamingPanel::hideEvent(QHideEvent *event) {
+  QWidget::hideEvent(event);
+  emit layoutChanged();
 }
 
 void StreamingPanel::setTiming(const app::Timing &value) {
   for (size_t i = 0; i < timings_.size(); ++i) {
     QSignalBlocker blocker(timings_[i]);
-    timings_[i]->setValue(value.*(app::timingFields[i].member) * 1000);
+    timings_[i]->setValue(value.*(app::timingMsFields[i].member));
   }
+  for (size_t i = 0; i < sampleInputs_.size(); ++i) {
+    QSignalBlocker blocker(sampleInputs_[i]);
+    sampleInputs_[i]->setValue(value.*(app::timingSamplesFields[i].member));
+  }
+  updateSamplePreviews();
+  updateTargets();
+}
+void StreamingPanel::updateSamplePreviews() {
+  const auto value = timing();
+  for (size_t i = 0; i < samplePreviews_.size(); ++i) {
+    const auto &field = app::timingSamplesFields[i];
+    const int samples = value.*(field.member);
+    bindText(samplePreviews_[i], "text", QString("%1 ms").arg(
+                 double(samples) * 1000 / 44100, 0, 'f', 3));
+  }
+}
+void StreamingPanel::setLevels(double left, double right) {
+  const std::array values{left, right};
+  for (size_t i = 0; i < levels_.size(); ++i) {
+    levels_[i]->setValue(int(values[i] * 1000));
+    levelPeaks_[i] = std::max(levelPeaks_[i], values[i]);
+  }
+  updatePeakReadouts();
+}
+void StreamingPanel::updatePeakReadouts() {
+  for (size_t i = 0; i < levelReadouts_.size(); ++i) {
+    bindText(levelReadouts_[i], "text",
+             (levelPeaks_[i] > 0
+                  ? QString::number(20 * std::log10(levelPeaks_[i]), 'f', 1)
+                  : QStringLiteral("−∞")) + "\ndBFS");
+  }
+}
+void StreamingPanel::timingEdited() {
+  updateSamplePreviews();
+  updateTargets();
+  emit timingChanged();
 }
 void StreamingPanel::showError(const i18n::Message &text) {
   bindText(state_, "text", i18n::text(i18n::Id::ErrorPrefix) + text);

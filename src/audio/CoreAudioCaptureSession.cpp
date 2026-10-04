@@ -105,9 +105,11 @@ QList<DriverInfo> enumerate(const CoreAudioApi &api, CaptureKind kind) {
   }
   return devices;
 }
-void validateSelection(int left, int right, double backlog, int count) {
-  if (left < 0 || right < 0 || left >= count ||
-      right >= count || !std::isfinite(backlog) || backlog < .01 || backlog > 1)
+void validateSelection(int left, int right, int packetSamples,
+                       int backlogSamples, int count) {
+  if (left < 0 || right < 0 || left >= count || right >= count ||
+      packetSamples < 1 || packetSamples > 352 || backlogSamples < 1 ||
+      backlogSamples > (1 << 30))
     throw i18n::MessageError(
         i18n::text(i18n::Id::InvalidInputDeviceChannelsOrBacklogSetting));
 }
@@ -118,19 +120,16 @@ void controlPanel() {
 }
 } // namespace coreaudio
 using namespace coreaudio;
-namespace {
-constexpr size_t packetFrames = 352;
-}
 struct CoreAudioCaptureSession::State {
   CoreAudioApi api;
   AudioDeviceID device = kAudioObjectUnknown;
   AudioDeviceIOProcID proc = nullptr;
   Layout format;
   std::shared_ptr<CaptureQueue> queue;
-  std::array<std::array<std::byte, packetFrames * 8>, 2> samples{};
+  std::array<std::array<std::byte, 352 * 8>, 2> samples{};
   std::array<size_t, 2> bufferIndex{}, channelOffset{};
   std::array<PcmFormat, 2> selected{};
-  size_t filled = 0;
+  size_t filled = 0, packetSamples = 64;
   std::atomic<bool> accepting{false}, changed{false};
   std::atomic_flag inCallback = ATOMIC_FLAG_INIT;
   bool running = false;
@@ -213,7 +212,7 @@ struct CoreAudioCaptureSession::State {
                         s.channelOffset[c],
                     s.selected[c].bytes);
       }
-      if (++s.filled == packetFrames) {
+      if (++s.filled == s.packetSamples) {
         if (!s.queue->push(s.samples[0].data(), s.samples[1].data())) {
           s.queue->fault.store(1);
           s.accepting = false;
@@ -250,7 +249,8 @@ void CoreAudioCaptureSession::observe(AudioDeviceID device,
     s.listen(stream, address(kAudioStreamPropertyVirtualFormat));
 }
 CaptureStream CoreAudioCaptureSession::prepare(AudioDeviceID device, int left,
-                                               int right, double backlog) {
+                                               int right, int packetSamples,
+                                               int backlogSamples) {
   auto &s = *state_;
   if (s.proc || s.queue)
     throw i18n::MessageError(i18n::text(i18n::Id::AudioInputIsNotReady));
@@ -265,7 +265,8 @@ CaptureStream CoreAudioCaptureSession::prepare(AudioDeviceID device, int left,
       throw i18n::MessageError(
           i18n::text(i18n::Id::InputDeviceSampleRateMustBeKHz));
     s.format = layout(s.api, s.device, kAudioDevicePropertyScopeInput);
-    validateSelection(left, right, backlog, s.format.channels);
+    validateSelection(left, right, packetSamples, backlogSamples,
+                      s.format.channels);
     for (size_t c = 0; c < 2; ++c) {
       size_t index = c ? right : left;
       for (size_t b = 0; b < s.format.buffers.size(); ++b) {
@@ -279,10 +280,11 @@ CaptureStream CoreAudioCaptureSession::prepare(AudioDeviceID device, int left,
         index -= f.channels;
       }
     }
+    s.packetSamples = size_t(packetSamples);
     s.queue = std::make_shared<CaptureQueue>(
-        packetFrames, packetFrames * s.selected[0].bytes,
-        packetFrames * s.selected[1].bytes,
-        size_t(std::ceil(backlog * 44100 / packetFrames)) + 2);
+        packetSamples, size_t(packetSamples) * s.selected[0].bytes,
+        size_t(packetSamples) * s.selected[1].bytes,
+        CaptureQueue::capacityFor(packetSamples, backlogSamples));
     s.filled = 0;
     check(s.api.create(s.device, State::process, &s, &s.proc),
           i18n::text(i18n::Id::CreateInputCallback));
@@ -296,7 +298,7 @@ CaptureStream CoreAudioCaptureSession::prepare(AudioDeviceID device, int left,
       throw i18n::MessageError(
           i18n::text(i18n::Id::InputDeviceFormatChangedDuringPreparation));
     s.health.start();
-    return {s.queue, s.selected[0], s.selected[1], long(packetFrames)};
+    return {s.queue, s.selected[0], s.selected[1], long(packetSamples)};
   } catch (const std::exception &error) {
     const auto failure = i18n::fromException(error);
     const auto cleanup = stop();

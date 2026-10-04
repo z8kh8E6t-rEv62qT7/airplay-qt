@@ -5,6 +5,7 @@
 #import <Foundation/Foundation.h>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QTemporaryDir>
 #include <QtTest>
 #include <array>
 #include <cmath>
@@ -295,9 +296,13 @@ private slots:
         }
       }
     } stopChild{child};
+    QTemporaryDir configurationDirectory;
+    QVERIFY(configurationDirectory.isValid());
+    const auto configurationPath = configurationDirectory.filePath("config.json");
+    app::Settings{}.save(configurationPath);
     child.setProgram(app);
     child.setArguments(
-        {"--cli", "--device", deviceId, "--receiver",
+        {"--cli", "--config", configurationPath, "--device", deviceId, "--receiver",
          QString("127.0.0.1:%1").arg(receiver.server.serverPort()), "--seconds",
          "2", "--startup-timeout", "30"});
     QCOMPARE(AudioDeviceCreateIOProcID(device, Tone::render, &tone, &tone.proc),
@@ -353,11 +358,12 @@ private slots:
                              capture.open("device-2", nullptr));
     QCOMPARE(capture.open("loopback:device-2", nullptr).size(), 4);
     for (auto pair : {std::pair{-1, 1}, std::pair{0, -1}, std::pair{0, 4}})
-      QVERIFY_THROWS_EXCEPTION(std::runtime_error,
-                               capture.prepare(pair.first, pair.second, .1));
+      QVERIFY_THROWS_EXCEPTION(
+          std::runtime_error,
+          capture.prepare(pair.first, pair.second, 352, 8192));
     f.rate = 48000;
     try {
-      capture.prepare(0, 1, .1);
+      capture.prepare(0, 1, 352, 8192);
       QFAIL("48 kHz accepted");
     } catch (const i18n::MessageError &error) {
       QVERIFY(error.message().render().contains("Audio MIDI Setup"));
@@ -368,10 +374,12 @@ private slots:
     f.rate = 44100;
     f.streamCount = f.channelCount = 1;
     QCOMPARE(capture.open("loopback:device-2", nullptr).size(), 1);
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 1, 352, 8192));
     QVERIFY(f.clean());
     f.present = false;
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 1, 352, 8192));
     QVERIFY(f.clean());
   }
   void capturesAcrossStreams_data() {
@@ -391,7 +399,7 @@ private slots:
     f.planar = planar;
     CoreAudioLoopbackCapture capture(f.api);
     capture.open("loopback:device-2", nullptr);
-    auto stream = capture.prepare(leftChannel, rightChannel, .1);
+    auto stream = capture.prepare(leftChannel, rightChannel, 352, 8193);
     capture.start();
     std::array<std::array<float, 352>, 4> channels;
     std::array<std::array<float, 704>, 2> interleaved;
@@ -422,7 +430,7 @@ private slots:
     QVERIFY(f.events.indexOf("callback") < f.events.indexOf("unlisten"));
     QVERIFY(f.events.lastIndexOf("unlisten") < f.events.indexOf("aggregate"));
     QVERIFY(f.events.indexOf("aggregate") < f.events.indexOf("tap"));
-    auto next = capture.prepare(0, 1, .1);
+    auto next = capture.prepare(0, 1, 352, 8192);
     QVERIFY(next.queue != stream.queue);
     capture.start();
     QVERIFY(capture.close().isEmpty());
@@ -441,7 +449,8 @@ private slots:
     CoreAudioLoopbackCapture capture(f.api);
     capture.open("loopback:device-2", nullptr);
     f.failure = failure;
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 1, 352, 8192));
     QVERIFY(f.clean());
     QVERIFY(f.contractValid);
   }
@@ -456,7 +465,7 @@ private slots:
     FakeAudio f;
     CoreAudioLoopbackCapture capture(f.api);
     capture.open("loopback:device-2", nullptr);
-    capture.prepare(0, 1, .1);
+    capture.prepare(0, 1, 352, 8192);
     capture.start();
     f.failure = failure;
     QVERIFY(!capture.stop().isEmpty());
@@ -472,16 +481,17 @@ private slots:
     FakeAudio f;
     CoreAudioLoopbackCapture capture(f.api);
     capture.open("loopback:device-2", nullptr);
-    capture.prepare(0, 1, .1);
+    capture.prepare(0, 1, 352, 8192);
     f.failure = "start";
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.start());
     QVERIFY(f.clean());
     f.failure.clear();
     f.changeDuringCreate = true;
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(0, 1, .1));
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             capture.prepare(0, 1, 352, 8192));
     QVERIFY(f.clean());
     f.changeDuringCreate = false;
-    auto stream = capture.prepare(0, 1, .1);
+    auto stream = capture.prepare(0, 1, 352, 8192);
     capture.start();
     f.changed();
     QTRY_COMPARE(stream.queue->fault.load(), 7);

@@ -12,7 +12,8 @@ public:
   enumerate(const CoreAudioApi & = defaultCoreAudioApi());
   QList<ChannelInfo> open(const QString &, void *) override;
   void controlPanel() override;
-  CaptureStream prepare(int, int, double) override;
+  CaptureStream prepare(int, int, int packetSamples,
+                        int backlogSamples) override;
   void start() override;
   i18n::Message stop() noexcept override;
   i18n::Message close() noexcept override;

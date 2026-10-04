@@ -181,8 +181,8 @@ struct PluginRuntime::Instance {
                         !state->input.unavailable().isEmpty()))
         throw airplay::Error(
             i18n::text(i18n::Id::HostAudioConditionsChangedStartManually));
-      const auto stream =
-          state->input.prepare(requestTiming.backlog, reconnect);
+      const auto stream = state->input.prepare(
+          requestTiming.packetSamples, requestTiming.backlogSamples, reconnect);
       beginSessionTiming();
       timer = true;
       runtime.sender_ = state->id;
@@ -247,7 +247,9 @@ struct PluginRuntime::Instance {
     if (panel) {
       panel->setRecoveryPending(recovery.waiting());
       if (timing != timingRevision) {
-        panel->setTiming(state->timing());
+        const auto value = state->timing();
+        if (panel->timing() != value)
+          panel->setTiming(value);
         panel->setNetworkBinding(state->networkBinding());
       }
       panel->setUnavailable(

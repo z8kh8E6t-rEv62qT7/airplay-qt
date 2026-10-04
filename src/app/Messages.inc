@@ -365,3 +365,10 @@ MESSAGE(WaitingForSavedInputDevice, "Waiting for saved input device; selection w
 MESSAGE(WindowMenu, "Window", "窗口")
 MESSAGE(CloseWindow, "Close Window", "关闭窗口")
 MESSAGE(QuitAirPlayQt, "Quit AirPlayQt", "退出 AirPlayQt")
+
+MESSAGE(PacketSamples, "Packet samples", "每包采样数")
+MESSAGE(HideLog, "Hide Log", "隐藏日志")
+MESSAGE(ShowLog, "Show Log", "显示日志")
+MESSAGE(ClearLog, "Clear Log", "清除日志")
+MESSAGE(InvalidWindowLayout, "Invalid saved window layout", "保存的窗口布局无效")
+MESSAGE(ClearStereoPeaks, "Peak hold: click to clear both channels", "峰值保持：点击清除左右声道峰值")

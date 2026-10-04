@@ -11,6 +11,7 @@ struct SavedState {
   bool bypass = false;
   airplay::NetworkBinding networkBinding;
   i18n::Language language = i18n::Language::English;
+  app::WindowLayout windowLayout;
 };
 bool readState(Steinberg::IBStream *, SavedState &);
 bool writeState(Steinberg::IBStream *, const SavedState &);
@@ -23,6 +24,8 @@ public:
   app::Timing timing() const;
   i18n::Language language() const;
   void setLanguage(i18n::Language);
+  app::WindowLayout windowLayout() const;
+  bool setWindowLayout(const app::WindowLayout &);
   airplay::NetworkBinding networkBinding() const;
   void setNetworkBinding(const airplay::NetworkBinding &);
   i18n::Message configurationError() const;
@@ -32,6 +35,7 @@ public:
   VstAudioInput input;
   std::atomic<bool> processorAlive{true};
   std::atomic<uint64_t> stopRevision{0}, timingRevision{0}, languageRevision{0};
+  std::atomic<uint64_t> windowLayoutRevision{0};
 
 private:
   explicit PluginState(uint64_t value) : id(value) {}
@@ -39,5 +43,6 @@ private:
   app::Timing timing_;
   i18n::Language language_ = i18n::Language::English;
   airplay::NetworkBinding networkBinding_;
+  app::WindowLayout windowLayout_;
 };
 } // namespace vst3

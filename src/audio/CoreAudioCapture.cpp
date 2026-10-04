@@ -26,10 +26,12 @@ QList<ChannelInfo> CoreAudioCapture::open(const QString &uid, void *) {
   return result;
 }
 void CoreAudioCapture::controlPanel() { coreaudio::controlPanel(); }
-CaptureStream CoreAudioCapture::prepare(int left, int right, double backlog) {
+CaptureStream CoreAudioCapture::prepare(int left, int right, int packetSamples,
+                                        int backlogSamples) {
   if (const auto error = stop(); !error.isEmpty())
     throw i18n::MessageError(error);
-  return state_->session.prepare(state_->device, left, right, backlog);
+  return state_->session.prepare(state_->device, left, right, packetSamples,
+                                 backlogSamples);
 }
 void CoreAudioCapture::start() { state_->session.start(); }
 i18n::Message CoreAudioCapture::stop() noexcept {

@@ -38,10 +38,10 @@ private:
     input.setActive(true);
     input.setProcessing(true);
   }
-  template <class T> void audio() {
+  template <class T> void audio(int packetSamples = 352) {
     vst3::VstAudioInput input;
     ready(input, sizeof(T) == 8);
-    auto stream = input.prepare(1);
+    auto stream = input.prepare(packetSamples, 65537);
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
     QVERIFY(stream.rateDiagnostics);
 #endif
@@ -65,15 +65,16 @@ private:
       expected.insert(expected.end(), left.begin(), left.begin() + count);
       total += count;
     }
-    QCOMPARE(stream.queue->capturedFrames(), uint64_t(total / 352 * 352));
+    QCOMPARE(stream.queue->capturedFrames(),
+             uint64_t(total / packetSamples * packetSamples));
     size_t cursor = 0;
     std::span<const std::byte> l, r;
     while (stream.queue->peek(l, r)) {
       QCOMPARE(std::memcmp(l.data(), expected.data() + cursor, l.size()), 0);
       const auto pcm = audio::convert(l, stream.left, r, stream.right);
-      QCOMPARE(pcm.size(), size_t(704));
+      QCOMPARE(pcm.size(), size_t(packetSamples) * 2);
       QCOMPARE(pcm[0], audio::sample(l.data(), stream.left));
-      cursor += 352;
+      cursor += packetSamples;
       stream.queue->pop();
     }
     input.stop();
@@ -85,6 +86,12 @@ private:
                         [](T value) { return value == 0; }));
   }
 private slots:
+  void smallPacketCallbacks() {
+    for (int packet : {1, 64, 352}) {
+      audio<float>(packet);
+      audio<double>(packet);
+    }
+  }
   void captureMatchesPocAlacVector() {
     QFile file(QString(AIRPLAY_TEST_SOURCE_DIR) +
                "/tests/airplay/vectors.json");
@@ -101,7 +108,7 @@ private slots:
     }
     vst3::VstAudioInput input;
     ready(input);
-    auto stream = input.prepare(.1);
+    auto stream = input.prepare(352, 8192);
     QVERIFY(input.start());
     float *first[]{left.data(), right.data()},
         *second[]{left.data() + 100, right.data() + 100};
@@ -142,7 +149,7 @@ private slots:
   void overflowAndRestart() {
     vst3::VstAudioInput input;
     ready(input);
-    auto old = input.prepare(.01);
+    auto old = input.prepare(352, 512);
     QVERIFY(input.start());
     std::array<float, 352> samples{};
     samples.fill(.25f);
@@ -151,7 +158,7 @@ private slots:
       input.process(channels, nullptr, 352, 0, true);
     QCOMPARE(input.fault(), vst3::InputFault::Overflow);
     const auto captured = old.queue->capturedFrames();
-    auto current = input.prepare(.1);
+    auto current = input.prepare(352, 8192);
     QVERIFY(input.start());
     input.process(channels, channels, 352, 0, true);
     QCOMPARE(old.queue->capturedFrames(), captured);
@@ -162,7 +169,7 @@ private slots:
     for (int cause = 0; cause < 7; ++cause) {
       vst3::VstAudioInput input;
       ready(input, false, 352);
-      auto stream = input.prepare(.1);
+      auto stream = input.prepare(352, 8192);
       QVERIFY(input.start());
       std::array<float, 353> source{}, output{};
       source.fill(.375f);
@@ -217,7 +224,7 @@ private slots:
     for (bool doubles : {false, true}) {
       vst3::VstAudioInput input;
       ready(input, doubles, 352);
-      auto old = input.prepare(.1);
+      auto old = input.prepare(352, 8192);
       QVERIFY(input.start());
       std::array<float, 352> f{};
       std::array<double, 352> d{};
@@ -244,7 +251,7 @@ private slots:
       QVERIFY(input.interruption().resumed >= first.began);
       QVERIFY(!input.start());
       QCOMPARE(old.queue->capturedFrames(), uint64_t(0));
-      auto fresh = input.prepare(.1, true);
+      auto fresh = input.prepare(352, 8192, true);
       QVERIFY(input.start());
       if (doubles)
         input.process(dc, dc, 252, 0, true);
@@ -257,7 +264,8 @@ private slots:
       QCOMPARE(fresh.queue->fault.load(), 103);
       input.setBypass(false);
       input.setProcessing(true);
-      QVERIFY_THROWS_EXCEPTION(std::runtime_error, input.prepare(.1, true));
+      QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                               input.prepare(352, 8192, true));
     }
   }
   void hostRecoveryDeadlineAndCancellation() {
@@ -344,12 +352,13 @@ private slots:
     auto &runtime = vst3::PluginRuntime::acquire(window, environment);
     auto *panel = runtime.open(processor->state(), unavailableDiscovery());
     auto timing = panel->timing();
-    timing.settle = 0;
-    timing.prebuffer = .008;
-    timing.backlog = .5;
-    timing.late = .5;
-    timing.requestTimeout = .3;
-    timing.teardownTimeout = .1;
+    timing.settleMs = 0;
+    timing.packetSamples = 352;
+    timing.prebufferSamples = 512;
+    timing.backlogSamples = 32768;
+    timing.lateMs = 500;
+    timing.requestTimeoutMs = 300;
+    timing.teardownTimeoutMs = 100;
     panel->setTiming(timing);
     airplay::NetworkBinding loopback;
     for (const auto &binding : airplay::NetworkBinding::available())
@@ -552,35 +561,57 @@ private slots:
   }
   void stateIsAtomicAndVersioned() {
     vst3::SavedState expected;
-    expected.timing.lead = .125;
+    expected.timing.leadMs = 125;
+    expected.timing.prebufferSamples = 2049;
+    expected.timing.backlogSamples = 8193;
     expected.bypass = true;
     expected.language = i18n::Language::Chinese;
     expected.networkBinding = {"en-test", "192.0.2.10"};
+    expected.windowLayout = {900, 880, 600, 350, 1100, false};
     MemoryStream valid;
     QVERIFY(vst3::writeState(&valid, expected));
     const QByteArray bytes(valid.getData(), int(valid.getSize()));
     QVERIFY(!bytes.contains("192.168"));
     for (int length = 0; length < bytes.size(); ++length) {
+      if (length == bytes.size() - 28)
+        continue; // Complete legacy v4 state without the optional layout.
       MemoryStream truncated;
       int32 written = 0;
       truncated.write(const_cast<char *>(bytes.constData()), length, &written);
       truncated.seek(0, IBStream::kIBSeekSet, nullptr);
       vst3::SavedState result;
-      result.timing.lead = 1.5;
+      result.timing.leadMs = 1500;
       result.language = i18n::Language::English;
       QVERIFY(!vst3::readState(&truncated, result));
-      QCOMPARE(result.timing.lead, 1.5);
+      QCOMPARE(result.timing.leadMs, 1500.);
       QCOMPARE(result.language, i18n::Language::English);
     }
     valid.seek(0, IBStream::kIBSeekSet, nullptr);
     vst3::SavedState actual;
     QVERIFY(vst3::readState(&valid, actual));
-    QCOMPARE(actual.timing.lead, .125);
+    QCOMPARE(actual.timing.leadMs, 125.);
+    QCOMPARE(actual.timing, expected.timing);
     QVERIFY(actual.bypass);
     QCOMPARE(actual.networkBinding, expected.networkBinding);
     QCOMPARE(actual.language, i18n::Language::Chinese);
+    QCOMPARE(actual.windowLayout, expected.windowLayout);
+    auto legacyBytes = bytes.left(bytes.size() - 28);
+    MemoryStream withoutLayout(legacyBytes.data(), legacyBytes.size());
+    QVERIFY(vst3::readState(&withoutLayout, actual));
+    QCOMPARE(actual.windowLayout, app::WindowLayout{});
+    QCOMPARE(actual.timing, expected.timing);
+    vst3::Processor first, second;
+    valid.seek(0, IBStream::kIBSeekSet, nullptr);
+    QCOMPARE(first.setState(&valid), kResultOk);
+    QCOMPARE(first.state()->windowLayout(), expected.windowLayout);
+    QCOMPARE(second.state()->windowLayout(), app::WindowLayout{});
+    MemoryStream savedLayout;
+    QCOMPARE(first.getState(&savedLayout), kResultOk);
+    savedLayout.seek(0, IBStream::kIBSeekSet, nullptr);
+    QVERIFY(vst3::readState(&savedLayout, actual));
+    QCOMPARE(actual.windowLayout, expected.windowLayout);
     auto old = bytes;
-    old[4] = 2;
+    old[4] = 3;
     MemoryStream legacy;
     int32 legacyWritten = 0;
     legacy.write(old.data(), old.size(), &legacyWritten);
@@ -594,7 +625,9 @@ private slots:
     QVERIFY(processor.state()->invalidConfiguration.load());
     MemoryStream rejectedSave;
     QCOMPARE(processor.getState(&rejectedSave), kResultFalse);
-    for (const int offset : {0, 4, 8, 116, int(bytes.size()) - 4}) {
+    // Header (12 bytes), 11 doubles, then three uint32 samples fields.
+    for (const int offset :
+         {0, 4, 8, 103, 107, 111, 112, int(bytes.size()) - 4}) {
       auto changed = bytes;
       changed[offset] = char(255);
       MemoryStream corrupt;
@@ -603,7 +636,7 @@ private slots:
       corrupt.seek(0, IBStream::kIBSeekSet, nullptr);
       QVERIFY(!vst3::readState(&corrupt, actual));
     }
-    expected.timing.prebuffer = expected.timing.backlog;
+    expected.timing.prebufferSamples = expected.timing.backlogSamples;
     MemoryStream invalid;
     QVERIFY(!vst3::writeState(&invalid, expected));
   }
@@ -627,7 +660,7 @@ private slots:
   void producerRetirement() {
     vst3::VstAudioInput input;
     ready(input);
-    auto stream = input.prepare(1);
+    auto stream = input.prepare(352, 65536);
     QVERIFY(input.start());
     std::atomic<bool> run{true};
     std::thread producer([&] {
@@ -639,7 +672,7 @@ private slots:
     input.stop();
     run = false;
     producer.join();
-    auto next = input.prepare(.1);
+    auto next = input.prepare(352, 8192);
     QVERIFY(input.start());
     QVERIFY(next.queue != stream.queue);
   }
@@ -680,8 +713,16 @@ private slots:
       QCOMPARE(processor.state()->language(), i18n::Language::Chinese);
       QCOMPARE(otherPanel->language(), i18n::Language::English);
       runtime.close(otherProcessor.state()->id);
+      auto *samples = panel->findChild<QSpinBox *>("prebufferSamples");
+      QVERIFY(samples);
+      samples->setValue(panel->timing().backlogSamples);
+      runtime.pump();
+      QCOMPARE(samples->value(), panel->timing().backlogSamples);
+      MemoryStream rejectedTiming;
+      QCOMPARE(processor.getState(&rejectedTiming), kResultFalse);
+      samples->setValue(2049);
       auto timing = panel->timing();
-      timing.lead = .75;
+      timing.leadMs = 750;
       panel->setTiming(timing);
       emit panel->timingChanged();
       const airplay::NetworkBinding binding{"unavailable-test", "192.0.2.10"};
@@ -691,7 +732,8 @@ private slots:
       panel = runtime.open(processor.state(), api);
       QCOMPARE(panel->language(), i18n::Language::Chinese);
       QVERIFY(!panel->findChild<QPushButton *>("pauseDisplay")->isChecked());
-      QCOMPARE(panel->timing().lead, .75);
+      QCOMPARE(panel->timing().leadMs, 750.);
+      QCOMPARE(panel->timing().prebufferSamples, 2049);
       QCOMPARE(panel->networkBinding(), binding);
       panel->findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
       panel->findChild<QLineEdit *>("manualFirst")->setText("127.0.0.1:7000");

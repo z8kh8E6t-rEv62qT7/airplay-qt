@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
     if (!view || QCoreApplication::instance() != existing.get())
       return 6;
     ViewRect initial;
-    if (view->getSize(&initial) != kResultOk || initial.getWidth() != 1400 ||
+    if (view->getSize(&initial) != kResultOk || initial.getWidth() != 950 ||
         initial.getHeight() != 880)
       return 23;
     HWND window = CreateWindowExW(0, L"STATIC", L"AirPlayQt test host",

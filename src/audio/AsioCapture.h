@@ -19,7 +19,7 @@ struct CaptureTraceEntry {
   uint64_t samplePosition = 0, systemTime = 0;
   uint64_t sourceBefore = 0, copied = 0, sourceAfter = 0;
   uint32_t threadId = 0, timeFlags = 0;
-  long bufferIndex = 0;
+  long bufferIndex = 0, sampleFrames = 0;
   bool timeCallback = false, directProcess = false, queued = false;
 };
 // Allocate before start; one callback writer, read only after stop has
@@ -38,8 +38,10 @@ public:
   static QList<DriverInfo> enumerate();
   QList<ChannelInfo> open(const QString &id, void *window);
   void controlPanel();
-  CaptureStream prepare(int left, int right, double maxBacklog);
+  CaptureStream prepare(int left, int right, int packetSamples,
+                        int backlogSamples);
   void setTrace(CaptureTrace *trace);
+  long callbackSamples() const noexcept { return blockFrames_; }
   void start();
   // Empty on success. Cleanup never throws; callers surface any timer error.
   i18n::Message stop() noexcept;

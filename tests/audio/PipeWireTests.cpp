@@ -89,6 +89,40 @@ private slots:
       QCOMPARE(b, samples[2 * i + right]);
     }
   }
+  void configuredSmallBlocks() {
+    for (int packet : {1, 64, 352}) {
+      CaptureQueue queue(packet, size_t(packet) * 4, size_t(packet) * 4, 1024);
+      PipeWireBuffer buffer(queue, 0, 1);
+      std::array<float, 1600> pcm{};
+      for (int i = 0; i < 800; ++i) {
+        pcm[i * 2] = float(i);
+        pcm[i * 2 + 1] = -float(i);
+      }
+      QVERIFY(buffer.append(pcm.data(), 31));
+      QVERIFY(buffer.append(pcm.data() + 62, 769));
+      size_t cursor = 0;
+      std::span<const std::byte> left, right;
+      while (queue.peek(left, right)) {
+        QCOMPARE(left.size(), size_t(packet) * 4);
+        for (int i = 0; i < packet; ++i, ++cursor) {
+          float l, r;
+          std::memcpy(&l, left.data() + i * 4, 4);
+          std::memcpy(&r, right.data() + i * 4, 4);
+          QCOMPARE(l, pcm[cursor * 2]);
+          QCOMPARE(r, pcm[cursor * 2 + 1]);
+        }
+        queue.pop();
+      }
+      QCOMPARE(cursor, size_t(800 / packet * packet));
+      buffer.invalidate();
+      QVERIFY(buffer.append(pcm.data(), packet));
+      QVERIFY(queue.peek(left, right));
+      QCOMPARE(queue.queuedFrames(), uint64_t(packet));
+      float first;
+      std::memcpy(&first, left.data(), 4);
+      QCOMPARE(first, 0.f);
+    }
+  }
   void variableBlocksAndDiscontinuities() {
     CaptureQueue queue(352, 1408, 1408, 8);
     PipeWireBuffer buffer(queue, 1, 0);
@@ -267,7 +301,7 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
     PipeWireCapture capture;
     QSignalSpy logs(&capture, &InputCapture::log);
     QCOMPARE(capture.open("pipewire:test-source", nullptr).size(), 2);
-    auto stream = capture.prepare(0, 1, 1.);
+    auto stream = capture.prepare(0, 1, 352, 65537);
     capture.start();
     QTRY_VERIFY_WITH_TIMEOUT(stream.queue->capturedFrames() >= 352, 6000);
     std::span<const std::byte> l, r;
@@ -318,7 +352,7 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
     const auto stopped = stream.queue->capturedFrames();
     QTest::qWait(150);
     QCOMPARE(stream.queue->capturedFrames(), stopped);
-    auto restarted = capture.prepare(1, 0, 1.);
+    auto restarted = capture.prepare(1, 0, 352, 65536);
     capture.start();
     QTRY_VERIFY_WITH_TIMEOUT(restarted.queue->capturedFrames() >= 352, 6000);
     QCOMPARE(stream.queue->capturedFrames(), stopped);

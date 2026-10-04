@@ -27,11 +27,11 @@ class RtspClient : public QObject {
 public:
   explicit RtspClient(QObject *parent = nullptr);
   void open(const QHostAddress &host, quint16 port, const QString &identity,
-            double timeout, const QHostAddress &local = {},
+            double timeoutMs, const QHostAddress &local = {},
             const NetworkRoute &route = {}, quint32 activeRemote = 1);
   void request(const QByteArray &method, const QByteArray &path,
                const QByteArray &body, const QByteArray &contentType,
-               double timeout, std::optional<quint32> rtpTime = {});
+               double timeoutMs, std::optional<quint32> rtpTime = {});
   void encrypt(const QByteArray &shared);
   void abort();
   bool busy() const { return pending_; }

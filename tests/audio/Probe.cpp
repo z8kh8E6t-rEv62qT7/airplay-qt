@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
                   channel.type, format.bytes, format.bits, format.floating,
                   format.bigEndian);
     }
-    auto stream = capture.prepare(30, 31, 1.);
+    auto stream = capture.prepare(30, 31, 352, 65536);
     std::printf("BUFFER frames=%ld rate=44100\n", stream.blockFrames);
     uint64_t callbacks = 0, leftNonzero = 0, rightNonzero = 0;
     double leftPeak = 0, rightPeak = 0;

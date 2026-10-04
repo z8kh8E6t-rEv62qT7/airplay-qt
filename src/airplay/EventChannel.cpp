@@ -25,7 +25,7 @@ EventChannel::EventChannel(QObject *parent) : QObject(parent) {
 EventChannel::~EventChannel() { close(); }
 void EventChannel::open(const QByteArray &shared, const QHostAddress &host,
                         quint16 port, const QHostAddress &local,
-                        const NetworkRoute &route, double timeout) {
+                        const NetworkRoute &route, double timeoutMs) {
   close();
   records_ = std::make_unique<HapRecords>(
       hkdf(shared, "Events-Salt", "Events-Read-Encryption-Key"),
@@ -35,7 +35,7 @@ void EventChannel::open(const QByteArray &shared, const QHostAddress &host,
   else if (!socket_.bind(local, 0))
     throw Error(i18n::text(i18n::Id::EventConnectionLocalAddressBindingFailed));
   closed_ = false;
-  timeout_.start(int(std::ceil(timeout * 1000)));
+  timeout_.start(int(std::ceil(timeoutMs)));
   socket_.connectToHost(host, port);
 }
 void EventChannel::close() {

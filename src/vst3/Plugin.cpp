@@ -114,7 +114,8 @@ tresult PLUGIN_API Processor::getState(IBStream *stream) {
   if (state_->invalidConfiguration.load())
     return kResultFalse;
   return writeState(stream, {state_->timing(), state_->input.bypass(),
-                             state_->networkBinding(), state_->language()})
+                             state_->networkBinding(), state_->language(),
+                             state_->windowLayout()})
              ? kResultOk
              : kResultFalse;
 }
@@ -130,6 +131,7 @@ tresult PLUGIN_API Processor::setState(IBStream *stream) {
   state_->setNetworkBinding(value.networkBinding);
   state_->setTiming(value.timing);
   state_->setLanguage(value.language);
+  state_->setWindowLayout(value.windowLayout);
   state_->input.setBypass(value.bypass);
   return kResultOk;
 }

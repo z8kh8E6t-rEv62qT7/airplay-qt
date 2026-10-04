@@ -122,11 +122,13 @@ void AsioCapture::controlPanel() {
     fail(i18n::text(i18n::Id::SelectADriverAndStopCaptureFirst));
   check(driver_->controlPanel(), "controlPanel");
 }
-CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
+CaptureStream AsioCapture::prepare(int left, int right, int packetSamples,
+                                   int backlogSamples) {
   if (!driver_ || buffers_ || timing_ || left < 0 ||
       right < 0 || left >= channels_.size() || right >= channels_.size())
     fail(i18n::text(i18n::Id::InvalidASIODriverOrInputChannelSelection));
-  if (!std::isfinite(backlog) || backlog < .01 || backlog > 1)
+  if (packetSamples < 1 || packetSamples > 352 || backlogSamples < 1 ||
+      backlogSamples > (1 << 30))
     fail(i18n::text(i18n::Id::InvalidMaximumBacklog));
   AsioCapture *expected = nullptr;
   if (!active_.compare_exchange_strong(expected, this))
@@ -154,7 +156,7 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
         (granularity == -1 && (preferred & (preferred - 1))) ||
         (granularity > 0 && (preferred - minimum) % granularity))
       fail(i18n::text(i18n::Id::InvalidPreferredASIOBufferSize));
-    if (preferred > backlog * 44100)
+    if (preferred > backlogSamples)
       fail(i18n::text(i18n::Id::ASIOBufferDurationExceedsMaximumBacklogAdjust));
     PcmFormat formats[2];
     int indices[2]{left, right};
@@ -170,8 +172,9 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
     leftBytes_ = size_t(preferred) * formats[0].bytes;
     rightBytes_ = size_t(preferred) * formats[1].bytes;
     queue_ = std::make_shared<CaptureQueue>(
-        preferred, preferred * formats[0].bytes, preferred * formats[1].bytes,
-        size_t(std::ceil(backlog * 44100 / preferred)) + 2);
+        packetSamples, size_t(packetSamples) * formats[0].bytes,
+        size_t(packetSamples) * formats[1].bytes,
+        CaptureQueue::capacityFor(packetSamples, backlogSamples));
     callbacks_ = {bufferSwitch, rateChanged, message, timeSwitch};
     check(driver_->createBuffers(bufferInfo_, left == right ? 1 : 2, preferred,
                                  &callbacks_),
@@ -186,7 +189,7 @@ CaptureStream AsioCapture::prepare(int left, int right, double backlog) {
     check(driver_->getSampleRate(&rate), "getSampleRate");
     if (rate != 44100)
       fail(i18n::text(i18n::Id::ASIOSampleRateChangedAfterBufferCreation));
-    return {queue_, formats[0], formats[1], preferred};
+    return {queue_, formats[0], formats[1], packetSamples};
   } catch (const std::exception &error) {
     const auto cleanup = stop();
     if (!cleanup.isEmpty())
@@ -276,9 +279,12 @@ void AsioCapture::copy(long index, CaptureTraceEntry *trace) noexcept {
       static_cast<const std::byte *>(bufferInfo_[1].buffers[index]),
       rightBytes_};
   if (trace)
+    trace->sampleFrames = blockFrames_;
+  if (trace)
     trace->sourceBefore = captureChecksum(left, right);
   const bool queued =
-      queue_->push(left.data(), right.data(), trace ? &trace->copied : nullptr);
+      queue_->append(left.data(), right.data(), size_t(blockFrames_),
+                     trace ? &trace->copied : nullptr);
   if (trace) {
     trace->queued = queued;
     trace->sourceAfter = captureChecksum(left, right);

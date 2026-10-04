@@ -36,7 +36,8 @@ public:
   virtual ~InputCapture() = default;
   virtual QList<ChannelInfo> open(const QString &, void *window) = 0;
   virtual void controlPanel() = 0;
-  virtual CaptureStream prepare(int left, int right, double maxBacklog) = 0;
+  virtual CaptureStream prepare(int left, int right, int packetSamples,
+                                int backlogSamples) = 0;
   virtual void start() = 0;
   virtual i18n::Message stop() noexcept = 0;
   virtual i18n::Message close() noexcept = 0;

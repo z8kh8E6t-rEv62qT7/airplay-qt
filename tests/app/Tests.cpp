@@ -5,6 +5,7 @@
 #include <QGroupBox>
 #include <QJsonDocument>
 #include <QTemporaryDir>
+#include <QSplitter>
 #include <QtTest>
 #ifdef Q_OS_MACOS
 #include "../airplay/TestReceiver.h"
@@ -71,7 +72,8 @@ public:
   i18n::Message stop() noexcept override { ++state_.stops; return {}; }
   void start() override { ++state_.starts; }
   void controlPanel() override {}
-  audio::CaptureStream prepare(int, int, double) override { return {}; }
+  audio::CaptureStream prepare(int, int, int, int) override { return {}; }
+
 private:
   CaptureState &state_;
 };
@@ -142,6 +144,98 @@ struct RestoreDirectoryAcl {
 class AppTests : public QObject {
   Q_OBJECT
 private slots:
+  void windowLayoutSurvivesCloseAndRecreate() {
+    RefreshWindow fixture;
+    auto &window = *fixture.window;
+    window.show();
+    QCoreApplication::processEvents();
+    window.resize(1300, 1000);
+    auto *columns = window.findChild<QSplitter *>("streamingColumns");
+    QVERIFY(columns);
+    columns->setSizes({700, 500});
+    QCoreApplication::processEvents();
+    auto *toggle = window.findChild<QPushButton *>("toggleLog");
+    QVERIFY(toggle);
+    const auto expandedSize = window.size();
+    const auto expandedParts = columns->sizes();
+    toggle->click();
+    QCoreApplication::processEvents();
+    const auto compactSize = window.size();
+#ifdef Q_OS_MACOS
+    window.findChild<QAction *>("closeWindow")->trigger();
+#else
+    window.close();
+#endif
+    const auto saved = app::Settings::load(fixture.path());
+    QCOMPARE(saved.windowLayout.width, compactSize.width());
+    QCOMPARE(saved.windowLayout.height, compactSize.height());
+    QCOMPARE(saved.windowLayout.expandedWidth, expandedSize.width());
+    QVERIFY(!saved.windowLayout.logVisible);
+    QCOMPARE(saved.windowLayout.controlWidth, expandedParts[0]);
+    QCOMPARE(saved.windowLayout.logWidth, expandedParts[1]);
+    audio::InputCaptureApi api;
+    api.devices = [] { return QList<audio::DriverInfo>{}; };
+    ui::MainWindow restored(unavailableDiscovery(), api);
+    app::ControllerTestAccess::settingsPath(
+        ui::MainWindowTestAccess::controller(restored), fixture.path());
+    restored.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(restored.size(), compactSize);
+    QVERIFY(restored.findChild<QPlainTextEdit *>("sessionLog")->isHidden());
+    restored.findChild<QPushButton *>("toggleLog")->click();
+    QCoreApplication::processEvents();
+    QCOMPARE(restored.size(), expandedSize);
+    QCOMPARE(restored.findChild<QSplitter *>("streamingColumns")->sizes(), expandedParts);
+    restored.close();
+  }
+  void logToggleResizesWindowWithoutLosingHistory() {
+    RefreshWindow fixture;
+    auto &window = *fixture.window;
+    auto *panel = window.findChild<ui::StreamingPanel *>();
+    auto *toggle = window.findChild<QPushButton *>("toggleLog");
+    auto *log = window.findChild<QPlainTextEdit *>("sessionLog");
+    QVERIFY(panel && toggle && log);
+    window.resize(1400, 1000);
+    window.show();
+    QCoreApplication::processEvents();
+    const auto expanded = window.size();
+    auto *columns = window.findChild<QSplitter *>("streamingColumns");
+    auto *controls = window.findChild<QWidget *>("controlsPane");
+    auto *meters = window.findChild<QWidget *>("metersPane");
+    QVERIFY(columns && controls && meters);
+    const int controlsWidth = controls->width();
+    const int metersWidth = meters->width();
+    auto sizes = columns->sizes();
+    columns->setSizes({sizes[0] + 120, sizes[1] - 120});
+    QCoreApplication::processEvents();
+    QVERIFY(controls->width() > controlsWidth);
+    QCOMPARE(meters->width(), metersWidth);
+    QCOMPARE(window.size(), expanded);
+    const auto adjustedSizes = columns->sizes();
+    panel->appendLog("before hiding");
+    const auto history = log->toPlainText();
+    for (int i = 0; i < 3; ++i) {
+      toggle->click();
+      QCoreApplication::processEvents();
+      QVERIFY(log->isHidden());
+      QVERIFY(window.width() < expanded.width());
+      QCOMPARE(window.height(), expanded.height());
+      panel->setLanguage(i18n::Language::Chinese);
+      QCOMPARE(toggle->text(), QString("显示日志"));
+      panel->appendLog("while hidden");
+      QVERIFY(log->toPlainText().startsWith(history));
+      QVERIFY(log->toPlainText().endsWith("while hidden"));
+      if (i == 0)
+        QVERIFY(window.grab().save(QCoreApplication::applicationDirPath() +
+                                  "/MainWindow-log-hidden.png"));
+      toggle->click();
+      QCoreApplication::processEvents();
+      QVERIFY(!log->isHidden());
+      QCOMPARE(window.size(), expanded);
+      QCOMPARE(columns->sizes(), adjustedSizes);
+      QCOMPARE(toggle->text(), QString("隐藏日志"));
+    }
+  }
 #ifdef Q_OS_WIN
   void closingWaitsForDiscovery() {
     DNS_SERVICE_BROWSE_REQUEST request{};
@@ -381,8 +475,9 @@ private slots:
     QTRY_VERIFY(fixture.window->isActiveWindow());
     test::Receiver receiver("background");
     app::Timing timing;
-    timing.settle = 0;
-    timing.prebuffer = .008;
+    timing.settleMs = 0;
+    timing.packetSamples = 352;
+    timing.prebufferSamples = 512;
     audio::CaptureStream stream{
         std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
         audio::format(16), audio::format(16), 352};
@@ -415,7 +510,14 @@ private slots:
     QCOMPARE(fixture.state.opens, opens);
     QCOMPARE(fixture.devices()->currentData().toString(), QString("b"));
     QCOMPARE(fixture.left()->currentData().toInt(), 2);
-    QCOMPARE(fixture.config(), config);
+    auto before = QJsonDocument::fromJson(config).object();
+    auto after = QJsonDocument::fromJson(fixture.config()).object();
+    const auto savedLayout = app::Settings::load(fixture.path()).windowLayout;
+    QCOMPARE(savedLayout.width, fixture.window->width());
+    QCOMPARE(savedLayout.height, fixture.window->height());
+    before.remove("windowLayout");
+    after.remove("windowLayout");
+    QCOMPARE(after, before);
     fixture.controller().stop();
     QTRY_VERIFY(!session.busy());
     QVERIFY(fixture.state.stops > stops);
@@ -521,14 +623,18 @@ int main(int argc, char **argv) {
     bool requested = false, cleaned = false;
     QObject::connect(&application, &QCoreApplication::aboutToQuit, &application, [&] {
       cleaned = !fixture.controller().busy() && fixture.state.stops > 0;
+      const auto layout = app::Settings::load(fixture.path()).windowLayout;
+      cleaned = cleaned && layout.width == fixture.window->width() &&
+                layout.height == fixture.window->height() && layout.controlWidth > 0;
       // Activation during termination must not bring the window back.
       application.applicationStateChanged(Qt::ApplicationActive);
       cleaned = cleaned && !fixture.window->isVisible();
     });
     QTimer::singleShot(0, &application, [&] {
       app::Timing timing;
-      timing.settle = 0;
-      timing.prebuffer = .008;
+      timing.settleMs = 0;
+      timing.packetSamples = 352;
+      timing.prebufferSamples = 512;
       audio::CaptureStream stream{
           std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
           audio::format(16), audio::format(16), 352};
@@ -541,6 +647,7 @@ int main(int argc, char **argv) {
     QObject::connect(&quitWhenStreaming, &QTimer::timeout, &application, [&] {
       if (!fixture.controller().session().streaming() || receiver.packets.isEmpty()) return;
       quitWhenStreaming.stop();
+      fixture.window->resize(1230, 1010);
       if (application.arguments().contains("hidden")) fixture.window->close();
       auto *quit = fixture.window->findChild<QAction *>("quitApplication");
       if (!quit || quit->menuRole() != QAction::QuitRole) {

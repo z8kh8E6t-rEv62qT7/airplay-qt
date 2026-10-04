@@ -7,7 +7,8 @@ public:
   ~PipeWireCapture() override;
   QList<ChannelInfo> open(const QString &, void *) override;
   void controlPanel() override {}
-  CaptureStream prepare(int left, int right, double maxBacklog) override;
+  CaptureStream prepare(int left, int right, int packetSamples,
+                        int backlogSamples) override;
   void start() override;
   i18n::Message stop() noexcept override;
   i18n::Message close() noexcept override;

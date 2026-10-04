@@ -73,7 +73,8 @@ QList<ChannelInfo> channels(const CoreAudioApi &, AudioDeviceID,
                             AudioObjectPropertyScope);
 QList<DriverInfo> enumerate(const CoreAudioApi &, CaptureKind);
 void controlPanel();
-void validateSelection(int left, int right, double backlog, int channels);
+void validateSelection(int left, int right, int packetSamples,
+                       int backlogSamples, int channels);
 } // namespace coreaudio
 
 // One HAL input callback, shared by physical inputs and private tap aggregates.
@@ -83,7 +84,8 @@ public:
   explicit CoreAudioCaptureSession(const CoreAudioApi &);
   ~CoreAudioCaptureSession();
   void observe(AudioDeviceID, AudioObjectPropertyScope);
-  CaptureStream prepare(AudioDeviceID, int left, int right, double backlog);
+  CaptureStream prepare(AudioDeviceID, int left, int right, int packetSamples,
+                        int backlogSamples);
   void start();
   i18n::Message stop() noexcept;
 

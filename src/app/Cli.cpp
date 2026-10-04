@@ -25,6 +25,7 @@ void report(const char *event, QJsonObject fields = {}) {
 }
 struct Options {
   QString device;
+  Timing timing;
   int left = 1, right = 2, seconds = 30, startupTimeout = 60;
   QList<airplay::ReceiverEndpoint> receivers;
 };
@@ -45,6 +46,9 @@ Options options(const QCommandLineParser &parser) {
     if (name != "receiver" && parser.optionNames().count(name) > 1)
       throw std::invalid_argument(("Repeated option: --" + name).toStdString());
   Options o;
+  if (!parser.isSet("config") || parser.value("config").isEmpty())
+    throw std::invalid_argument("--config PATH is required");
+  o.timing = Settings::load(parser.value("config"), true).timing;
   o.device = parser.value("device");
   o.left = number(parser, "left", 256);
   o.right = number(parser, "right", 256);
@@ -202,10 +206,11 @@ int transmit(QApplication &application, const Options &o) {
   interruptPoll.start(50);
   QTimer::singleShot(0, &context, [&] {
     try {
-      auto settings = controller.initialize();
+      Settings settings;
+      settings.timing = o.timing;
       if (finished)
         return;
-      const auto devices = controller.drivers();
+      const auto devices = audio::inputDevices();
       if (std::none_of(devices.begin(), devices.end(),
                        [&](const auto &d) { return d.id == o.device; }))
         throw std::runtime_error("Input device UID not found");
@@ -244,9 +249,14 @@ int runCli(QApplication &application) {
       "AirPlayQt macOS live acceptance test. JSON lines on stdout; no GUI "
       "settings are saved.");
   parser.addHelpOption();
+  parser.addVersionOption();
   parser.addOptions(
       {{"cli", "Run without the main window."},
-       {"list-devices", "List capture devices (including auto loopback) and stable IDs, then exit."},
+       {"list-devices", "List capture devices (including auto loopback) and "
+                        "stable IDs, then exit."},
+       {"config",
+        "Required version 4 application configuration; only timing is used.",
+        "path"},
        {"device", "Capture device ID (from --list-devices).", "uid"},
        {"left", "Left input channel, 1-based.", "channel", "1"},
        {"right", "Right input channel, 1-based.", "channel", "2"},
@@ -259,6 +269,11 @@ int runCli(QApplication &application) {
       throw std::invalid_argument(parser.errorText().toStdString());
     if (parser.isSet("help")) {
       std::fputs(parser.helpText().toUtf8().constData(), stdout);
+      return 0;
+    }
+    if (parser.isSet("version")) {
+      std::fprintf(stdout, "%s %s\n", qPrintable(application.applicationName()),
+                   qPrintable(application.applicationVersion()));
       return 0;
     }
     if (parser.isSet("list-devices")) {

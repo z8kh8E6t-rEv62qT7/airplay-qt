@@ -67,7 +67,7 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
   endReason_ = airplay::SessionEnd::Stopped;
   const auto generation = ++generation_;
   emit busyChanged(true);
-  if (timing.lead < .5)
+  if (timing.leadMs < 500)
     emit log(i18n::text(i18n::Id::LowPlaybackLeadMayCauseLateArrival));
   QMetaObject::invokeMethod(worker_, [this, context = network_, timing, stream,
                                       endpoints, generation, environment,

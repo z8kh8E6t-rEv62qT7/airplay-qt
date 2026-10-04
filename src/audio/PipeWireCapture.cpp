@@ -228,16 +228,21 @@ QList<ChannelInfo> PipeWireCapture::open(const QString &id, void *) {
   state_->selected = id;
   return {{0, i18n::Message("FL"), 0}, {1, i18n::Message("FR"), 0}};
 }
-CaptureStream PipeWireCapture::prepare(int left, int right, double maxBacklog) {
+CaptureStream PipeWireCapture::prepare(int left, int right, int packetSamples,
+                                       int backlogSamples) {
   stop();
-  if (state_->selected.isEmpty() || left < 0 || left > 1 || right < 0 || right > 1 ||
-      !std::isfinite(maxBacklog) || maxBacklog <= 0 || maxBacklog > 1)
+  if (state_->selected.isEmpty() || left < 0 || left > 1 || right < 0 ||
+      right > 1 || packetSamples < 1 || packetSamples > 352 ||
+      backlogSamples < 1 || backlogSamples > (1 << 30))
     throw i18n::MessageError(i18n::text(i18n::Id::SelectAValidInputDevice));
   state_->left = left;
   state_->right = right;
-  const auto blocks = size_t(std::ceil(maxBacklog * 44100 / 352)) + 2;
-  state_->queue = std::make_shared<CaptureQueue>(352, 352 * sizeof(float), 352 * sizeof(float), blocks);
-  CaptureStream result{state_->queue, {4, 32, false, true}, {4, 32, false, true}, 352};
+  const auto blocks = CaptureQueue::capacityFor(packetSamples, backlogSamples);
+  state_->queue = std::make_shared<CaptureQueue>(
+      packetSamples, size_t(packetSamples) * sizeof(float),
+      size_t(packetSamples) * sizeof(float), blocks);
+  CaptureStream result{
+      state_->queue, {4, 32, false, true}, {4, 32, false, true}, packetSamples};
   result.gapPolicy = GapPolicy::Silence;
   return result;
 }

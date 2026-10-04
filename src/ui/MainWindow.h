@@ -16,6 +16,8 @@ protected:
 
 private:
   friend class MainWindowTestAccess;
+  void saveWindowLayout();
+  int expandedWidth_ = 0;
   void fillDevices(const QList<audio::DriverInfo> &, const QString &selected);
   void refreshDevices();
   void setDevices(const QList<audio::DriverInfo> &);

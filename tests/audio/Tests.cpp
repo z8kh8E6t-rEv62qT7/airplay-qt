@@ -176,6 +176,45 @@ public:
 class AudioTests : public QObject {
   Q_OBJECT
 private slots:
+  void asioReblocksCallbacks() {
+    for (int packet : {1, 64, 352}) {
+      FakeAsio driver;
+      audio::AsioCapture capture;
+      audio::AsioCaptureTestAccess::attach(capture, driver);
+      auto stream = capture.prepare(30, 31, packet, 8193);
+      audio::CaptureTrace trace(20);
+      capture.setTrace(&trace);
+      capture.start();
+      size_t consumed = 0;
+      for (int callback = 0; callback < 20; ++callback) {
+        driver.deliver(callback);
+        std::span<const std::byte> left, right;
+        while (stream.queue->peek(left, right)) {
+          QCOMPARE(left.size(), size_t(packet) * 4);
+          for (int i = 0; i < packet; ++i, ++consumed) {
+            float l, r;
+            std::memcpy(&l, left.data() + i * 4, 4);
+            std::memcpy(&r, right.data() + i * 4, 4);
+            QCOMPARE(l, FakeAsio::marker(int(consumed / FakeAsio::frames), 30,
+                                         int(consumed % FakeAsio::frames)));
+            QCOMPARE(r, FakeAsio::marker(int(consumed / FakeAsio::frames), 31,
+                                         int(consumed % FakeAsio::frames)));
+          }
+          stream.queue->pop();
+        }
+        QCOMPARE(trace.entries[callback].sourceBefore,
+                 trace.entries[callback].copied);
+        QCOMPARE(trace.entries[callback].sourceAfter,
+                 trace.entries[callback].copied);
+      }
+      QCOMPARE(consumed, size_t(20 * FakeAsio::frames / packet * packet));
+      capture.stop();
+      auto next = capture.prepare(30, 31, packet, 8192);
+      QCOMPARE(next.queue->queuedFrames(), uint64_t(0));
+      capture.stop();
+    }
+  }
+
   void timerOwnerRestoresOnException() {
     const auto original = timerPolicy();
     try {
@@ -201,11 +240,11 @@ private slots:
       audio::AsioCaptureTestAccess::attach(capture, driver);
       QVERIFY(!audio::AsioCaptureTestAccess::ownsTiming(capture));
       for (int cycle = 0; cycle < 10; ++cycle) {
-        capture.prepare(30, 31, .1);
+        capture.prepare(30, 31, 64, 8192);
         QVERIFY(driver.timedDuringPrepare);
         QVERIFY(audio::AsioCaptureTestAccess::ownsTiming(capture));
         QVERIFY_THROWS_EXCEPTION(std::runtime_error,
-                                 capture.prepare(30, 31, .1));
+                                 capture.prepare(30, 31, 64, 8192));
         QVERIFY(honorsTimerRequest());
         if (cycle % 2)
           capture.start();
@@ -218,7 +257,7 @@ private slots:
         QVERIFY(capture.stop().isEmpty());
         QVERIFY(samePolicy(original));
       }
-      capture.prepare(30, 31, .1);
+      capture.prepare(30, 31, 64, 8192);
       capture.start();
       // Destruction must stop the driver before restoring process policy.
     }
@@ -249,10 +288,11 @@ private slots:
       driver.nullBuffer = true;
     if (stage == 3) {
       driver.startResult = ASE_HWMalfunction;
-      capture.prepare(30, 31, .1);
+      capture.prepare(30, 31, 64, 8192);
       QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.start());
     } else {
-      QVERIFY_THROWS_EXCEPTION(std::runtime_error, capture.prepare(30, 31, .1));
+      QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                               capture.prepare(30, 31, 64, 8192));
     }
     QVERIFY(driver.timedDuringPrepare);
     QVERIFY(!driver.allocated);
@@ -261,7 +301,7 @@ private slots:
     QVERIFY(samePolicy(original));
     driver.rateResult = driver.createResult = driver.startResult = ASE_OK;
     driver.nullBuffer = false;
-    capture.prepare(30, 31, .1);
+    capture.prepare(30, 31, 64, 8192);
     capture.start();
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(samePolicy(original));
@@ -272,14 +312,15 @@ private slots:
     audio::AsioCapture first, second;
     audio::AsioCaptureTestAccess::attach(first, firstDriver);
     audio::AsioCaptureTestAccess::attach(second, secondDriver);
-    first.prepare(30, 31, .1);
-    QVERIFY_THROWS_EXCEPTION(std::runtime_error, second.prepare(30, 31, .1));
+    first.prepare(30, 31, 64, 8192);
+    QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                             second.prepare(30, 31, 64, 8192));
     QVERIFY(!audio::AsioCaptureTestAccess::ownsTiming(second));
     QVERIFY(second.stop().isEmpty());
     QVERIFY(honorsTimerRequest());
     QVERIFY(first.stop().isEmpty());
     QVERIFY(samePolicy(original));
-    second.prepare(30, 31, .1);
+    second.prepare(30, 31, 64, 8192);
     QVERIFY(second.stop().isEmpty());
     QVERIFY(samePolicy(original));
   }
@@ -301,7 +342,7 @@ private slots:
     FakeAsio driver;
     audio::AsioCapture capture;
     audio::AsioCaptureTestAccess::attach(capture, driver);
-    auto stream = capture.prepare(left, right, .1);
+    auto stream = capture.prepare(left, right, 64, 8192);
     constexpr int blocks = 10000;
     audio::CaptureTrace trace(blocks);
     capture.setTrace(&trace);
@@ -345,7 +386,7 @@ private slots:
     FakeAsio driver;
     audio::AsioCapture capture;
     audio::AsioCaptureTestAccess::attach(capture, driver);
-    auto stream = capture.prepare(30, 31, .1);
+    auto stream = capture.prepare(30, 31, 64, 8192);
     constexpr int blocks = 20000;
     audio::CaptureTrace trace(blocks);
     std::vector<uint64_t> hashes(blocks);
@@ -387,7 +428,7 @@ private slots:
     FakeAsio driver;
     audio::AsioCapture capture;
     audio::AsioCaptureTestAccess::attach(capture, driver);
-    auto stream = capture.prepare(30, 31, .1);
+    auto stream = capture.prepare(30, 31, 64, 8192);
     audio::CaptureTrace trace(1);
     capture.setTrace(&trace);
     capture.start();
@@ -402,7 +443,7 @@ private slots:
     FakeAsio driver;
     audio::AsioCapture capture;
     audio::AsioCaptureTestAccess::attach(capture, driver);
-    auto stream = capture.prepare(30, 31, .1);
+    auto stream = capture.prepare(30, 31, 64, 8192);
     audio::CaptureTrace trace(2);
     capture.setTrace(&trace);
     capture.start();

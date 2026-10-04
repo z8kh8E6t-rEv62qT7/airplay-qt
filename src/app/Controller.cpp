@@ -53,10 +53,7 @@ Settings Controller::initialize() {
   try {
     return settings_.load();
   } catch (const std::exception &e) {
-    emit error(
-        i18n::fromException(e) +
-        i18n::text(i18n::Id::ConfigPreservedPrefix) +
-        Settings::path() + i18n::text(i18n::Id::AndRestart));
+    emit error(i18n::fromException(e));
     return {};
   }
 }
@@ -66,6 +63,13 @@ void Controller::saveLanguage(i18n::Language language) {
   } catch (const std::exception &e) {
     emit error(
         i18n::text(i18n::Id::LanguageSaveFailed).arg(i18n::fromException(e)));
+  }
+}
+void Controller::saveWindowLayout(const WindowLayout &layout) {
+  try {
+    settings_.saveWindowLayout(layout);
+  } catch (const std::exception &e) {
+    emit error(i18n::fromException(e));
   }
 }
 void Controller::selectDriver(const QString &id, void *window) {
@@ -193,7 +197,8 @@ void Controller::start(
       throw airplay::Error(message);
     emit session_.status(i18n::text(i18n::Id::PreparingAudioInput));
     const auto stream = capture_->prepare(settings.left, settings.right,
-                                          settings.timing.backlog);
+                                          settings.timing.packetSamples,
+                                          settings.timing.backlogSamples);
 #ifdef Q_OS_WIN
     emit session_.log(
         i18n::text(i18n::Id::CaptureTimingRequestedMsResolutionAndDisabled));

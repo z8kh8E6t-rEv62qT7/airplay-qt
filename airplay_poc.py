@@ -866,7 +866,7 @@ class Peer:
         report("response", host=self.endpoint.host, method=method, payload=redacted(response))
         return response
 
-    def setup(self, rate: int, clock_id: int, group: str, stereo: bool, transport="realtime"):
+    def setup(self, rate: int, clock_id: int, group: str, stereo: bool, transport="realtime", spf=FRAMES):
         self.transport = transport
         sock = self.resources.enter_context(open_tcp(self.endpoint, self.bind))
         self.rtsp = Rtsp(sock, self.identity)
@@ -898,7 +898,7 @@ class Peer:
             udp.setblocking(False)
         self.rtsp.request("RECORD", self.url)
         stream = {"type": 96, "audioFormat": 1 << (18 if rate == 44100 else 20), "audioMode": "default",
-                  "ct": 2, "sr": rate, "spf": FRAMES, "isMedia": True,
+                  "ct": 2, "sr": rate, "spf": spf, "isMedia": True,
                   "dataPort": self.data.getsockname()[1], "controlPort": self.control.getsockname()[1],
                   "latencyMin": 11025, "latencyMax": 88200, "shk": self.key,
                   "streamConnectionID": secrets.randbits(63), "supportsDynamicStreamID": False}
@@ -1106,7 +1106,8 @@ def transmit_apat(encoder: AacEldEncoder, peers: list[Peer], clock: PtpClock, le
            listening_result="not_verified", mode="APAT/UDP/AAC-ELD")
 
 
-def play(path: Path, endpoints: list[Endpoint], bind: str, lead: float, transport="realtime"):
+def play(path: Path, endpoints: list[Endpoint], bind: str, lead: float, transport="realtime",
+         samples=FRAMES, spf=FRAMES):
     with wave.open(str(path), "rb") as reader, ExitStack() as cleanup:
         rate, total = validate_wav(reader)
         encoder = None
@@ -1143,7 +1144,7 @@ def play(path: Path, endpoints: list[Endpoint], bind: str, lead: float, transpor
         for endpoint, entry in zip(endpoints, info):
             peer = Peer(endpoint, bind, identity)
             cleanup.callback(peer.close)
-            peer.setup(rate, clock_id, group, stereo, transport)
+            peer.setup(rate, clock_id, group, stereo, transport, spf)
             peer.initialize_volume(entry["info"].get("initialVolume"))
             peers.append(peer)
             clock.healthy()
@@ -1159,6 +1160,7 @@ def play(path: Path, endpoints: list[Endpoint], bind: str, lead: float, transpor
         sent_frames = counter = 0
         next_sync = start_mono
         report("streaming", rate=rate, total_frames=total, lead_seconds=lead,
+               samples=samples, spf=spf,
                first_rtp=first_rtp, first_sequence=first_seq, audible_ns=audible_ns,
                clock_id=f"{clock_id:016X}", mode="96/ALAC/PTP", mixer=False)
         while sent_frames < total:
@@ -1176,7 +1178,7 @@ def play(path: Path, endpoints: list[Endpoint], bind: str, lead: float, transpor
                 for peer in peers:
                     peer.control.sendto(packet, peer.control_address)
                 next_sync = now + .5
-            pcm = reader.readframes(min(FRAMES, total - sent_frames))
+            pcm = reader.readframes(min(samples, total - sent_frames))
             if not pcm or len(pcm) % 4:
                 raise ProtocolError("Truncated WAV payload")
             for peer in peers:
@@ -1217,11 +1219,19 @@ def main(argv=None):
                       help="Validated ALAC baseline or experimental native APAT/AAC-ELD")
     send.add_argument("--lead", type=float, default=2.0,
                       help="Audible start lead in seconds (realtime 0..2; APAT 1..2)")
+    send.add_argument("--samples", type=int, default=FRAMES,
+                      help="Realtime ALAC samples per packet, integer >= 0 (default: 352)")
+    send.add_argument("--spf", type=int, default=FRAMES,
+                      help="Realtime SETUP spf, independent of --samples, integer >= 0 (default: 352)")
     args = parser.parse_args(argv)
     try:
         if args.command == "tone":
             make_tone(args.path, args.rate, args.level_dbfs)
             return 0
+        if args.command == "play" and args.transport == "realtime":
+            for name in ("samples", "spf"):
+                if getattr(args, name) < 0:
+                    raise ValueError(f"--{name} must be greater than or equal to 0")
         endpoints = [Endpoint.parse(value) for value in args.host]
         if not 1 <= len(endpoints) <= 2 or len(set(ep.host for ep in endpoints)) != len(endpoints):
             raise ValueError("Specify one receiver or two distinct members of one stereo pair")
@@ -1233,7 +1243,7 @@ def main(argv=None):
             minimum_lead = 1 if args.transport == "apat" else 0
             if not math.isfinite(args.lead) or not minimum_lead <= args.lead <= 2:
                 raise ValueError(f"Lead must be between {minimum_lead} and two seconds for {args.transport}")
-            play(args.path, endpoints, bind, args.lead, args.transport)
+            play(args.path, endpoints, bind, args.lead, args.transport, args.samples, args.spf)
         return 0
     except KeyboardInterrupt:
         report("interrupted")

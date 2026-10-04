@@ -85,7 +85,8 @@ i18n::Message VstAudioInput::unavailable() const {
     return i18n::text(i18n::Id::InvalidHostBlockLength);
   return {};
 }
-audio::CaptureStream VstAudioInput::prepare(double backlog, bool resuming) {
+audio::CaptureStream VstAudioInput::prepare(int packetSamples,
+                                            int backlogSamples, bool resuming) {
   const auto changes = changes_.load();
   if (resuming && fault_.load() != InputFault::None)
     throw i18n::MessageError(
@@ -99,17 +100,20 @@ audio::CaptureStream VstAudioInput::prepare(double backlog, bool resuming) {
         i18n::text(i18n::Id::AudioCallbackHandoffInProgressTryAgain));
   if (const auto reason = unavailable(); !reason.isEmpty())
     throw i18n::MessageError(reason);
-  if (!std::isfinite(backlog) || backlog < .01 || backlog > 1)
+  if (packetSamples < 1 || packetSamples > 352 || backlogSamples < 1 ||
+      backlogSamples > (1 << 30))
     throw i18n::MessageError(i18n::text(i18n::Id::InvalidCaptureBacklogLimit));
   auto run = std::make_unique<Run>();
   run->doubles = doubles_.load();
   const int bytes = run->doubles ? 8 : 4;
-  run->stream = {std::make_shared<audio::CaptureQueue>(
-                     352, 352 * bytes, 352 * bytes,
-                     size_t(std::ceil(backlog * 44100 / 352)) + 2),
-                 {bytes, bytes * 8, false, true},
-                 {bytes, bytes * 8, false, true},
-                 352};
+  run->stream = {
+      std::make_shared<audio::CaptureQueue>(
+          packetSamples, size_t(packetSamples) * bytes,
+          size_t(packetSamples) * bytes,
+          audio::CaptureQueue::capacityFor(packetSamples, backlogSamples)),
+      {bytes, bytes * 8, false, true},
+      {bytes, bytes * 8, false, true},
+      packetSamples};
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   run->stream.rateDiagnostics = true;
 #endif
@@ -204,7 +208,7 @@ void VstAudioInput::processSamples(Sample *const *input, Sample *const *output,
                     sizeof(Sample));
         std::memcpy(run->right.data() + run->filled * sizeof(Sample),
                     &values[1], sizeof(Sample));
-        if (++run->filled == 352) {
+        if (++run->filled == size_t(run->stream.blockFrames)) {
           if (!run->stream.queue->push(run->left.data(), run->right.data())) {
             fail(InputFault::Overflow);
             break;

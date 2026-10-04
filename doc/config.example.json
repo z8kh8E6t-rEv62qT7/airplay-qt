@@ -1,0 +1,33 @@
+{
+  "version": 4,
+  "language": "en",
+  "driverId": "",
+  "left": 0,
+  "right": 1,
+  "networkBinding": null,
+  "receiverSelection": [],
+  "windowLayout": {
+    "width": 950,
+    "height": 980,
+    "controlWidth": 550,
+    "logWidth": 350,
+    "expandedWidth": 950,
+    "logVisible": true
+  },
+  "timing": {
+    "packetSamples": 64,
+    "prebufferSamples": 2048,
+    "backlogSamples": 8192,
+    "leadMs": 2000,
+    "settleMs": 2000,
+    "lateMs": 100,
+    "inputTimeoutMs": 1000,
+    "connectTimeoutMs": 8000,
+    "requestTimeoutMs": 8000,
+    "teardownTimeoutMs": 1000,
+    "ptpSyncMs": 125,
+    "ptpAnnounceMs": 1000,
+    "audioSyncMs": 500,
+    "keepAliveMs": 10000
+  }
+}

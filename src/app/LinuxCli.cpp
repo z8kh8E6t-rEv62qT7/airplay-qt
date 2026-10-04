@@ -41,18 +41,26 @@ Options options(QCommandLineParser &parser, const QStringList &arguments) {
   parser.setApplicationDescription(
       "Send a Linux audio input to manually specified AirPlay receivers. "
       "The first startup failure exits; after streaming once, sessions retry "
-      "every 2 seconds until SIGINT or SIGTERM. GUI settings are not used.");
-  parser.addOptions({
-      {"help", "Show this help and exit."},
-      {"version", "Show the application version and exit."},
-      {"list-devices", "Query input devices once, print stable IDs, and exit."},
-      {"list-interfaces", "List available network interfaces and IPv4 addresses."},
-      {"device", "Required input device ID from --list-devices.", "id"},
-      {"receiver", "Required IPv4[:port], default port 7000; repeat for a stereo pair.", "endpoint"},
-      {"interface", "Sending interface name; requires --local-ip.", "name"},
-      {"local-ip", "Sending interface IPv4; requires --interface.", "ipv4"},
-      {"left", "Left input channel (1 or 2).", "channel", "1"},
-      {"right", "Right input channel (1 or 2).", "channel", "2"}});
+      "every 2 seconds until SIGINT or SIGTERM. Only timing is read from "
+      "--config.");
+  parser.addOptions(
+      {{"help", "Show this help and exit."},
+       {"version", "Show the application version and exit."},
+       {"list-devices",
+        "Query input devices once, print stable IDs, and exit."},
+       {"list-interfaces",
+        "List available network interfaces and IPv4 addresses."},
+       {"config",
+        "Required version 4 application configuration; only timing is used.",
+        "path"},
+       {"device", "Required input device ID from --list-devices.", "id"},
+       {"receiver",
+        "Required IPv4[:port], default port 7000; repeat for a stereo pair.",
+        "endpoint"},
+       {"interface", "Sending interface name; requires --local-ip.", "name"},
+       {"local-ip", "Sending interface IPv4; requires --interface.", "ipv4"},
+       {"left", "Left input channel (1 or 2).", "channel", "1"},
+       {"right", "Right input channel (1 or 2).", "channel", "2"}});
   if (!parser.parse(arguments))
     throw std::invalid_argument(parser.errorText().toStdString());
   if (!parser.positionalArguments().isEmpty())
@@ -73,6 +81,10 @@ Options options(QCommandLineParser &parser, const QStringList &arguments) {
     return result;
   }
 
+  if (!parser.isSet("config") || parser.value("config").isEmpty())
+    throw std::invalid_argument("--config PATH is required");
+  result.settings.timing =
+      app::Settings::load(parser.value("config"), true).timing;
   result.settings.driverId = parser.value("device");
   if (result.settings.driverId.trimmed().isEmpty())
     throw std::invalid_argument("--device is required; use --list-devices");

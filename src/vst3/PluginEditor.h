@@ -4,5 +4,5 @@
 #include <functional>
 namespace vst3 {
 Steinberg::IPlugView *createEditor(const std::shared_ptr<PluginState> &,
-                                   std::function<void()> languageEdited = {});
+                                   std::function<void()> stateEdited = {});
 }

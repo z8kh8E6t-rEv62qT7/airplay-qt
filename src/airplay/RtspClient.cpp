@@ -241,7 +241,7 @@ RtspClient::RtspClient(QObject *parent) : QObject(parent) {
   });
 }
 void RtspClient::open(const QHostAddress &host, quint16 port,
-                      const QString &identity, double timeout,
+                      const QString &identity, double timeoutMs,
                       const QHostAddress &local, const NetworkRoute &route,
                       quint32 activeRemote) {
   abort();
@@ -261,12 +261,12 @@ void RtspClient::open(const QHostAddress &host, quint16 port,
     fail(socket_.errorString());
     return;
   }
-  timer_.start(int(std::ceil(timeout * 1000)));
+  timer_.start(int(std::ceil(timeoutMs)));
   socket_.connectToHost(host, port);
 }
 void RtspClient::request(const QByteArray &method, const QByteArray &path,
                          const QByteArray &body, const QByteArray &type,
-                         double timeout, std::optional<quint32> rtpTime) {
+                         double timeoutMs, std::optional<quint32> rtpTime) {
   if (closed_ || pending_ || !connected() || cseq_ == UINT32_MAX ||
       body.size() > 1048576)
     throw Error(i18n::text(i18n::Id::InvalidRTSPRequestState));
@@ -289,7 +289,7 @@ void RtspClient::request(const QByteArray &method, const QByteArray &path,
   if (records_)
     packet = records_->encode(packet);
   pending_ = true;
-  timer_.start(int(std::ceil(timeout * 1000)));
+  timer_.start(int(std::ceil(timeoutMs)));
   if (socket_.write(packet) != packet.size())
     fail(i18n::text(i18n::Id::RTSPWriteFailed));
 }

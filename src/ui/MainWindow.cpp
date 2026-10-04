@@ -25,7 +25,7 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api,
   const QString backend = "ASIO";
 #endif
   setWindowTitle("AirPlayQt · " + backend + " → AirPlay");
-  resize(1400, 980);
+  resize(950, 980);
   auto *central = new QWidget;
   setCentralWidget(central);
   auto *layout = new QVBoxLayout(central);
@@ -81,6 +81,15 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api,
   form->addRow(label(i18n::text(i18n::Id::RightInputChannel)), right_);
   streaming_->addInputWidget(input);
   layout->addWidget(streaming_, 1);
+  connect(streaming_, &StreamingPanel::logVisibilityChanged, this,
+          [this](bool visible, int removedWidth) {
+    if (!visible)
+      expandedWidth_ = width();
+    this->layout()->activate();
+    resize(visible ? expandedWidth_ : width() - removedWidth, height());
+  });
+  connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+          this, &MainWindow::saveWindowLayout);
 #ifdef Q_OS_MACOS
   qApp->setQuitOnLastWindowClosed(false);
   auto *windowMenu = menuBar()->addMenu(QString());
@@ -189,6 +198,14 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api,
       fillDevices(controller_.drivers(), saved_.driverId);
       streaming_->setTiming(saved_.timing);
       streaming_->setRememberedReceivers(saved_.receiverSelection);
+      const auto &savedLayout = saved_.windowLayout;
+      expandedWidth_ = savedLayout.expandedWidth;
+      streaming_->setWindowLayout(savedLayout);
+      if (savedLayout.width > 0) {
+        resize(savedLayout.width, savedLayout.height);
+        this->layout()->activate();
+        streaming_->setWindowLayout(savedLayout);
+      }
       const auto index =
           saved_.driverId.isEmpty() ? -1 : driver_->findData(saved_.driverId);
       driver_->setCurrentIndex(index);
@@ -305,6 +322,7 @@ void MainWindow::setBusy(bool busy) {
   streaming_->setBusy(busy);
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
+  saveWindowLayout();
 #ifdef Q_OS_MACOS
   // Closing only hides the widget; the controller and its session stay alive.
   // Explicit application quit is cleaned up by aboutToQuit above.
@@ -321,5 +339,12 @@ void MainWindow::closeEvent(QCloseEvent *event) {
   else
     event->accept();
 #endif
+}
+void MainWindow::saveWindowLayout() {
+  if (loading_)
+    return;
+  const auto normal = normalGeometry().size();
+  controller_.saveWindowLayout(streaming_->windowLayout(
+      normal.isValid() ? normal : size(), expandedWidth_));
 }
 } // namespace ui

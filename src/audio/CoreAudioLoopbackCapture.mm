@@ -62,7 +62,8 @@ QList<ChannelInfo> CoreAudioLoopbackCapture::open(const QString &id, void *) {
 }
 void CoreAudioLoopbackCapture::controlPanel() { coreaudio::controlPanel(); }
 CaptureStream CoreAudioLoopbackCapture::prepare(int left, int right,
-                                                double backlog) {
+                                                int packetSamples,
+                                                int backlogSamples) {
   if (const auto error = stop(); !error.isEmpty())
     throw i18n::MessageError(error);
   auto &s = *state_;
@@ -77,7 +78,8 @@ CaptureStream CoreAudioLoopbackCapture::prepare(int left, int right,
       throw i18n::MessageError(i18n::text(i18n::Id::LoopbackRequires44100));
     const auto sourceLayout =
         layout(s.api, s.source, kAudioDevicePropertyScopeOutput);
-    validateSelection(left, right, backlog, sourceLayout.channels);
+    validateSelection(left, right, packetSamples, backlogSamples,
+                      sourceLayout.channels);
     s.taps.reserve(sourceLayout.streams.size());
     @autoreleasepool {
       auto *tapList = [NSMutableArray array];
@@ -124,7 +126,8 @@ CaptureStream CoreAudioLoopbackCapture::prepare(int left, int right,
       if (source.mChannelsPerFrame != target.mChannelsPerFrame)
         throw i18n::MessageError(i18n::text(i18n::Id::LoopbackLayoutChanged));
     }
-    return s.session.prepare(s.aggregate, left, right, backlog);
+    return s.session.prepare(s.aggregate, left, right, packetSamples,
+                             backlogSamples);
   } catch (const std::exception &error) {
     const auto failure = i18n::fromException(error);
     const auto cleanup = stop();

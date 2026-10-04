@@ -11,6 +11,7 @@
 #include <QListWidget>
 #include <QMetaMethod>
 #include <QPushButton>
+#include <QSplitter>
 #include <QWidget>
 #include <cstdio>
 #include <dlfcn.h>
@@ -25,6 +26,21 @@ using namespace Steinberg::Vst;
     }                                                                          \
   } while (false)
 namespace {
+class ResizeFrame final : public IPlugFrame {
+public:
+  bool reject = false;
+  int calls = 0;
+  tresult PLUGIN_API queryInterface(const TUID, void **object) override {
+    *object = nullptr;
+    return kNoInterface;
+  }
+  uint32 PLUGIN_API addRef() override { return 1; }
+  uint32 PLUGIN_API release() override { return 1; }
+  tresult PLUGIN_API resizeView(IPlugView *view, ViewRect *size) override {
+    ++calls;
+    return reject ? kResultFalse : view->onSize(size);
+  }
+};
 QWidget *embedded(NSView *parent) {
   for (NSView *child in [parent subviews]) {
     if (auto *widget = QWidget::find(reinterpret_cast<WId>(child)))
@@ -184,14 +200,23 @@ int main(int argc, char **argv) {
       REQUIRE(view && QCoreApplication::instance() == application.get());
       ViewRect initial;
       REQUIRE(view->getSize(&initial) == kResultOk);
-      REQUIRE(initial.getWidth() == 1400 && initial.getHeight() == 880);
+      REQUIRE(initial.getWidth() == 950 && initial.getHeight() == 880);
       REQUIRE(view->isPlatformTypeSupported(kPlatformTypeHWND) == kResultFalse);
+      QList<int> savedParts;
       for (int reopen = 0; reopen < 2; ++reopen) {
         REQUIRE(view->attached([window contentView], kPlatformTypeNSView) ==
                 kResultOk);
         QWidget *widget = embedded([window contentView]);
         REQUIRE((incompatible || missingPlatform) ? !widget
                                                   : widget != nullptr);
+        if (widget && reopen == 1) {
+          pump();
+          auto *log = widget->findChild<QWidget *>("sessionLog");
+          REQUIRE(log && log->isHidden());
+          widget->findChild<QPushButton *>("toggleLog")->click();
+          pump();
+          REQUIRE(widget->findChild<QSplitter *>("streamingColumns")->sizes() == savedParts);
+        }
         ViewRect rect{0, 0, 900, 880};
         REQUIRE(view->onSize(&rect) == kResultOk);
         REQUIRE(view->onFocus(true) == kResultOk);
@@ -203,6 +228,33 @@ int main(int argc, char **argv) {
         if (widget)
           REQUIRE(widget->width() == 900 && widget->height() == 880);
         if (widget) {
+          ResizeFrame frame;
+          REQUIRE(view->setFrame(&frame) == kResultOk);
+          auto *logToggle = widget->findChild<QPushButton *>("toggleLog");
+          auto *log = widget->findChild<QWidget *>("sessionLog");
+          REQUIRE(logToggle && log);
+          pump();
+          logToggle->click();
+          pump();
+          ViewRect compact;
+          REQUIRE(view->getSize(&compact) == kResultOk);
+          REQUIRE(frame.calls == 1 && log->isHidden());
+          REQUIRE(compact.getWidth() < after.getWidth());
+          REQUIRE(compact.getHeight() == after.getHeight());
+          logToggle->click();
+          pump();
+          ViewRect restored;
+          REQUIRE(view->getSize(&restored) == kResultOk);
+          REQUIRE(frame.calls == 2 && !log->isHidden());
+          REQUIRE(restored.getWidth() == after.getWidth());
+          REQUIRE(restored.getHeight() == after.getHeight());
+          frame.reject = true;
+          logToggle->click();
+          REQUIRE(view->getSize(&restored) == kResultOk);
+          REQUIRE(log->isHidden() && restored.getWidth() == after.getWidth());
+          logToggle->click();
+          REQUIRE(!log->isHidden());
+          REQUIRE(view->setFrame(nullptr) == kResultOk);
           REQUIRE(exercisePanel(widget) == 0);
           auto *toggle = widget->findChild<QPushButton *>("languageToggle");
           auto *start = widget->findChild<QPushButton *>("start");
@@ -229,8 +281,25 @@ int main(int argc, char **argv) {
               "/VstEmbedded-" + argv[2] +
               (reopen == 0 ? "-zh.png" : "-en.png")));
         scale = nullptr;
+        if (widget && reopen == 0) {
+          auto *splitter = widget->findChild<QSplitter *>("streamingColumns");
+          REQUIRE(splitter);
+          auto parts = splitter->sizes();
+          splitter->setSizes({parts[0] + 35, parts[1] - 35});
+          pump();
+          savedParts = splitter->sizes();
+          widget->findChild<QPushButton *>("toggleLog")->click();
+          pump();
+        }
         REQUIRE(view->removed() == kResultOk);
         REQUIRE([[window contentView] subviews].count == 0);
+        if (widget && reopen == 0) {
+          view = owned(controller->createView(ViewType::kEditor));
+          REQUIRE(view);
+          ViewRect restored;
+          REQUIRE(view->getSize(&restored) == kResultOk);
+          REQUIRE(restored.getWidth() == 900 && restored.getHeight() == 880);
+        }
       }
       view = nullptr;
       [window close];

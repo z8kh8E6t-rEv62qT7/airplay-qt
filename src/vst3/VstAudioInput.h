@@ -37,7 +37,8 @@ public:
   void setBypass(bool) noexcept;
   void setRealtime(bool) noexcept;
   i18n::Message unavailable() const;
-  audio::CaptureStream prepare(double backlog, bool resuming = false);
+  audio::CaptureStream prepare(int packetSamples, int backlogSamples,
+                               bool resuming = false);
   bool start() noexcept;
   void stop() noexcept;
   void stateLoad() noexcept { fail(InputFault::StateLoad); }

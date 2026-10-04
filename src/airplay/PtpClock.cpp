@@ -155,12 +155,12 @@ void PtpClock::tick() {
       body.replace(30, 12, path);
       send(general_, 320,
            ptpHeader(11, 76, identity_, sequence_, 0x408,
-                     int(std::log2(timing_.ptpAnnounce))) +
+                     int(std::log2(timing_.ptpAnnounceMs / 1000))) +
                body);
-      nextAnnounce_ = now + qint64(timing_.ptpAnnounce * 1e9);
+      nextAnnounce_ = now + qint64(timing_.ptpAnnounceMs * 1e6);
     }
     if (now >= nextSync_) {
-      const int interval = int(std::log2(timing_.ptpSync));
+      const int interval = int(std::log2(timing_.ptpSyncMs / 1000));
       send(event_, 319,
            ptpHeader(0, 44, identity_, sequence_, 0x608, interval) +
                QByteArray(10, '\0'));
@@ -174,7 +174,7 @@ void PtpClock::tick() {
            ptpHeader(8, 96, identity_, sequence_, 0x408, interval) + stamp +
                ieee + apple);
       ++sequence_;
-      nextSync_ = now + qint64(timing_.ptpSync * 1e9);
+      nextSync_ = now + qint64(timing_.ptpSyncMs * 1e6);
     }
   } catch (const std::exception &error) {
     stop();

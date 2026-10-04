@@ -11,6 +11,8 @@
 #include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSpinBox>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -44,7 +46,11 @@ public:
   void showError(const i18n::Message &);
   void appendLog(const i18n::Message &);
   void setRecoveryPending(bool);
+  app::WindowLayout windowLayout(QSize windowSize, int expandedWidth) const;
+  void setWindowLayout(const app::WindowLayout &);
   Q_SLOT void setBusy(bool);
+protected:
+  void hideEvent(QHideEvent *) override;
 signals:
   // UI-thread notifications; consumers read typed values synchronously.
   void languageChanged();
@@ -53,6 +59,9 @@ signals:
   void discoveryIdle();
   void timingChanged();
   void networkBindingChanged();
+  // The owner resizes its window (or asks the VST3 host) after visibility changes.
+  void logVisibilityChanged(bool visible, int removedWidth);
+  void layoutChanged();
 
 private:
   struct TextBinding {
@@ -65,6 +74,10 @@ private:
   QPushButton *button(const i18n::Message &);
   void retranslate();
   QPushButton *languageButton_, *pauseDisplay_;
+  QPushButton *toggleLog_ = nullptr;
+  QSplitter *columns_ = nullptr;
+  QList<int> expandedSplitterSizes_;
+  void setLogVisible(bool);
   QTabWidget *timingTabs_;
   QVBoxLayout *inputLayout_;
   void updateTargets();
@@ -82,11 +95,19 @@ private:
   QLineEdit *manualFirst_, *manualSecond_;
   QPushButton *refresh_, *start_, *stop_, *defaults_, *applyVolume_;
   QLabel *targets_, *discoveryStatus_, *state_, *group_, *stats_;
-  QProgressBar *leftLevel_, *rightLevel_;
+  std::array<QProgressBar *, 2> levels_{};
+  std::array<QPushButton *, 2> levelReadouts_{};
+  std::array<double, 2> levelPeaks_{};
+  void setLevels(double left, double right);
+  void updatePeakReadouts();
   QDoubleSpinBox *volume_;
   QCheckBox *mute_;
   QPlainTextEdit *log_;
-  std::array<QDoubleSpinBox *, 13> timings_{};
+  std::array<QDoubleSpinBox *, 11> timings_{};
+  std::array<QSpinBox *, 3> sampleInputs_{};
+  std::array<QLabel *, 3> samplePreviews_{};
+  void updateSamplePreviews();
+  void timingEdited();
   bool discoveryStarted_ = false;
   bool busy_ = false, closing_ = false, streaming_ = false,
        volumePending_ = false, recoveryPending_ = false;

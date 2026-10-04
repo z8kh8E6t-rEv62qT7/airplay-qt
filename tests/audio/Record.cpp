@@ -151,7 +151,7 @@ void writeTrace(const QString &path, const audio::CaptureTrace &trace,
     output += fields.join(',').toUtf8() + '\n';
     if (entry.queued) {
       ++consumer;
-      frame += uint64_t(blockFrames);
+      frame += uint64_t(entry.sampleFrames ? entry.sampleFrames : blockFrames);
     }
   }
   if (file.write(output) != output.size() || !file.flush())
@@ -236,16 +236,17 @@ int main(int argc, char **argv) {
                   channels[i].name.render().toUtf8().constData(),
                   channels[i].type);
     }
-    auto stream = capture.prepare(30, 31, 1.);
+    auto stream = capture.prepare(30, 31, 64, 65536);
     std::printf("TIMER request_ms=1 ignore_timer_resolution_disabled=1\n");
     std::fflush(stdout);
+    const size_t callbackFrames = size_t(capture.callbackSamples());
     const size_t traceCapacity =
-        (uint64_t(seconds) * 44100 + stream.blockFrames - 1) /
-            stream.blockFrames +
-        128;
+        (uint64_t(seconds) * 44100 + callbackFrames - 1) / callbackFrames + 128;
     audio::CaptureTrace trace(traceCapacity);
     std::vector<uint64_t> consumed(traceCapacity);
-    size_t consumedCount = 0;
+    size_t consumedCount = 0, callbackFilled = 0;
+    std::vector<std::byte> callbackLeft(callbackFrames * 4),
+        callbackRight(callbackFrames * 4);
     LARGE_INTEGER frequency;
     if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0)
       fail("QueryPerformanceFrequency failed");
@@ -274,9 +275,23 @@ int main(int argc, char **argv) {
                    .arg(fault));
         std::span<const std::byte> left, right;
         while (frames < target && stream.queue->peek(left, right)) {
-          if (consumedCount == consumed.size())
-            fail("Consumer trace capacity exceeded");
-          consumed[consumedCount++] = audio::captureChecksum(left, right);
+          for (size_t offset = 0; offset < left.size() / 4;) {
+            const auto count = std::min(callbackFrames - callbackFilled,
+                                        left.size() / 4 - offset);
+            std::memcpy(callbackLeft.data() + callbackFilled * 4,
+                        left.data() + offset * 4, count * 4);
+            std::memcpy(callbackRight.data() + callbackFilled * 4,
+                        right.data() + offset * 4, count * 4);
+            callbackFilled += count;
+            offset += count;
+            if (callbackFilled == callbackFrames) {
+              if (consumedCount == consumed.size())
+                fail("Consumer trace capacity exceeded");
+              consumed[consumedCount++] =
+                  audio::captureChecksum(callbackLeft, callbackRight);
+              callbackFilled = 0;
+            }
+          }
           const size_t count =
               std::min(size_t(target - frames), left.size() / 4);
           left = left.first(count * 4);

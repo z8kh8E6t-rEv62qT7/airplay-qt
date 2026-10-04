@@ -12,7 +12,7 @@ public:
   ~EventChannel() override;
   void open(const QByteArray &shared, const QHostAddress &host, quint16 port,
             const QHostAddress &local, const NetworkRoute &route,
-            double timeout);
+            double timeoutMs);
   void close();
 signals:
   void connected();

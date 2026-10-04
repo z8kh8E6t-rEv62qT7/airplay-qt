@@ -101,7 +101,7 @@ Launch the installed application as your normal desktop user, without `sudo`:
 4. Click Start, adjust the volume, and use Mute as needed.
 5. Click Stop before changing input devices. To end playback, click Stop or close the application.
 
-You can start sending before the phone begins playback. Pausing or disconnecting the phone keeps the session sending silence; audio resumes when the same phone returns. Leave the prebuffer at its default of 40 ms initially.
+You can start sending before the phone begins playback. Pausing or disconnecting the phone keeps the session sending silence; audio resumes when the same phone returns. Leave the prebuffer at its default of 2048 samples (about 46.44 ms) initially.
 
 ### Phone volume keys
 
@@ -168,7 +168,7 @@ AirPlayQt saves settings to `$XDG_CONFIG_HOME/AirPlayQt.json`, or `~/.config/Air
 
 ## 7. Standalone CLI (foreground operation)
 
-`AirPlayQtCli` does not read or write GUI settings and requires an explicit input device ID and receiver IPv4 addresses.
+`AirPlayQtCli` transmission requires `--config PATH`. It validates the complete version 4 application configuration, uses only its 14 timing fields, and never writes it. Input device ID and receiver IPv4 addresses must still be explicit. See [config.example.json](../config.example.json).
 
 ### Build and install separately
 
@@ -221,19 +221,19 @@ The optional AVRCP rule in section 5 uses `uaccess` for active local users; it d
 Replace the sample device ID and IP addresses with actual values. Bluetooth IDs contain both adapter and phone addresses; copy the complete ID from the list. One receiver:
 
 ```sh
-/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9
+/usr/local/bin/AirPlayQtCli --config /path/to/config.json --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9
 ```
 
 A stereo pair already configured through the receivers' own system:
 
 ```sh
-/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9:7000 --receiver 192.168.8.10:7000
+/usr/local/bin/AirPlayQtCli --config /path/to/config.json --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9:7000 --receiver 192.168.8.10:7000
 ```
 
 Optional interface binding and reversed input channels:
 
 ```sh
-/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9 --interface eth0 --local-ip 192.168.8.20 --left 2 --right 1
+/usr/local/bin/AirPlayQtCli --config /path/to/config.json --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9 --interface eth0 --local-ip 192.168.8.20 --left 2 --right 1
 ```
 
 | Option | Behavior |
@@ -245,7 +245,7 @@ Optional interface binding and reversed input channels:
 | `--list-devices`, `--list-interfaces` | Use each alone; print results and exit |
 | `--help`, `--version` | Use each alone; no audio initialization |
 
-Only `--receiver` may be repeated. Unknown options, positional arguments and combining queries with sending options are rejected. Timing uses existing defaults, without loading advanced GUI settings. Lists and help go to stdout; English status, error and retry messages with UTC timestamps go to stderr. Audio statistics are not continuously printed.
+Only `--receiver` may be repeated. Unknown options, positional arguments and combining queries with sending options are rejected. Timing and samples use the required `--config` file with no individual overrides; help and query modes do not require configuration. Lists and help go to stdout; English status, error and retry messages with UTC timestamps go to stderr. Audio statistics are not continuously printed.
 
 The first device check, capture initialization or AirPlay startup failure exits immediately. After the first streaming state, including silent streaming, a session failure, disconnection or takeover by another sender causes cleanup followed by a 2-second delay and unlimited retries of the entire receiver group using the original options. Phone pauses, disconnections and temporarily unavailable audio nodes keep the GUI's silence and capture recovery behavior; they do not count as AirPlay session failures. Recreated sessions also retain the existing session volume initialization behavior.
 

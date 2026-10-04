@@ -1,16 +1,89 @@
+#include "../airplay/TestReceiver.h"
 #include "airplay/DiscoveryApi.h"
 #include "app/Settings.h"
 #include "ui/StreamingPanel.h"
-#include "../airplay/TestReceiver.h"
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
+#include <QSplitter>
+#include <QScrollBar>
 #include <QtTest>
 #include <cmath>
+#include <thread>
 class CommonAppTests : public QObject {
   Q_OBJECT
 private slots:
+  void layoutConfigurationIsOptionalAndPreserved() {
+    app::Settings settings;
+    auto old = settings.json();
+    old.remove("windowLayout");
+    QCOMPARE(app::Settings::fromJson(old).windowLayout, app::WindowLayout{});
+    settings.windowLayout = {900, 880, 600, 350, 1100, false};
+    QCOMPARE(app::Settings::fromJson(settings.json()).windowLayout,
+             settings.windowLayout);
+    for (const QJsonValue value : {QJsonValue(-1), QJsonValue(1.5),
+                                  QJsonValue(32769), QJsonValue("900")}) {
+      auto json = settings.json();
+      auto layout = json["windowLayout"].toObject();
+      layout["width"] = value;
+      json["windowLayout"] = layout;
+      QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
+    }
+    QTemporaryDir directory;
+    const auto path = directory.filePath("settings.json");
+    settings.save(path);
+    app::SettingsStore store(path);
+    store.load();
+    store.saveLanguage(i18n::Language::Chinese);
+    store.saveStart(app::Settings{});
+    QCOMPARE(app::Settings::load(path).windowLayout, settings.windowLayout);
+    settings.windowLayout = {1000, 900, 600, 350, 1000, true};
+    store.saveWindowLayout(settings.windowLayout);
+    QCOMPARE(app::Settings::load(path).windowLayout, settings.windowLayout);
+  }
+  void clearLogPreservesVisibilityAndContinuesRecording() {
+    app::SessionController session;
+    ui::StreamingPanel panel(session);
+    auto *clear = panel.findChild<QPushButton *>("clearLog");
+    auto *toggle = panel.findChild<QPushButton *>("toggleLog");
+    auto *log = panel.findChild<QPlainTextEdit *>("sessionLog");
+    QVERIFY(clear && toggle && log);
+    QCOMPARE(clear->text(), QString("Clear Log"));
+    panel.setLanguage(i18n::Language::Chinese);
+    QCOMPARE(clear->text(), QString("清除日志"));
+    panel.resize(1200, 880);
+    panel.show();
+    QCoreApplication::processEvents();
+    QCOMPARE(clear->parentWidget(), toggle->parentWidget());
+    QCOMPARE(clear->y(), toggle->y());
+    QVERIFY(clear->x() > toggle->geometry().right());
+    QSignalSpy visibilityChanges(&panel, &ui::StreamingPanel::logVisibilityChanged);
+    for (bool hidden : {false, true}) {
+      if (hidden)
+        toggle->click();
+      panel.setBusy(hidden);
+      QVERIFY(clear->isEnabled());
+      emit session.log(i18n::Message("old log entry"));
+      QVERIFY(log->toPlainText().endsWith("old log entry"));
+      const auto size = panel.size();
+      const auto changes = visibilityChanges.count();
+      clear->click();
+      QVERIFY(log->toPlainText().isEmpty());
+      clear->click(); // Clearing an empty log is harmless.
+      QVERIFY(log->toPlainText().isEmpty());
+      QCOMPARE(log->isHidden(), hidden);
+      QCOMPARE(panel.size(), size);
+      QCOMPARE(visibilityChanges.count(), changes);
+      emit session.log(i18n::Message("new log entry"));
+      QVERIFY(log->toPlainText().endsWith("new log entry"));
+      QVERIFY(!log->toPlainText().contains("old log entry"));
+      QCOMPARE(log->document()->blockCount(), 1);
+    }
+    toggle->click();
+    QVERIFY(!log->isHidden());
+    QVERIFY(log->toPlainText().endsWith("new log entry"));
+  }
   void logLifetimeMatchesPanel() {
     app::SessionController session;
     const auto message = i18n::text(i18n::Id::WaitingForPTPSynchronization);
@@ -28,6 +101,24 @@ private slots:
         QCOMPARE(log->document()->blockCount(), 1);
         panel.showError(i18n::text(i18n::Id::SelectOneOrTwoReceivers));
         QCOMPARE(log->document()->blockCount(), 2);
+        panel.resize(950, 880);
+        panel.show();
+        QCoreApplication::processEvents();
+        for (int i = 0; i < 100; ++i)
+          emit session.log(message);
+        auto *scroll = log->verticalScrollBar();
+        QVERIFY(scroll->maximum() > 0);
+        scroll->setValue(scroll->minimum());
+        QVERIFY(scroll->value() < scroll->maximum());
+        emit session.log(message);
+        QCOMPARE(scroll->value(), scroll->maximum());
+        auto *toggle = panel.findChild<QPushButton *>("toggleLog");
+        toggle->click();
+        scroll->setValue(scroll->minimum());
+        emit session.log(message);
+        toggle->click();
+        QCoreApplication::processEvents();
+        QCOMPARE(scroll->value(), scroll->maximum());
       }
       emit session.log(message);
     }
@@ -41,8 +132,9 @@ private slots:
     for (int run = 0; run < 2; ++run) {
       test::Receiver left("left"), right("right");
       app::Timing timing;
-      timing.settle = 0;
-      timing.prebuffer = .008;
+      timing.settleMs = 0;
+      timing.packetSamples = 352;
+      timing.prebufferSamples = 512;
       audio::CaptureStream stream{
           std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
           audio::format(16), audio::format(16), 352};
@@ -120,18 +212,38 @@ private slots:
     QCOMPARE(left->value(), 100);
     QVERIFY(stats->text().contains("每台包数 456"));
     QCOMPARE(first->text(), QString("192.0.2.1:7000"));
-    QCOMPARE(panel.timing().lead, timing.lead);
+    QCOMPARE(panel.timing().leadMs, timing.leadMs);
     QVERIFY(starts.isEmpty() && stops.isEmpty() && edits.isEmpty());
 
     panel.resize(1400, 880);
     panel.show();
     QCoreApplication::processEvents();
     auto *controls = panel.findChild<QWidget *>("controlsPane");
-    QVERIFY(controls);
-    QVERIFY(log->x() >= controls->geometry().right());
+    auto *meters = panel.findChild<QWidget *>("metersPane");
+    auto *columns = panel.findChild<QSplitter *>("streamingColumns");
+    QVERIFY(controls && meters && columns);
+    QCOMPARE(columns->count(), 2);
+    QCOMPARE(columns->widget(1), log);
+    QVERIFY(columns->handle(1)->isEnabled());
+    QVERIFY(meters->x() > controls->geometry().right());
+    QVERIFY(log->x() > meters->geometry().right());
+    QCOMPARE(left->orientation(), Qt::Vertical);
+    QCOMPARE(right->orientation(), Qt::Vertical);
+    QVERIFY(!left->invertedAppearance() && !right->invertedAppearance());
+    QVERIFY(left->mapTo(&panel, QPoint{}).x() < right->mapTo(&panel, QPoint{}).x());
+    QVERIFY(left->height() > left->width());
+    QCOMPARE(left->width(), 40);
+    QCOMPARE(right->width(), 40);
+    QCOMPARE(right->mapTo(&panel, QPoint{}).x() -
+                 left->mapTo(&panel, QPoint{}).x() - left->width(),
+             8);
+    auto *peak = panel.findChild<QPushButton *>("leftLevelReadout");
+    QVERIFY(peak);
+    QCOMPARE(peak->text(), QString("-6.0\ndBFS"));
+    QCOMPARE(peak->width(), left->width());
+    QCOMPARE(peak->mapTo(&panel, QPoint{}).x(), left->mapTo(&panel, QPoint{}).x());
     QCOMPARE(log->y(), controls->y());
     QCOMPARE(log->height(), controls->height());
-    QVERIFY(std::abs(log->width() - controls->width()) <= 1);
     QCOMPARE(log->lineWrapMode(), QPlainTextEdit::WidgetWidth);
     QCOMPARE(log->maximumBlockCount(), 1000);
     panel.appendLog(QStringLiteral("Receiver 192.0.2.1:7000: diagnostic detail; ")
@@ -145,8 +257,61 @@ private slots:
       const auto suffix = language == i18n::Language::English ? "en" : "zh";
       QVERIFY(panel.grab().save(QCoreApplication::applicationDirPath() +
                                "/PausedDisplay-" + suffix + ".png"));
-      QVERIFY(std::abs(log->width() - controls->width()) <= 1);
+      QVERIFY(log->x() > meters->geometry().right());
     }
+  }
+  void stereoPeakHoldAndReset() {
+    app::SessionController session;
+    ui::StreamingPanel panel(session);
+    auto *left = panel.findChild<QPushButton *>("leftLevelReadout");
+    auto *right = panel.findChild<QPushButton *>("rightLevelReadout");
+    auto *meter = panel.findChild<QProgressBar *>("leftLevel");
+    auto *rightMeter = panel.findChild<QProgressBar *>("rightLevel");
+    auto *pause = panel.findChild<QPushButton *>("pauseDisplay");
+    QVERIFY(left && right && meter && rightMeter && pause);
+    QCOMPARE(left->text(), QString("−∞\ndBFS"));
+    emit session.telemetry(.5, .25, 0, 0, 0, 0);
+    emit session.telemetry(.1, .125, 0, 0, 0, 0);
+    QCOMPARE(meter->value(), 100);
+    QCOMPARE(left->text(), QString("-6.0\ndBFS"));
+    QCOMPARE(right->text(), QString("-12.0\ndBFS"));
+    panel.setBusy(false);
+    QCOMPARE(meter->value(), 0);
+    QCOMPARE(left->text(), QString("-6.0\ndBFS"));
+    panel.setBusy(true);
+    panel.setLanguage(i18n::Language::Chinese);
+    QCOMPARE(left->text(), QString("-6.0\ndBFS"));
+    QVERIFY(left->toolTip().contains("清除左右"));
+    for (auto *button : {left, right}) {
+      emit session.telemetry(1, .5, 0, 0, 0, 0);
+      QCOMPARE(left->text(), QString("0.0\ndBFS"));
+      QTest::mouseClick(button, Qt::LeftButton);
+      QCOMPARE(left->text(), QString("−∞\ndBFS"));
+      QCOMPARE(right->text(), QString("−∞\ndBFS"));
+      QCOMPARE(meter->value(), 0);
+      QCOMPARE(rightMeter->value(), 0);
+      emit session.telemetry(.1, .01, 0, 0, 0, 0);
+      QCOMPARE(left->text(), QString("-20.0\ndBFS"));
+      QCOMPARE(right->text(), QString("-40.0\ndBFS"));
+    }
+    pause->click();
+    emit session.telemetry(1, 1, 0, 0, 0, 0);
+    QCOMPARE(left->text(), QString("-20.0\ndBFS"));
+    left->click();
+    QCOMPARE(meter->value(), 0);
+    QCOMPARE(rightMeter->value(), 0);
+    QVERIFY(pause->isChecked());
+    emit session.telemetry(.5, .5, 0, 0, 0, 0);
+    QCOMPARE(left->text(), QString("−∞\ndBFS"));
+    QCOMPARE(right->text(), QString("−∞\ndBFS"));
+    QCOMPARE(meter->value(), 0);
+    QCOMPARE(rightMeter->value(), 0);
+    pause->click();
+    emit session.telemetry(.5, .25, 0, 0, 0, 0);
+    QCOMPARE(left->text(), QString("-6.0\ndBFS"));
+    QCOMPARE(right->text(), QString("-12.0\ndBFS"));
+    QCOMPARE(meter->value(), 500);
+    QCOMPARE(rightMeter->value(), 250);
   }
   void telemetryGateSurvivesQueuedEventsAndRestart() {
     app::SessionController session;
@@ -156,10 +321,11 @@ private slots:
     for (int run = 0; run < 2; ++run) {
       test::Receiver receiver("single");
       app::Timing timing;
-      timing.settle = 0;
-      timing.prebuffer = .008;
-      timing.backlog = .5;
-      timing.late = .5;
+      timing.settleMs = 0;
+      timing.packetSamples = 352;
+      timing.prebufferSamples = 512;
+      timing.backlogSamples = 32768;
+      timing.lateMs = 500;
       audio::CaptureStream stream{
           std::make_shared<audio::CaptureQueue>(352, 704, 704, 128),
           audio::format(16), audio::format(16), 352};
@@ -264,7 +430,7 @@ private slots:
     original.left = 4;
     original.right = 5;
     original.networkBinding = {"en-test", "192.0.2.10"};
-    original.timing.lead = .25;
+    original.timing.leadMs = 250;
     original.receiverSelection = {{"设备", "192.0.2.1:7000"}};
     store.saveStart(original, original.receiverSelection);
     store.saveLanguage(Language::Chinese);
@@ -285,7 +451,7 @@ private slots:
     }
     json.remove("language");
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
-    for (int version : {1, 2, 4}) {
+    for (int version : {1, 2, 3, 5}) {
       json = original.json();
       json["version"] = version;
       QVERIFY_THROWS_EXCEPTION(std::runtime_error,
@@ -326,7 +492,7 @@ private slots:
     list->setCurrentItem(selected);
     first->setText("192.0.2.2:7001");
     auto timing = panel.timing();
-    timing.lead = .5;
+    timing.leadMs = 500;
     panel.setTiming(timing);
     emit session.log(text(Id::WaitingForPTPSynchronization));
     const auto history = log->toPlainText();
@@ -348,7 +514,7 @@ private slots:
     QCOMPARE(selected->checkState(), Qt::Checked);
     QCOMPARE(selected->text(), QString("设备 %1 · 192.0.2.1:7000"));
     QCOMPARE(first->text(), QString("192.0.2.2:7001"));
-    QCOMPARE(panel.timing().lead, .5);
+    QCOMPARE(panel.timing().leadMs, 500.);
     QVERIFY(!start->isEnabled());
     QCOMPARE(log->toPlainText(), history);
     QVERIFY(session.streaming());
@@ -374,12 +540,12 @@ private slots:
     app::Settings settings;
     settings.networkBinding = {"en-test", "192.0.2.10"};
     auto json = settings.json();
-    QCOMPARE(json["version"].toInt(), 3);
+    QCOMPARE(json["version"].toInt(), 4);
     QCOMPARE(app::Settings::fromJson(json).networkBinding,
              settings.networkBinding);
     json["version"] = 1;
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
-    json["version"] = 3;
+    json["version"] = 4;
     json.remove("networkBinding");
     QVERIFY_THROWS_EXCEPTION(std::runtime_error, app::Settings::fromJson(json));
     QTemporaryDir dir;
@@ -612,10 +778,226 @@ private slots:
     QVERIFY(fresh.findChild<QLineEdit *>("manualFirst")->text().isEmpty());
     QVERIFY(fresh.findChild<QLineEdit *>("manualSecond")->text().isEmpty());
   }
+  void sampleConfigurationAndCountUi() {
+    app::Settings settings;
+    const auto json = settings.json();
+    QCOMPARE(json["timing"].toObject().size(), 14);
+    QCOMPARE(settings.timing.packetSamples, 64);
+    QCOMPARE(settings.timing.prebufferSamples, 2048);
+    QCOMPARE(settings.timing.backlogSamples, 8192);
+    for (const auto &field : app::timingSamplesFields) {
+      for (const QJsonValue invalid :
+           {QJsonValue(), QJsonValue(true), QJsonValue("64"), QJsonValue(0),
+            QJsonValue(-1), QJsonValue(1.5), QJsonValue(2147483648.)}) {
+        auto changed = json;
+        auto timing = changed["timing"].toObject();
+        timing[field.key] = invalid;
+        changed["timing"] = timing;
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error,
+                                 app::Settings::fromJson(changed));
+      }
+    }
+    for (int packet : {1, 64, 352}) {
+      settings.timing.packetSamples = packet;
+      QCOMPARE(app::Settings::fromJson(settings.json()).timing.packetSamples,
+               packet);
+    }
+    settings.timing.packetSamples = 353;
+    QVERIFY(!settings.validate().isEmpty());
+    settings = {};
+    settings.timing.prebufferSamples = 3;
+    settings.timing.backlogSamples = 8193;
+    QVERIFY(settings.validate().isEmpty());
+    QCOMPARE(app::Settings::fromJson(settings.json()).timing, settings.timing);
+    settings.timing.prebufferSamples = 1;
+    settings.timing.backlogSamples = 1 << 30;
+    QVERIFY(settings.validate().isEmpty());
+    QCOMPARE(app::Settings::fromJson(settings.json()).timing.backlogSamples,
+             1 << 30);
+    app::SessionController session;
+    ui::StreamingPanel panel(session);
+    auto *packet = panel.findChild<QSpinBox *>("packetSamples");
+    auto *pre = panel.findChild<QSpinBox *>("prebufferSamples");
+    auto *back = panel.findChild<QSpinBox *>("backlogSamples");
+    auto *packetPreview = panel.findChild<QLabel *>("packetSamplesPreview");
+    auto *prePreview = panel.findChild<QLabel *>("prebufferSamplesPreview");
+    auto *backPreview = panel.findChild<QLabel *>("backlogSamplesPreview");
+    QVERIFY(packet && pre && back && packetPreview && prePreview && backPreview);
+    QCOMPARE(packet->text(), QString("64 samples"));
+    QCOMPARE(pre->text(), QString("2048 samples"));
+    QCOMPARE(back->text(), QString("8192 samples"));
+    QCOMPARE(packetPreview->text(), QString("1.451 ms"));
+    QCOMPARE(prePreview->text(), QString("46.440 ms"));
+    QCOMPARE(backPreview->text(), QString("185.760 ms"));
+    panel.findChild<QTabWidget *>("receiverModes")->setCurrentIndex(1);
+    panel.findChild<QLineEdit *>("manualFirst")->setText("127.0.0.1:7000");
+    auto *start = panel.findChild<QPushButton *>("start");
+    QVERIFY(start->isEnabled());
+    QSignalSpy changed(&panel, &ui::StreamingPanel::timingChanged);
+    for (const auto &field : app::timingSamplesFields) {
+      auto *input = panel.findChild<QSpinBox *>(field.key);
+      auto *preview = panel.findChild<QLabel *>(QString(field.key) + "Preview");
+      const bool isPacket = field.member == &app::Timing::packetSamples;
+      const int step = isPacket ? 32 : 256;
+      QCOMPARE(input->singleStep(), step);
+      QCOMPARE(input->suffix(), QString(" samples"));
+      QCOMPARE(input->buttonSymbols(), QAbstractSpinBox::UpDownArrows);
+      input->setValue(field.minimum);
+      input->stepUp();
+      QCOMPARE(input->value(), field.minimum + step);
+      QCOMPARE(panel.timing().*(field.member), input->value());
+      QCOMPARE(preview->text(), isPacket ? QString("0.748 ms") : QString("5.828 ms"));
+      input->stepDown();
+      QCOMPARE(input->value(), field.minimum);
+      input->stepDown();
+      QCOMPARE(input->value(), field.minimum);
+      input->setValue(field.maximum - 1);
+      input->stepUp();
+      QCOMPARE(input->value(), field.maximum);
+      input->stepUp();
+      QCOMPARE(input->value(), field.maximum);
+      input->setValue(field.maximum + 1);
+      QCOMPARE(input->value(), field.maximum);
+      input->setValue(0);
+      QCOMPARE(input->value(), field.minimum);
+      panel.setTiming(app::Timing{});
+      QVERIFY(start->isEnabled());
+    }
+    QVERIFY(changed.count() > 0);
+    packet->setValue(64);
+    packet->stepUp();
+    QCOMPARE(packet->value(), 96);
+    packet->stepDown();
+    QCOMPARE(packet->value(), 64);
+    packet->setValue(320);
+    packet->stepUp();
+    QCOMPARE(packet->value(), 352);
+    pre->setValue(3);
+    back->setValue(8193);
+    QVERIFY(panel.timing().validate().isEmpty());
+    QVERIFY(start->isEnabled());
+    QCOMPARE(packetPreview->text(), QString("7.982 ms"));
+    QCOMPARE(prePreview->text(), QString("0.068 ms"));
+    QCOMPARE(backPreview->text(), QString("185.782 ms"));
+    back->setValue(3);
+    QVERIFY(!start->isEnabled());
+    back->setValue(2);
+    QVERIFY(!start->isEnabled());
+    pre->setValue(1);
+    back->setValue(1073741824);
+    QCOMPARE(panel.timing().prebufferSamples, 1);
+    QCOMPARE(panel.timing().backlogSamples, 1 << 30);
+    QCOMPARE(prePreview->text(), QString("0.023 ms"));
+    QVERIFY(start->isEnabled());
+    panel.setLanguage(i18n::Language::Chinese);
+    QCOMPARE(pre->text(), QString("1 samples"));
+    QCOMPARE(prePreview->text(), QString("0.023 ms"));
+    panel.setBusy(true);
+    QVERIFY(!pre->isEnabled() && !back->isEnabled() && !packet->isEnabled());
+    panel.setBusy(false);
+    QVERIFY(pre->isEnabled() && back->isEnabled() && packet->isEnabled());
+    panel.setTiming(settings.timing);
+    QCOMPARE(panel.timing(), settings.timing);
+    panel.setTiming(app::Timing{});
+    QCOMPARE(packet->text(), QString("64 samples"));
+    QCOMPARE(pre->text(), QString("2048 samples"));
+    QCOMPARE(back->text(), QString("8192 samples"));
+    QTemporaryDir directory;
+    QVERIFY_THROWS_EXCEPTION(
+        std::runtime_error,
+        app::Settings::load(directory.filePath("missing.json"), true));
+  }
+  void captureQueueReblocksCallbacks() {
+    for (const int packet : {1, 64, 352}) {
+      audio::CaptureQueue queue(packet, size_t(packet) * 2, size_t(packet) * 4,
+                                audio::CaptureQueue::capacityFor(packet, 8193));
+      std::array<int16_t, 1200> left{};
+      std::array<int32_t, 1200> right{};
+      for (size_t i = 0; i < left.size(); ++i) {
+        left[i] = int16_t(i);
+        right[i] = -int32_t(i);
+      }
+      size_t offset = 0, consumed = 0;
+      for (size_t count : {1u, 31u, 127u, 513u, 528u}) {
+        uint64_t copied = 0;
+        QVERIFY(queue.append(left.data() + offset, right.data() + offset, count,
+                             &copied));
+        QCOMPARE(copied,
+                 audio::captureChecksum(
+                     std::as_bytes(std::span(left).subspan(offset, count)),
+                     std::as_bytes(std::span(right).subspan(offset, count))));
+        offset += count;
+        std::span<const std::byte> l, r;
+        while (queue.peek(l, r)) {
+          QCOMPARE(l.size(), size_t(packet) * 2);
+          QCOMPARE(r.size(), size_t(packet) * 4);
+          QCOMPARE(std::memcmp(l.data(), left.data() + consumed, l.size()), 0);
+          QCOMPARE(std::memcmp(r.data(), right.data() + consumed, r.size()), 0);
+          consumed += packet;
+          queue.pop();
+        }
+      }
+      QCOMPARE(consumed, size_t(1200 / packet * packet));
+      QCOMPARE(queue.queuedFrames(), uint64_t(0));
+    }
+    audio::CaptureQueue small(64, 128, 128, 2);
+    std::array<int16_t, 129> samples{};
+    QVERIFY(!small.append(samples.data(), samples.data(), 129));
+    QCOMPARE(small.capturedFrames(), uint64_t(0));
+    QVERIFY(small.append(samples.data(), samples.data(), 128));
+    QVERIFY(!small.append(samples.data(), samples.data(), 1));
+    QVERIFY_THROWS_EXCEPTION(
+        std::invalid_argument,
+        audio::CaptureQueue(1, 8, 8, std::numeric_limits<size_t>::max()));
+    QVERIFY_THROWS_EXCEPTION(std::invalid_argument,
+                             audio::CaptureQueue::capacityFor(353, 8192));
+    for (const int invalid : {0, -1, (1 << 30) + 1})
+      QVERIFY_THROWS_EXCEPTION(std::invalid_argument,
+                               audio::CaptureQueue::capacityFor(64, invalid));
+  }
+  void captureQueueConcurrentReblocking() {
+    constexpr int packet = 7, callbacks = 10000, callbackSamples = 64;
+    audio::CaptureQueue queue(packet, packet * sizeof(int32_t),
+                              packet * sizeof(int32_t), 128);
+    std::atomic<bool> done{false};
+    std::thread producer([&] {
+      std::array<int32_t, callbackSamples> left{}, right{};
+      for (int callback = 0; callback < callbacks; ++callback) {
+        for (int i = 0; i < callbackSamples; ++i) {
+          left[i] = callback * callbackSamples + i;
+          right[i] = -left[i];
+        }
+        while (!queue.append(left.data(), right.data(), callbackSamples))
+          std::this_thread::yield();
+      }
+      done.store(true);
+    });
+    size_t consumed = 0;
+    bool exact = true;
+    for (;;) {
+      std::span<const std::byte> left, right;
+      if (!queue.peek(left, right)) {
+        if (done.load() && !queue.queuedFrames())
+          break;
+        std::this_thread::yield();
+        continue;
+      }
+      for (int i = 0; i < packet; ++i, ++consumed) {
+        int32_t l, r;
+        std::memcpy(&l, left.data() + i * 4, 4);
+        std::memcpy(&r, right.data() + i * 4, 4);
+        exact &= l == int32_t(consumed) && r == -int32_t(consumed);
+      }
+      queue.pop();
+    }
+    producer.join();
+    QVERIFY(exact);
+    QCOMPARE(consumed, size_t(callbacks * callbackSamples / packet * packet));
+  }
   void defaultsAndBounds() {
     app::Settings settings;
     QVERIFY(settings.validate().isEmpty());
-    for (const auto &field : app::timingFields) {
+    for (const auto &field : app::timingMsFields) {
       auto invalid = settings;
       invalid.timing.*(field.member) = field.maximum + 1;
       QVERIFY(!invalid.validate().isEmpty());
@@ -623,10 +1005,10 @@ private slots:
       invalid.timing.*(field.member) = std::numeric_limits<double>::quiet_NaN();
       QVERIFY(!invalid.validate().isEmpty());
     }
-    settings.timing.ptpSync = .12;
+    settings.timing.ptpSyncMs = 120;
     QVERIFY(!settings.validate().isEmpty());
     settings = {};
-    settings.timing.prebuffer = settings.timing.backlog;
+    settings.timing.prebufferSamples = settings.timing.backlogSamples;
     QVERIFY(!settings.validate().isEmpty());
     settings = {};
     settings.left = settings.right;

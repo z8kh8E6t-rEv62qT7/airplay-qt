@@ -281,7 +281,7 @@ void AirPlaySession::start() {
     // Automatic mode lets the first TCP connection select the source.
     // Explicit mode binds before connecting and shares the frozen route.
     peers_[0]->rtsp.open(peers_[0]->host, endpoints_[0].port, identity_,
-                         timing_.connectTimeout, {}, route_, activeRemote_);
+                         timing_.connectTimeoutMs, {}, route_, activeRemote_);
   } catch (const std::exception &e) {
     fail(e);
   }
@@ -294,14 +294,14 @@ void AirPlaySession::opened(int index) {
     local_ = p.rtsp.localAddress();
     for (size_t i = 1; i < peers_.size(); ++i)
       peers_[i]->rtsp.open(peers_[i]->host, endpoints_[qsizetype(i)].port,
-                           identity_, timing_.connectTimeout, local_, route_,
+                           identity_, timing_.connectTimeoutMs, local_, route_,
                            activeRemote_);
   }
-  p.rtsp.request("GET", "/info", {}, {}, timing_.requestTimeout);
+  p.rtsp.request("GET", "/info", {}, {}, timing_.requestTimeoutMs);
 }
 void AirPlaySession::request(Peer &p, const QByteArray &method,
                              const QByteArray &body, const QByteArray &type) {
-  p.rtsp.request(method, p.url, body, type, timing_.requestTimeout);
+  p.rtsp.request(method, p.url, body, type, timing_.requestTimeoutMs);
 }
 void AirPlaySession::setupGroup() {
   volume_ = peers_[0]->info.volume;
@@ -339,7 +339,7 @@ void AirPlaySession::setupGroup() {
                    tlvEncode({{6, QByteArray::fromHex("01")},
                               {0, QByteArray::fromHex("00")},
                               {19, QByteArray::fromHex("10")}}),
-                   "application/pairing+tlv8", timing_.requestTimeout);
+                   "application/pairing+tlv8", timing_.requestTimeoutMs);
   }
 }
 void AirPlaySession::reply(int index, const QByteArray &body) {
@@ -348,7 +348,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
   if (state_ == State::Stopping) {
     if (p.step == Step::StopMetadata) {
       p.step = Step::Teardown;
-      p.rtsp.request("TEARDOWN", p.url, {}, {}, timing_.teardownTimeout);
+      p.rtsp.request("TEARDOWN", p.url, {}, {}, timing_.teardownTimeoutMs);
       return;
     }
     p.stopped = true;
@@ -376,7 +376,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
                    tlvEncode({{6, QByteArray::fromHex("03")},
                               {3, p.proof.publicKey},
                               {4, p.proof.proof}}),
-                   "application/pairing+tlv8", timing_.requestTimeout);
+                   "application/pairing+tlv8", timing_.requestTimeoutMs);
     break;
   }
   case Step::PairProof: {
@@ -424,7 +424,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
         port(dictionary(plistDecode(body)).value("eventPort"));
     p.step = Step::Event;
     p.event.open(p.proof.key, p.host, eventPort, local_, route_,
-                 timing_.connectTimeout);
+                 timing_.connectTimeoutMs);
     OPENSSL_cleanse(p.proof.key.data(), size_t(p.proof.key.size()));
     p.proof = {};
     break;
@@ -481,7 +481,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
         p.host.toString() +
         i18n::text(i18n::Id::PublishingNowPlayingInformationDMAPLiveAudio));
     p.rtsp.request("SET_PARAMETER", p.url, liveDmapMetadata(),
-                   "application/x-dmap-tagged", timing_.requestTimeout,
+                   "application/x-dmap-tagged", timing_.requestTimeoutMs,
                    firstRtp_);
     break;
   case Step::Metadata:
@@ -493,7 +493,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
                command.value("type", "DEVICE_INFO").toString());
       p.rtsp.request("POST", "/command", plistEncode(command),
                      "application/x-apple-binary-plist",
-                     timing_.requestTimeout);
+                     timing_.requestTimeoutMs);
       break;
     }
     p.metadata.clear();
@@ -533,8 +533,9 @@ void AirPlaySession::captureStarted() {
     return;
   elapsed_.start();
   lastInput_ = lastStats_ = 0;
-  stream_.queue->targetFrames.store(uint64_t(std::max(352., std::ceil(timing_.prebuffer * 44100))),
-                                    std::memory_order_release);
+  stream_.queue->targetFrames.store(
+      uint64_t(std::max(timing_.packetSamples, timing_.prebufferSamples)),
+      std::memory_order_release);
   if (stream_.gapPolicy == audio::GapPolicy::Silence)
     emit log(i18n::text(i18n::Id::LinuxInputWaiting));
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
@@ -542,8 +543,8 @@ void AirPlaySession::captureStarted() {
     emit log(i18n::text(i18n::Id::VSTRateStartingFramesSBitInput)
                  .arg(stream_.left.bytes * 8)
                  .arg(stream_.blockFrames)
-                 .arg(timing_.prebuffer * 1000, 0, 'f', 1)
-                 .arg(timing_.backlog * 1000, 0, 'f', 1));
+                 .arg(double(timing_.prebufferSamples) / 44.1, 0, 'f', 1)
+                 .arg(double(timing_.backlogSamples) / 44.1, 0, 'f', 1));
 #endif
   poll_.start();
 }
@@ -623,10 +624,10 @@ void AirPlaySession::poll() {
       seenFrames_ = captured;
       lastInput_ = now;
     }
-    if (!continuous && now - lastInput_ > timing_.inputTimeout * 1e9)
+    if (!continuous && now - lastInput_ > timing_.inputTimeoutMs * 1e6)
       throw Error(i18n::text(i18n::Id::AudioInputTimedOut));
     if (!continuous && stream_.queue->queuedFrames() + pcm_.size() / 2 >
-        timing_.backlog * 44100)
+                           uint64_t(timing_.backlogSamples))
       throw Error(i18n::text(i18n::Id::CaptureBacklogExceedsTheLimit));
     std::span<const std::byte> left, right;
     uint64_t generation = 0;
@@ -651,7 +652,7 @@ void AirPlaySession::poll() {
       if (continuous && !inputReady_ && pcm_.empty() && !samples.empty())
         emit log(i18n::text(i18n::Id::LinuxInputBuffering));
       pcm_.insert(pcm_.end(), samples.begin(), samples.end());
-      if (pcm_.size() / 2 > timing_.backlog * 44100) {
+      if (pcm_.size() / 2 > size_t(timing_.backlogSamples)) {
         if (continuous) resetContinuousInput(true);
         else throw Error(i18n::text(i18n::Id::PCMBacklogExceedsTheLimit));
       }
@@ -659,22 +660,24 @@ void AirPlaySession::poll() {
     if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
       resetContinuousInput(false);
     if (continuous && !inputReady_ &&
-        pcm_.size() / 2 >= std::max(352., std::ceil(timing_.prebuffer * 44100))) {
+        pcm_.size() / 2 >=
+            size_t(std::max(timing_.packetSamples, timing_.prebufferSamples))) {
       inputReady_ = true;
       emit log(i18n::text(i18n::Id::LinuxInputPlaying));
     }
     if (state_ == State::Buffering &&
-        (continuous || pcm_.size() / 2 >=
-            std::max(352., std::ceil(timing_.prebuffer * 44100)))) {
+        (continuous ||
+         pcm_.size() / 2 >= size_t(std::max(timing_.packetSamples,
+                                            timing_.prebufferSamples)))) {
       started_ = now;
       anchorWall_ = wallNs();
-      audible_ = anchorWall_ + int64_t(std::llround(timing_.lead * 1e9));
+      audible_ = anchorWall_ + int64_t(std::llround(timing_.leadMs * 1e6));
       nextSync_ = 0;
       setState(State::Streaming, i18n::text(i18n::Id::StreamingKHzBitStereo));
     }
     if (state_ == State::Streaming) {
       if (std::abs(double(wallNs() - anchorWall_ - (now - started_))) >
-          timing_.late * 1e9)
+          timing_.lateMs * 1e6)
         throw Error(i18n::text(i18n::Id::SystemClockOffsetExceedsTheLimit));
       if (now >= nextSync_) {
         const auto packet =
@@ -684,7 +687,7 @@ void AirPlaySession::poll() {
               packet.size())
             throw Error(i18n::text(i18n::Id::AudioSyncPacketSendFailed));
         firstSync_ = false;
-        nextSync_ = now + qint64(timing_.audioSync * 1e9);
+        nextSync_ = now + qint64(timing_.audioSyncMs * 1e6);
       }
       for (int batch = 0; batch < 128; ++batch) {
         const auto current = elapsed_.nsecsElapsed();
@@ -693,17 +696,20 @@ void AirPlaySession::poll() {
                               (sentFrames_ % 44100) * 1000000000 / 44100);
         if (current < due)
           break;
-        if (current - due > timing_.late * 1e9)
+        if (current - due > timing_.lateMs * 1e6)
           throw Error(i18n::text(i18n::Id::SendingFellTooFarBehindTheTimeline));
         if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
           resetContinuousInput(false);
-        if (continuous && inputReady_ && pcm_.size() < 704)
+        if (continuous && inputReady_ &&
+            pcm_.size() < size_t(timing_.packetSamples) * 2)
           resetContinuousInput(true);
-        if (!continuous && pcm_.size() < 704)
+        if (!continuous && pcm_.size() < size_t(timing_.packetSamples) * 2)
           break;
         if (counter_ == UINT64_MAX)
           throw Error(i18n::text(i18n::Id::AudioNonceExhausted));
-        std::array<int16_t, 704> frame{};
+        std::array<int16_t, 704> storage{};
+        const auto frame = std::span<int16_t>(storage).first(
+            size_t(timing_.packetSamples) * 2);
         if (!continuous || inputReady_)
           for (auto &sample : frame) {
             sample = pcm_.front();
@@ -722,7 +728,7 @@ void AirPlaySession::poll() {
         ++counter_;
         if (telemetryEnabled_)
           ++telemetryPackets_;
-        sentFrames_ += 352;
+        sentFrames_ += uint64_t(frame.size() / 2);
       }
     }
     if (continuous) {
@@ -834,10 +840,10 @@ void AirPlaySession::prepared() {
   if (volume_ > -144)
     restoreVolume_ = volume_;
   emit volumeApplied(volume_);
-  keepAlive_.start(int(std::ceil(timing_.keepAlive * 1000)));
+  keepAlive_.start(int(std::ceil(timing_.keepAliveMs)));
   setState(State::Synchronizing,
            i18n::text(i18n::Id::WaitingForPTPSynchronization));
-  settle_.start(int(std::ceil(timing_.settle * 1000)));
+  settle_.start(int(std::ceil(timing_.settleMs)));
 }
 void AirPlaySession::inputVolume(double db) {
   if (state_ == State::Streaming && std::isfinite(db) && db >= -144 && db <= 0)
@@ -880,7 +886,7 @@ void AirPlaySession::keepAlive() {
     for (auto &p : peers_)
       if (p->step == Peer::Step::Ready) {
         p->step = Peer::Step::KeepAlive;
-        p->rtsp.request("OPTIONS", "*", {}, {}, timing_.requestTimeout);
+        p->rtsp.request("OPTIONS", "*", {}, {}, timing_.requestTimeoutMs);
       }
   } catch (const std::exception &e) {
     fail(e);
@@ -921,7 +927,7 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
   clock_.stop();
   if (environment_.stopClock)
     environment_.stopClock();
-  teardown_.start(int(std::ceil(timing_.teardownTimeout * 1000)));
+  teardown_.start(int(std::ceil(timing_.teardownTimeoutMs)));
   for (auto &p : peers_)
     if (p) {
       p->event.close();
@@ -932,7 +938,7 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
           p->step = Peer::Step::StopMetadata;
           p->rtsp.request("POST", "/command", plistEncode(playbackState(false)),
                           "application/x-apple-binary-plist",
-                          timing_.teardownTimeout);
+                          timing_.teardownTimeoutMs);
         } catch (const std::exception &e) {
           emit log("TEARDOWN：" + i18n::fromException(e));
           p->stopped = true;

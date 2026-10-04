@@ -101,7 +101,7 @@ systemctl --user restart wireplumber
 4. 点击“开始”，调整音量；需要时使用静音。
 5. 更换输入设备前先点击“停止”；结束播放时点击“停止”或关闭程序。
 
-可以先开始发送，再让手机播放。手机暂停或断开时程序保持发送静音；同一手机恢复后自动接流。默认预缓冲为 40 ms，可先保持默认值。
+可以先开始发送，再让手机播放。手机暂停或断开时程序保持发送静音；同一手机恢复后自动接流。默认预缓冲为 2048 samples（约 46.44 ms），可先保持默认值。
 
 ### 手机音量键
 
@@ -168,7 +168,7 @@ AirPlayQt 设置保存在 `$XDG_CONFIG_HOME/AirPlayQt.json`；未设置该环境
 
 ## 7. 独立 CLI（前台运行）
 
-`AirPlayQtCli` 不读写 GUI 配置，必须手工指定输入设备 ID 和接收端 IPv4。
+`AirPlayQtCli` 发送时必须传入 `--config PATH`，读取完整 version 4 应用配置但只采用 14 项 timing 参数，不写回文件。输入设备 ID 和接收端 IPv4 仍须手工指定。完整示例见 [config.example.json](../config.example.json)。
 
 ### 单独构建和安装
 
@@ -221,19 +221,19 @@ wireplumber.profiles = {
 将下面的设备 ID 与 IP 换成实际值。蓝牙 ID 包含适配器地址和手机地址，使用列表中的完整值。单台接收端：
 
 ```sh
-/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9
+/usr/local/bin/AirPlayQtCli --config /path/to/config.json --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9
 ```
 
 已在接收端系统中建立的双机立体声组合：
 
 ```sh
-/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9:7000 --receiver 192.168.8.10:7000
+/usr/local/bin/AirPlayQtCli --config /path/to/config.json --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9:7000 --receiver 192.168.8.10:7000
 ```
 
 可选显式网卡绑定及交换输入声道：
 
 ```sh
-/usr/local/bin/AirPlayQtCli --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9 --interface eth0 --local-ip 192.168.8.20 --left 2 --right 1
+/usr/local/bin/AirPlayQtCli --config /path/to/config.json --device 'bluez:00:11:22:33:44:55/AA:BB:CC:DD:EE:FF' --receiver 192.168.8.9 --interface eth0 --local-ip 192.168.8.20 --left 2 --right 1
 ```
 
 | 参数 | 行为 |
@@ -245,7 +245,7 @@ wireplumber.profiles = {
 | `--list-devices`、`--list-interfaces` | 分别单独使用，输出查询结果后退出 |
 | `--help`、`--version` | 分别单独使用，不初始化音频 |
 
-除 `--receiver` 外不允许重复参数；拒绝未知参数、位置参数及查询与发送参数混用。时间参数沿用现有默认值，不加载 GUI 保存的高级设置。列表与帮助写到 stdout；带 UTC 时间的英文状态、错误和重试日志写到 stderr，不持续输出音频统计。
+除 `--receiver` 外不允许重复参数；拒绝未知参数、位置参数及查询与发送参数混用。时间和 samples 参数只使用 `--config` 文件中的值，不接受逐项覆盖；帮助和查询不要求配置。列表与帮助写到 stdout；带 UTC 时间的英文状态、错误和重试日志写到 stderr，不持续输出音频统计。
 
 首次设备检查、采集初始化或 AirPlay 建连失败，直接退出。首次进入发送状态（包括发送静音）后，AirPlay 会话中断、失败或被其他发送端抢占时，清理旧会话后等待 2 秒，用原参数无限重试整个接收端组合。手机暂停、断开或音频节点暂时失效，沿用 GUI 的静音及采集恢复逻辑，不视作 AirPlay 会话失败。重建会话的音量初始化也沿用现有会话行为。
 

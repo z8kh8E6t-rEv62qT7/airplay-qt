@@ -8,26 +8,48 @@
 #include <optional>
 
 namespace app {
+struct WindowLayout {
+  int width = 0, height = 0, controlWidth = 0, logWidth = 0, expandedWidth = 0;
+  bool logVisible = true;
+  bool operator==(const WindowLayout &) const = default;
+  bool valid() const;
+};
+struct WindowLayoutField {
+  const char *key;
+  int WindowLayout::*member;
+};
+extern const std::array<WindowLayoutField, 5> windowLayoutFields;
 struct Timing {
-  double lead = 2, settle = 2, prebuffer = .04, backlog = .1, late = .1;
-  double inputTimeout = 1, connectTimeout = 8, requestTimeout = 8,
-         teardownTimeout = 1;
-  double ptpSync = .125, ptpAnnounce = 1, audioSync = .5, keepAlive = 10;
+  double leadMs = 2000, settleMs = 2000, lateMs = 100;
+  double inputTimeoutMs = 1000, connectTimeoutMs = 8000,
+         requestTimeoutMs = 8000, teardownTimeoutMs = 1000;
+  double ptpSyncMs = 125, ptpAnnounceMs = 1000, audioSyncMs = 500,
+         keepAliveMs = 10000;
+  int packetSamples = 64, prebufferSamples = 2048, backlogSamples = 8192;
+  bool operator==(const Timing &) const = default;
   i18n::Message validate() const;
 };
-struct TimingField {
+struct TimingMsField {
   const char *key;
   i18n::Message label;
   double Timing::*member;
   double minimum, maximum;
   bool powerOfTwo;
 };
-extern const std::array<TimingField, 13> timingFields;
+struct TimingSamplesField {
+  const char *key;
+  i18n::Message label;
+  int Timing::*member;
+  int minimum, maximum;
+};
+extern const std::array<TimingMsField, 11> timingMsFields;
+extern const std::array<TimingSamplesField, 3> timingSamplesFields;
 struct ReceiverSelection {
   QString name, endpoint;
   bool operator==(const ReceiverSelection &) const = default;
 };
 struct Settings {
+  WindowLayout windowLayout;
   i18n::Language language = i18n::Language::English;
   QString driverId;
   int left = 0, right = 1; // SDK indices, GUI displays index + 1.
@@ -37,7 +59,7 @@ struct Settings {
   i18n::Message validate() const;
   QJsonObject json() const;
   static Settings fromJson(const QJsonObject &object);
-  static Settings load(const QString &path);
+  static Settings load(const QString &path, bool required = false);
   void save(const QString &path) const;
   static QString path();
 };
@@ -48,6 +70,7 @@ public:
   explicit SettingsStore(QString path = {}) : path_(std::move(path)) {}
   Settings load();
   void saveLanguage(i18n::Language);
+  void saveWindowLayout(const WindowLayout &);
   void saveStart(
       Settings,
       const std::optional<QList<ReceiverSelection>> &selection = std::nullopt);

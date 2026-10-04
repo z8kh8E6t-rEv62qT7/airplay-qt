@@ -16,6 +16,7 @@ public:
   ~Controller() override;
   Settings initialize();
   void saveLanguage(i18n::Language);
+  void saveWindowLayout(const WindowLayout &);
   const QList<ReceiverSelection> &rememberedReceivers() const {
     return settings_.receivers();
   }
