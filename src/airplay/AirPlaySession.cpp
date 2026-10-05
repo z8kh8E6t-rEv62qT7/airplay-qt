@@ -87,6 +87,8 @@ struct AirPlaySession::Peer {
     Ready,
     KeepAlive,
     Volume,
+    PlaybackInfo,
+    PlaybackState,
     StopMetadata,
     Teardown
   };
@@ -104,6 +106,8 @@ struct AirPlaySession::Peer {
   QList<QVariantMap> metadata;
   int metadataIndex = -1;
   double sentVolume = 0, confirmedVolume = 0;
+  PlaybackState sentPlaybackState = PlaybackState::Playing;
+  PlaybackState confirmedPlaybackState = PlaybackState::Playing;
   struct Packet {
     uint16_t sequence = 0;
     QByteArray bytes;
@@ -123,28 +127,34 @@ AirPlaySession::AirPlaySession(app::Timing timing, audio::CaptureStream stream,
       route_(std::move(route)), endpoints_(std::move(endpoints)),
       stream_(std::move(stream)) {
   networkCheck_.setInterval(250);
-  remoteDeadline_.setSingleShot(true);
-  connect(&remoteDeadline_, &QTimer::timeout, this, [this] {
-    stop(i18n::text(i18n::Id::DACPServicePublicationTimedOut));
-  });
-  connect(&remote_, &DacpServer::failed, this,
+  connect(&inbound_, &InboundControlServer::failed, this,
+          [this](const QJsonArray &error) { stop(error); });
+  connect(&inbound_, &InboundControlServer::error, this, &AirPlaySession::log);
+  connect(this, &AirPlaySession::controlChanged, this,
+          &AirPlaySession::publishControlState);
+  connect(this, &AirPlaySession::streamingChanged, this,
+          &AirPlaySession::publishControlState);
+  connect(this, &AirPlaySession::volumeApplied, this,
+          &AirPlaySession::publishControlState);
+  connect(&remote_, &RemoteControl::failed, this,
           [this](const i18n::Message &text) { stop(text); });
-  connect(&remote_, &DacpServer::log, this, &AirPlaySession::log);
+  connect(&remote_, &RemoteControl::log, this, &AirPlaySession::log);
   connect(this, &AirPlaySession::volumeApplied, &remote_,
-          &DacpServer::setVolume);
-  connect(&remote_, &DacpServer::ready, this, [this] {
+          &RemoteControl::setVolume);
+  connect(&remote_, &RemoteControl::ready, this, [this] {
     if (state_ != State::Connecting)
       return;
-    remoteDeadline_.stop();
     remoteReady_ = true;
     emit log(i18n::text(i18n::Id::DACPVolumeServicePublishedITunesCtrl) +
              identity_);
     prepared();
   });
-  connect(&remote_, &DacpServer::command, this,
+  connect(&remote_, &RemoteControl::volumeCommand, this,
           [this](const QString &, const QString &action, double value) {
             remoteVolume(action, value);
           });
+  connect(&remote_, &RemoteControl::playbackChanged, this,
+          &AirPlaySession::dispatchControl);
   connect(&networkCheck_, &QTimer::timeout, this, [this] {
     try {
       route_.validate();
@@ -171,6 +181,7 @@ AirPlaySession::AirPlaySession(app::Timing timing, audio::CaptureStream stream,
 }
 AirPlaySession::~AirPlaySession() {
   state_ = State::Stopped;
+  inbound_.stop();
   remote_.stop();
   clock_.stop();
   for (auto &p : peers_) {
@@ -247,7 +258,9 @@ void AirPlaySession::start() {
                 finishStop();
             } else
               stop(peers_[i]->host.toString() +
-                   (peers_[i]->step == Peer::Step::Metadata
+                   (peers_[i]->step == Peer::Step::Metadata ||
+                            peers_[i]->step == Peer::Step::PlaybackInfo ||
+                            peers_[i]->step == Peer::Step::PlaybackState
                         ? i18n::text(
                               i18n::Id::NowPlayingInformationRemoteControlIsNot)
                         : "：") +
@@ -264,6 +277,8 @@ void AirPlaySession::start() {
               [this, i](i18n::Message text) {
                 emit log(peers_[i]->host.toString() + " · " + text);
               });
+      connect(&p.event, &EventChannel::command, &remote_,
+              &RemoteControl::handleEventCommand);
       connect(&p.event, &EventChannel::failed, this,
               [this, i](i18n::Message error) {
                 if (state_ != State::Stopping && state_ != State::Stopped &&
@@ -321,7 +336,28 @@ void AirPlaySession::setupGroup() {
   for (const auto &p : peers_)
     if (!hosts.contains(p->host))
       hosts.append(p->host);
-  remoteDeadline_.start(5000);
+  inbound_.start(local_, route_, [this](const ControlRequest &command) {
+    if (state_ != State::Streaming)
+      return false;
+    const bool schedule = queuedControls_.empty();
+    queuedControls_.push_back(command);
+    // Drain one explicit FIFO after the transport callback unwinds. This also
+    // prevents a synchronous receiver failure from deleting its caller.
+    if (schedule) QTimer::singleShot(0, this, [this] {
+      while (!queuedControls_.empty()) {
+        const auto command = queuedControls_.front();
+        queuedControls_.pop_front();
+        if (state_ != State::Streaming) {
+          queuedControls_.clear();
+          break;
+        }
+        requestControl(command);
+      }
+      publishControlState();
+    });
+    return true;
+  });
+  inbound_.updateState(controlState());
   remote_.start(identity_, local_, route_, hosts, environment_.advertiseRemote,
                 activeRemote_);
   if (environment_.startClock)
@@ -408,9 +444,12 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
                         {"groupUUID", groupId_},
                         {"groupContainsGroupLeader", false},
                         {"isMultiSelectAirPlay", true},
-                        {"senderSupportsRelay", false},
+                        {"senderSupportsRelay", true},
                         {"timingPeerInfo", timing},
                         {"timingPeerList", QVariantList{timing}}};
+    session.insert("uglServerInfo",
+                   QVariantMap{{"Port", int(inbound_.port())},
+                               {"Addresses", QVariantList{local_.toString()}}});
     if (peers_.size() == 2)
       session.insert("senderPerceivedClusterType", 1);
     p.step = Step::SessionSetup;
@@ -475,7 +514,8 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     break;
   case Step::InitialVolume:
     p.confirmedVolume = p.sentVolume;
-    p.metadata = liveNowPlaying(identity_, p.sessionId, groupId_);
+    p.metadata = liveNowPlaying(identity_, p.sessionId, groupId_,
+                                remote_.playbackState());
     p.step = Step::Metadata;
     emit log(
         p.host.toString() +
@@ -502,14 +542,23 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     break;
   case Step::KeepAlive:
     p.step = Step::Ready;
-    dispatchVolume();
+    dispatchControl();
     break;
   case Step::Volume:
     p.confirmedVolume = p.sentVolume;
     p.step = Step::Ready;
-    if (allReady()) {
-      dispatchVolume();
-    }
+    dispatchControl();
+    break;
+  case Step::PlaybackInfo:
+    p.step = Step::PlaybackState;
+    p.rtsp.request(
+        "POST", "/command", plistEncode(playbackState(p.sentPlaybackState)),
+        "application/x-apple-binary-plist", timing_.requestTimeoutMs);
+    break;
+  case Step::PlaybackState:
+    p.confirmedPlaybackState = p.sentPlaybackState;
+    p.step = Step::Ready;
+    dispatchControl();
     break;
   default:
     throw Error(i18n::text(i18n::Id::UnexpectedSessionResponseState));
@@ -808,31 +857,110 @@ void AirPlaySession::volume(double db) {
       throw Error(i18n::text(i18n::Id::VolumeIsOutOfRange));
     volume_ = db;
     volumePending_ = true;
-    dispatchVolume();
+    dispatchControl();
   } catch (const std::exception &e) {
     fail(e);
   }
 }
-void AirPlaySession::dispatchVolume() {
-  if (!volumePending_ || !allReady())
+void AirPlaySession::dispatchControl() {
+  if (state_ != State::Streaming || !allReady())
     return;
-  bool changed = false;
-  for (auto &p : peers_) {
-    if (std::abs(p->confirmedVolume - volume_) < .005)
-      continue;
-    changed = true;
-    p->step = Peer::Step::Volume;
-    p->sentVolume = volume_;
-    request(*p, "SET_PARAMETER",
-            "volume: " + QByteArray::number(volume_, 'f', 6) + "\r\n",
-            "text/parameters");
+  try {
+    if (volumePending_) {
+      bool changed = false;
+      for (auto &p : peers_) {
+        if (std::abs(p->confirmedVolume - volume_) < .005)
+          continue;
+        changed = true;
+        p->step = Peer::Step::Volume;
+        p->sentVolume = volume_;
+        request(*p, "SET_PARAMETER",
+                "volume: " + QByteArray::number(volume_, 'f', 6) + "\r\n",
+                "text/parameters");
+      }
+      if (changed)
+        return;
+      volumePending_ = false;
+      if (volume_ > -144)
+        restoreVolume_ = volume_;
+      emit volumeApplied(volume_);
+      if (state_ != State::Streaming || !allReady())
+        return;
+    }
+    // Each peer completes info -> state with one immutable snapshot. Requests
+    // arriving meanwhile change only the target, never this in-flight pair.
+    const auto desired = remote_.playbackState();
+    for (auto &p : peers_) {
+      if (p->confirmedPlaybackState == desired)
+        continue;
+      p->sentPlaybackState = desired;
+      p->step = Peer::Step::PlaybackInfo;
+      p->rtsp.request("POST", "/command", plistEncode(nowPlayingInfo(desired)),
+                      "application/x-apple-binary-plist",
+                      timing_.requestTimeoutMs);
+    }
+    if (allReady())
+      emit controlChanged();
+  } catch (const std::exception &e) {
+    fail(e);
   }
-  if (!changed) {
-    volumePending_ = false;
-    if (volume_ > -144)
-      restoreVolume_ = volume_;
-    emit volumeApplied(volume_);
+}
+ControlState AirPlaySession::controlState() const {
+  ControlState result;
+  result.group = groupId_.toUtf8();
+  result.volumeDb = volume_;
+  result.available = state_ == State::Streaming;
+  result.playback =
+      result.available ? remote_.playbackState() : PlaybackState::Stopped;
+  result.settled =
+      result.available && queuedControls_.empty() && !volumePending_ &&
+      allReady() && std::ranges::all_of(peers_, [this](const auto &p) {
+        return p->confirmedPlaybackState == remote_.playbackState();
+      });
+  for (const auto &p : peers_)
+    if (p && !p->info.deviceId.isEmpty())
+      result.outputs.append(
+          {p->info.deviceId.toUtf8(), p->info.name.toUtf8(), {}, p->host});
+  return result;
+}
+void AirPlaySession::publishControlState() {
+  if (controlUpdateQueued_)
+    return;
+  controlUpdateQueued_ = true;
+  QTimer::singleShot(0, this, [this] {
+    controlUpdateQueued_ = false;
+    if (state_ != State::Stopping && state_ != State::Stopped &&
+        state_ != State::Error)
+      inbound_.updateState(controlState());
+  });
+}
+bool AirPlaySession::requestControl(const ControlRequest &request) {
+  if (state_ != State::Streaming)
+    return false;
+  switch (request.action) {
+  case ControlAction::Volume:
+    if (!std::isfinite(request.volumeDb) || request.volumeDb < -144 ||
+        request.volumeDb > 0)
+      return false;
+    inputVolume(request.volumeDb);
+    break;
+  case ControlAction::Play:
+    remote_.requestPlayback(PlaybackState::Playing);
+    break;
+  case ControlAction::Pause:
+    remote_.requestPlayback(PlaybackState::Paused);
+    break;
+  case ControlAction::Toggle:
+    remote_.requestPlayback(remote_.playbackState() == PlaybackState::Playing
+                                ? PlaybackState::Paused
+                                : PlaybackState::Playing);
+    break;
+  default:
+    return false;
   }
+  // Absolute repeats still complete, even without a state transition.
+  dispatchControl();
+  return state_ == State::Streaming;
 }
 void AirPlaySession::prepared() {
   if (state_ != State::Connecting || !remoteReady_ || !allReady())
@@ -894,7 +1022,6 @@ void AirPlaySession::keepAlive() {
 }
 void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
   networkCheck_.stop();
-  remoteDeadline_.stop();
   remote_.stop();
   if (state_ == State::Stopping) {
     // A real fault during host-interruption cleanup must not remain classified
@@ -918,8 +1045,10 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
       State::Stopping,
       endReason_ == SessionEnd::HostInterrupted
           ? i18n::text(i18n::Id::HostAudioProcessingInterruptedCleaningUpThe)
-          : (error.isEmpty() ? i18n::text(i18n::Id::Stopping)
-                             : i18n::text(i18n::Id::StoppingReasonPrefix) + error));
+          : (error.isEmpty()
+                 ? i18n::text(i18n::Id::Stopping)
+                 : i18n::text(i18n::Id::StoppingReasonPrefix) + error));
+  inbound_.beginStop();
   emit stopCapture();
   poll_.stop();
   settle_.stop();
@@ -936,7 +1065,8 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
       if (p->active && p->rtsp.connected() && !p->rtsp.busy()) {
         try {
           p->step = Peer::Step::StopMetadata;
-          p->rtsp.request("POST", "/command", plistEncode(playbackState(false)),
+          p->rtsp.request("POST", "/command",
+                          plistEncode(playbackState(PlaybackState::Stopped)),
                           "application/x-apple-binary-plist",
                           timing_.teardownTimeoutMs);
         } catch (const std::exception &e) {
@@ -963,6 +1093,7 @@ void AirPlaySession::finishStop() {
   if (state_ != State::Stopping)
     return;
   teardown_.stop();
+  inbound_.stop();
   for (auto &p : peers_)
     if (p) {
       p->rtsp.abort();

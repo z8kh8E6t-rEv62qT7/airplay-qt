@@ -28,6 +28,25 @@
 using namespace airplay;
 namespace {
 using test::Receiver;
+QVariantMap mediaCommand(const QString &value) {
+  return {{"type", "sendMediaRemoteCommand"}, {"value", value}};
+}
+QByteArray dacpRequest(quint16 port, const QByteArray &path, const QByteArray &token) {
+  QTcpSocket socket;
+  socket.connectToHost(QHostAddress::LocalHost, port);
+  if (!socket.waitForConnected(1000))
+    return {};
+  socket.write("GET /ctrl-int/1/" + path +
+               " HTTP/1.1\r\nActive-Remote: " + token + "\r\n\r\n");
+  QByteArray response;
+  QElapsedTimer timer;
+  timer.start();
+  while (socket.state() != QAbstractSocket::UnconnectedState && timer.elapsed() < 1000) {
+    QTest::qWait(1);
+    response += socket.readAll();
+  }
+  return response;
+}
 struct SessionFixture {
   Receiver left{"left"}, right{"right"};
   app::Timing timing;
@@ -88,6 +107,262 @@ struct SessionFixture {
 class ProtocolTests : public QObject {
   Q_OBJECT
 private slots:
+  void nowPlayingRejectsOldFieldsAndTypes() {
+    for (auto state : {PlaybackState::Playing, PlaybackState::Paused, PlaybackState::Stopped}) {
+      const auto command = plistDecode(plistEncode(nowPlayingInfo(state))).toMap();
+      QVERIFY(Receiver::validNowPlaying(command));
+      QCOMPARE(command["params"].toMap()["params"].toMap()
+                   ["kMRMediaRemoteNowPlayingInfoPlaybackRate"].toDouble(),
+               state == PlaybackState::Playing ? 1. : 0.);
+      QCOMPARE(playbackState(state)["params"].toMap()["mrPlaybackState"].toInt(), int(state));
+    }
+    auto command = nowPlayingInfo(PlaybackState::Playing);
+    auto params = command["params"].toMap();
+    auto info = params["params"].toMap();
+    info["Title"] = info.take("kMRMediaRemoteNowPlayingInfoTitle");
+    params["params"] = info;
+    command["params"] = params;
+    QVERIFY(!Receiver::validNowPlaying(command));
+    info["kMRMediaRemoteNowPlayingInfoTitle"] = info.take("Title");
+    info["kMRMediaRemoteNowPlayingInfoMediaType"] = 1;
+    params["params"] = info;
+    command["params"] = params;
+    QVERIFY(!Receiver::validNowPlaying(command));
+  }
+  void remoteControlLifecycle() {
+    RemoteControl remote;
+    QSignalSpy changed(&remote, &RemoteControl::playbackChanged);
+    QSignalSpy ready(&remote, &RemoteControl::ready);
+    remote.handleEventCommand(mediaCommand("paus"));
+    QVERIFY(changed.isEmpty());
+    remote.start("test", QHostAddress::LocalHost, {}, {QHostAddress::LocalHost}, false, 101);
+    remote.stop();
+    remote.start("test", QHostAddress::LocalHost, {}, {QHostAddress::LocalHost}, false, 102);
+    QTRY_COMPARE(ready.size(), 1); // Old deferred ready cannot affect the new session.
+    QCOMPARE(remote.playbackState(), PlaybackState::Playing);
+    QVERIFY(dacpRequest(remote.port(), "pause", "102").contains("503"));
+    remote.setEnabled(true);
+    QVERIFY(dacpRequest(remote.port(), "pause", "101").contains("403"));
+    QVERIFY(dacpRequest(remote.port(), "pause?unexpected=1", "102").contains("400"));
+    QVERIFY(dacpRequest(remote.port(), "stop", "102").contains("501"));
+    remote.handleEventCommand({{"type", "sendMediaRemoteCommand"}, {"value", QByteArray("paus")}});
+    remote.handleEventCommand({{"type", "updateInfo"}, {"value", "paus"}});
+    remote.handleEventCommand(mediaCommand("nitm"));
+    QVERIFY(changed.isEmpty());
+    for (const auto &action : {QByteArray("pause"), QByteArray("pause"),
+                               QByteArray("play"), QByteArray("play"),
+                               QByteArray("playpause"), QByteArray("playpause"),
+                               QByteArray("pause"), QByteArray("playresume")})
+      QVERIFY(dacpRequest(remote.port(), action, "102").contains("204"));
+    QCOMPARE(changed.size(), 6);
+    QCOMPARE(remote.playbackState(), PlaybackState::Playing);
+    remote.stop();
+    remote.handleEventCommand(mediaCommand("paus"));
+    QCOMPARE(changed.size(), 6);
+    QCOMPARE(remote.playbackState(), PlaybackState::Stopped);
+    QCOMPARE(remote.port(), quint16(0));
+  }
+  void protocolPausePreservesAudio_data() {
+    QTest::addColumn<bool>("stereo");
+    QTest::newRow("single") << false;
+    QTest::newRow("stereo") << true;
+  }
+  void protocolPausePreservesAudio() {
+    QFETCH(bool, stereo);
+    SessionFixture f;
+    if (!stereo) f.endpoints.removeLast();
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    QSignalSpy capture(&session, &AirPlaySession::startCapture);
+    QSignalSpy stoppedCapture(&session, &AirPlaySession::stopCapture);
+    QSignalSpy streaming(&session, &AirPlaySession::streamingChanged);
+    QSignalSpy volume(&session, &AirPlaySession::volumeApplied);
+    session.start();
+    QTRY_VERIFY(f.left.packets.size() >= 4);
+    auto *remote = session.findChild<RemoteControl *>();
+    QVERIFY(remote);
+    const auto statusCount = streaming.size();
+    f.left.sendEvent(mediaCommand("paus"), 11);
+    QTRY_COMPARE(f.left.protocolState, 2);
+    if (stereo) QTRY_COMPARE(f.right.protocolState, 2);
+    QTRY_COMPARE(f.left.eventResponses.size(), 1);
+    QCOMPARE(f.left.eventResponses.last().status, 200);
+    QCOMPARE(f.left.eventResponses.last().headers["cseq"], QByteArray("11"));
+    const auto commands = f.left.commands.size();
+    f.left.sendEvent(mediaCommand("paus"), 12);
+    f.left.sendEvent(mediaCommand("nitm"), 13);
+    QTRY_COMPARE(f.left.eventResponses.size(), 3);
+    QCOMPARE(f.left.commands.size(), commands);
+    const auto pausedAt = f.left.packets.size();
+    QVERIFY(dacpRequest(remote->port(), "devicevolume=-21", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(volume.last()[0].toDouble(), -21.);
+    if (stereo) QCOMPARE(f.right.volumes.last(), -21.);
+    QTRY_VERIFY(f.left.packets.size() > pausedAt + 8);
+    QCOMPARE(f.left.protocolState, 2);
+    QCOMPARE(capture.size(), 1);
+    QVERIFY(stoppedCapture.isEmpty());
+    QCOMPARE(streaming.size(), statusCount);
+    std::vector<int16_t> expected;
+    for (int i = 0; i < f.timing.packetSamples; ++i) {
+      expected.push_back(f.l[size_t(i) % f.l.size()]);
+      expected.push_back(f.r[size_t(i) % f.r.size()]);
+    }
+    const auto first = f.left.packets.first();
+    for (qsizetype i = 0; i < f.left.packets.size(); ++i) {
+      const auto &packet = f.left.packets[i];
+      QCOMPARE(uint16_t(readBe(packet, 2, 2)), uint16_t(readBe(first, 2, 2) + i));
+      QCOMPARE(uint32_t(readBe(packet, 4, 4)), uint32_t(readBe(first, 4, 4) + i * 352));
+      // Packet nonce is the little-endian monotonically increasing counter.
+      quint64 nonce = 0;
+      for (int j = 7; j >= 0; --j) nonce = (nonce << 8) | uint8_t(packet.right(8)[j]);
+      QCOMPARE(nonce, quint64(i));
+      QCOMPARE(unseal(f.left.srp.key.left(32), QByteArray(4, '\0') + packet.right(8),
+                      packet.mid(12, packet.size() - 20), packet.mid(4, 8)), alac(expected));
+    }
+    f.left.sendEvent(mediaCommand("play"), 14);
+    QTRY_COMPARE(f.left.protocolState, 1);
+    f.left.sendEvent(mediaCommand("plps"), 15);
+    QTRY_COMPARE(f.left.protocolState, 2);
+    f.left.sendEvent(mediaCommand("plps"), 16);
+    QTRY_COMPARE(f.left.protocolState, 1);
+    if (stereo) QTRY_COMPARE(f.right.protocolState, 1);
+    QTRY_COMPARE(f.left.eventResponses.size(), 6);
+    QVERIFY(dacpRequest(remote->port(), "pause", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(f.left.protocolState, 2);
+    if (stereo) QTRY_COMPARE(f.right.protocolState, 2);
+    QVERIFY(dacpRequest(remote->port(), "playpause", f.left.activeRemote).contains("204"));
+    QTRY_COMPARE(f.left.protocolState, 1);
+    if (stereo) QTRY_COMPARE(f.right.protocolState, 1);
+    QTest::qWait(10); // Allow the receiver's last RTSP acknowledgment to arrive.
+    QVERIFY(done.isEmpty());
+    QVERIFY(f.left.error.isEmpty());
+    QVERIFY(f.right.error.isEmpty());
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(f.left.protocolState, 3);
+    if (stereo) QCOMPARE(f.right.protocolState, 3);
+  }
+  void controlUpdatesCoalesceAcrossReceivers() {
+    SessionFixture f;
+    f.timing.requestTimeoutMs = 500;
+    f.timing.keepAliveMs = 1000;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    QSignalSpy applied(&session, &AirPlaySession::volumeApplied);
+    session.start();
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    auto *remote = session.findChild<RemoteControl *>();
+    QVERIFY(remote);
+    f.left.commandDelay = 10;
+    f.right.commandDelay = 60;
+    f.left.sendEvent(mediaCommand("paus"));
+    QTRY_COMPARE(f.right.commands.size(), 6); // Paused info is in flight.
+    f.left.sendEvent(mediaCommand("play"));
+    f.left.sendEvent(mediaCommand("paus"));
+    f.left.sendEvent(mediaCommand("play"));
+    session.volume(-22);
+    session.volume(-18);
+    QTRY_COMPARE(f.left.commands.size(), 9);
+    QTRY_COMPARE(f.right.commands.size(), 9);
+    QTRY_COMPARE(applied.last()[0].toDouble(), -18.);
+    QCOMPARE(f.left.protocolState, 1);
+    QCOMPARE(f.right.protocolState, 1);
+    QCOMPARE(f.left.volumes.last(), -18.);
+    QCOMPARE(f.right.volumes.last(), -18.);
+    QVERIFY(f.left.error.isEmpty());
+    QVERIFY(f.right.error.isEmpty());
+    QTest::qWait(100);
+    QCOMPARE(f.left.commands.size(), 9);
+    QCOMPARE(f.right.commands.size(), 9);
+    QVERIFY(done.isEmpty());
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+  }
+  void runtimeMetadataFailure_data() {
+    QTest::addColumn<QString>("type");
+    QTest::addColumn<bool>("timeout");
+    for (const auto &type : {QString("updateMRNowPlayingInfo"), QString("updateMRPlaybackState")}) {
+      QTest::newRow(qPrintable(type + "-reject")) << type << false;
+      QTest::newRow(qPrintable(type + "-timeout")) << type << true;
+    }
+  }
+  void runtimeMetadataFailure() {
+    QFETCH(QString, type);
+    QFETCH(bool, timeout);
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    if (timeout) f.right.holdCommandType = type;
+    else f.right.rejectCommandType = type;
+    f.left.sendEvent(mediaCommand("paus"));
+    QTRY_COMPARE(done.size(), 1);
+    QCOMPARE(done[0][1].toInt(), int(SessionEnd::Failure));
+    QVERIFY(!done[0][0].toJsonArray().isEmpty());
+    auto *remote = session.findChild<RemoteControl *>();
+    QVERIFY(remote);
+    QCOMPARE(remote->port(), quint16(0));
+    const auto count = f.left.packets.size();
+    QTest::qWait(20);
+    QCOMPARE(f.left.packets.size(), count);
+  }
+  void stoppingDuringControlUpdate() {
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    f.right.holdCommandType = "updateMRNowPlayingInfo";
+    f.left.sendEvent(mediaCommand("paus"));
+    QTRY_COMPARE(f.right.commands.size(), 6);
+    session.stop();
+    QTRY_COMPARE_WITH_TIMEOUT(done.size(), 1, 1000);
+    QCOMPARE(done[0][1].toInt(), int(SessionEnd::Stopped));
+    auto *remote = session.findChild<RemoteControl *>();
+    remote->handleEventCommand(mediaCommand("play"));
+    QCOMPARE(remote->playbackState(), PlaybackState::Stopped);
+    QCOMPARE(remote->port(), quint16(0));
+  }
+  void replacementSessionRejectsOldControl() {
+    SessionFixture oldFixture;
+    AirPlaySession oldSession(oldFixture.timing, oldFixture.stream, oldFixture.endpoints,
+                              nullptr, oldFixture.environment);
+    oldFixture.attach(oldSession);
+    QSignalSpy oldDone(&oldSession, &AirPlaySession::finished);
+    oldSession.start();
+    QTRY_VERIFY(!oldFixture.left.packets.isEmpty());
+    oldFixture.left.sendEvent(mediaCommand("paus"));
+    QTRY_COMPARE(oldFixture.left.protocolState, 2);
+    const auto oldToken = oldFixture.left.activeRemote;
+    oldSession.stop();
+    QTRY_COMPARE(oldDone.size(), 1);
+    auto *oldRemote = oldSession.findChild<RemoteControl *>();
+    SessionFixture f;
+    AirPlaySession session(f.timing, f.stream, f.endpoints, nullptr, f.environment);
+    f.attach(session);
+    QSignalSpy done(&session, &AirPlaySession::finished);
+    session.start();
+    QTRY_VERIFY(!f.left.packets.isEmpty());
+    auto *remote = session.findChild<RemoteControl *>();
+    QVERIFY(remote && oldRemote);
+    // Simulate an already queued delivery from the old authenticated event channel.
+    oldRemote->handleEventCommand(mediaCommand("plps"));
+    QCOMPARE(oldRemote->playbackState(), PlaybackState::Stopped);
+    QCOMPARE(remote->playbackState(), PlaybackState::Playing);
+    QVERIFY(dacpRequest(remote->port(), "pause", oldToken).contains("403"));
+    QCOMPARE(f.left.protocolState, 1);
+    QCOMPARE(f.right.protocolState, 1);
+    QCOMPARE(f.left.commands.size(), 5);
+    QCOMPARE(f.right.commands.size(), 5);
+    QVERIFY(done.isEmpty());
+    session.stop();
+    QTRY_COMPARE(done.size(), 1);
+  }
   void inputVolumeUsesLatestTargetAndIgnoresInactiveSessions() {
     SessionFixture f;
     f.stream.gapPolicy = audio::GapPolicy::Silence;
@@ -455,12 +730,11 @@ private slots:
                  QByteArray::number(readBe(f.left.packets.first(), 4, 4)));
     QCOMPARE(f.left.commands.size(), 5);
     const auto npi = f.left.commands[1]["params"].toMap()["params"].toMap();
-    QCOMPARE(npi["Title"].toString(), QString("AirPlayQt"));
-    QVERIFY(!npi.contains("Duration"));
-    QVERIFY(f.left.commands[2]["params"]
+    QCOMPARE(npi["kMRMediaRemoteNowPlayingInfoTitle"].toString(), QString("AirPlayQt"));
+    QVERIFY(!npi.contains("kMRMediaRemoteNowPlayingInfoDuration"));
+    QCOMPARE(f.left.commands[2]["params"]
                 .toMap()["mrSupportedCommandsFromSender"]
-                .toList()
-                .isEmpty());
+                .toList().size(), 3);
     const auto body = plistEncode(QVariantMap{
         {"type", "updateInfo"},
         {"params", QVariantMap{{"diagnostic", QByteArray(2500, 'x')}}}});
@@ -479,20 +753,7 @@ private slots:
     auto *remote = session.findChild<DacpServer *>();
     QVERIFY(remote);
     auto send = [&](const QByteArray &path, const QByteArray &token) {
-      QTcpSocket socket;
-      socket.connectToHost(QHostAddress::LocalHost, remote->port());
-      if (!socket.waitForConnected(1000))
-        return QByteArray{};
-      socket.write("GET /ctrl-int/1/" + path +
-                   " HTTP/1.1\r\nActive-Remote: " + token + "\r\n\r\n");
-      QByteArray response;
-      QElapsedTimer timer;
-      timer.start();
-      while (!response.contains("\r\n\r\n") && timer.elapsed() < 1000) {
-        QTest::qWait(1);
-        response += socket.readAll();
-      }
-      return response;
+      return dacpRequest(remote->port(), path, token);
     };
     QVERIFY(send("volumeup", f.left.activeRemote).contains("204"));
     QTRY_COMPARE(f.left.volumes.last(), -29.);
@@ -509,7 +770,7 @@ private slots:
     QTest::qWait(20);
     QCOMPARE(f.left.volumeRequests, count); // echo does not loop
     QVERIFY(send("volumeup", "stale-token").contains("403"));
-    QVERIFY(send("pause", f.left.activeRemote).contains("501"));
+    QVERIFY(send("nextitem", f.left.activeRemote).contains("501"));
     QVERIFY(send("setproperty?dmcp.device-volume=nan", f.left.activeRemote)
                 .contains("400"));
     QVERIFY(send("setproperty?dmcp.device-volume=1", f.left.activeRemote)

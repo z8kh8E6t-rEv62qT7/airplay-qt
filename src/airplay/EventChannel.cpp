@@ -75,18 +75,20 @@ void EventChannel::receive() {
           throw Error(i18n::text(i18n::Id::InvalidCharacterInEventRequestLine));
       const bool isCommand = line[0] == "POST" && line[1] == "/command";
       i18n::Message type;
+      QVariantMap commandData;
       if (isCommand) {
         const auto value = plistDecode(message->body);
         if (value.typeId() != QMetaType::QVariantMap)
           throw Error(i18n::text(i18n::Id::EventCommandIsNotAPlistDictionary));
-        type = value.toMap()
+        commandData = value.toMap();
+        type = commandData
                    .value("type")
                    .toString()
                    .left(128)
                    .replace('\n', ' ')
                    .replace('\r', ' ');
         if (type.isEmpty())
-          type = i18n::text(i18n::Id::NoTypeFields) + value.toMap()
+          type = i18n::text(i18n::Id::NoTypeFields) + commandData
                                                           .keys()
                                                           .join(',')
                                                           .left(128)
@@ -114,7 +116,7 @@ void EventChannel::receive() {
                         QString::fromLatin1(line[1].left(128)), type)
                    .arg(status));
       if (isCommand)
-        emit command(message->body);
+        emit command(commandData);
       if (closed_)
         return;
     }

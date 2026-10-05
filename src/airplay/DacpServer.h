@@ -35,5 +35,6 @@ private:
   QByteArray activeRemote_;
   NetworkRoute route_;
   double volume_ = -144;
+  quint64 generation_ = 0;
 };
 } // namespace airplay

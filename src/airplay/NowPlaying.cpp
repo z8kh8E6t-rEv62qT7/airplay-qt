@@ -1,5 +1,6 @@
 #include "NowPlaying.h"
 #include "Crypto.h"
+#include "RtspClient.h"
 #include <QCoreApplication>
 #include <QUuid>
 #include <algorithm>
@@ -24,6 +25,9 @@ QByteArray bytes(unsigned field, const QByteArray &value) {
 }
 QVariantMap command(const QString &type, const QVariantMap &params) {
   return {{"type", type}, {"params", params}};
+}
+double playbackRate(PlaybackState state) {
+  return state == PlaybackState::Playing ? 1. : 0.;
 }
 QByteArray tag(const QByteArray &name, const QByteArray &value) {
   QByteArray out = name;
@@ -53,14 +57,29 @@ QByteArray volumeProperties(double db, bool includeVolume,
     body += tag("cavc", QByteArray(1, '\1'));
   return tag("cmgt", body);
 }
-QVariantMap playbackState(bool playing) {
-  // MRPlaybackState: Playing=1, Stopped=3. No pause capability is advertised.
+QVariantMap nowPlayingInfo(PlaybackState state) {
+  const QVariantMap text{
+      {"kMRMediaRemoteNowPlayingInfoTitle", "AirPlayQt"},
+      {"kMRMediaRemoteNowPlayingInfoArtist", QStringLiteral("实时音频")},
+      {"kMRMediaRemoteNowPlayingInfoIsLiveStream", true},
+      {"kMRMediaRemoteNowPlayingInfoPlaybackRate", playbackRate(state)},
+      {"kMRMediaRemoteNowPlayingInfoDefaultPlaybackRate", 1.},
+      {"kMRMediaRemoteNowPlayingInfoMediaType",
+       QStringLiteral("MRMediaRemoteMediaTypeMusic")},
+      {"kMRMediaRemoteNowPlayingInfoUniqueIdentifier",
+       QVariant::fromValue<qulonglong>(1)}};
+  return command("updateMRNowPlayingInfo",
+                 {{"type", "npi-text"},
+                  {"mergePolicy", "replace"},
+                  {"params", text}});
+}
+QVariantMap playbackState(PlaybackState state) {
   return command("updateMRPlaybackState",
-                 {{"mrPlaybackState", playing ? 1 : 3}});
+                 {{"mrPlaybackState", int(state)}});
 }
 QList<QVariantMap> liveNowPlaying(const QString &identity,
-                                  const QString &session,
-                                  const QString &group) {
+                                  const QString &session, const QString &group,
+                                  PlaybackState state) {
   // Minimal proto2 DeviceInfo / ProtocolMessage and NowPlayingClient messages.
   // Field numbers are documented in pyatv's protobuf schemas and the
   // music-assistant sender. Identify ourselves, not com.apple.Music.
@@ -74,22 +93,18 @@ QList<QVariantMap> liveNowPlaying(const QString &identity,
       bytes(85, QUuid::createUuid().toString(QUuid::WithoutBraces).toUtf8());
   const auto client = number(1, quint64(QCoreApplication::applicationPid())) +
                       bytes(2, bundle) + bytes(7, "AirPlayQt");
-  const QVariantMap text{
-      {"Title", "AirPlayQt"},
-      {"Artist", QStringLiteral("实时音频")},
-      {"IsLiveStream", true},
-      {"PlaybackRate", 1.},
-      {"DefaultPlaybackRate", 1.},
-      {"MediaType", 1},
-      {"UniqueIdentifier", QVariant::fromValue<qulonglong>(1)}};
+  // MRMediaRemoteCommand numbering (0/1/2), not protobuf Command (1/2/3).
+  // Each supported command is an archived binary plist data item.
+  QVariantList supported;
+  for (int code : {0, 1, 2})
+    supported.append(plistEncode(QVariantMap{
+        {"kCommandInfoCommandKey", code}, {"kCommandInfoEnabledKey", true}}));
   return {
       {{"params", QVariantMap{{"data", varint(envelope.size()) + envelope}}}},
-      command(
-          "updateMRNowPlayingInfo",
-          {{"type", "npi-text"}, {"mergePolicy", "replace"}, {"params", text}}),
+      nowPlayingInfo(state),
       command("updateMRSupportedCommands",
-              {{"mrSupportedCommandsFromSender", QVariantList{}}}),
-      playbackState(true),
+              {{"mrSupportedCommandsFromSender", supported}}),
+      playbackState(state),
       command("updateMRNowPlayingClient", {{"mrNowPlayingClient", client}})};
 }
 } // namespace airplay

@@ -18,7 +18,7 @@ signals:
   void connected();
   void failed(QJsonArray error);
   void log(QJsonArray text);
-  void command(QByteArray plist);
+  void command(QVariantMap command);
 
 private:
   void receive();

@@ -1,5 +1,6 @@
 #pragma once
-#include "DacpServer.h"
+#include "RemoteControl.h"
+#include "InboundControlServer.h"
 #include "PtpClock.h"
 #include "ReceiverEndpoint.h"
 #include "RtspClient.h"
@@ -47,6 +48,9 @@ public:
   void volume(double db);
   void inputVolume(double db);
   void inputVolumeStep(int direction);
+  // Authenticated control frontends share the same latest-target dispatcher.
+  bool requestControl(const ControlRequest &request);
+  ControlState controlState() const;
   void setTelemetryEnabled(bool enabled, quint64 revision);
 signals:
   void status(QJsonArray text);
@@ -56,6 +60,7 @@ signals:
   void startCapture();
   void stopCapture();
   void volumeApplied(double db);
+  void controlChanged();
   void telemetry(double left, double right, double backlog, quint64 packets,
                  quint64 retransmitted, quint64 expired, quint64 revision);
   void finished(QJsonArray error, int reason);
@@ -75,7 +80,8 @@ private:
 #endif
   void feedback(int index);
   void keepAlive();
-  void dispatchVolume();
+  void dispatchControl();
+  void publishControlState();
   void prepared();
   void remoteVolume(const QString &action, double value);
   void finishStop();
@@ -91,8 +97,10 @@ private:
   audio::CaptureStream stream_;
   std::vector<std::unique_ptr<Peer>> peers_;
   PtpClock clock_;
-  DacpServer remote_{this};
-  QTimer remoteDeadline_;
+  RemoteControl remote_{this};
+  InboundControlServer inbound_{this};
+  bool controlUpdateQueued_ = false;
+  std::deque<ControlRequest> queuedControls_;
   bool remoteReady_ = false;
   QTimer settle_, poll_, teardown_, keepAlive_;
   QElapsedTimer elapsed_;

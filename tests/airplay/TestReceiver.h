@@ -90,6 +90,8 @@ public:
   std::unique_ptr<HapRecords> eventRecords;
   QList<RtspResponse> eventResponses;
   bool rejectMetadata = false;
+  QString rejectCommandType, holdCommandType;
+  int commandDelay = 0, protocolState = 0;
   QByteArray wire, plain;
   std::unique_ptr<HapRecords> records;
   ServerSrp srp;
@@ -120,6 +122,9 @@ public:
       wire.clear();
       plain.clear();
       records.reset();
+      initialCommand_ = 0;
+      pendingRate_ = -1;
+      protocolState = 0;
       connect(socket, &QTcpSocket::readyRead, this, [this] {
         try {
           read();
@@ -174,6 +179,43 @@ public:
     });
   }
   quint16 port() const { return server.serverPort(); }
+  void sendEvent(const QVariantMap &command, int cseq = 1) {
+    const auto body = plistEncode(command);
+    const auto request = "POST /command RTSP/1.0\r\nCSeq: " +
+                         QByteArray::number(cseq) + "\r\nContent-Length: " +
+                         QByteArray::number(body.size()) + "\r\n\r\n" + body;
+    eventSocket->write(eventRecords->encode(request));
+  }
+  // Independent wire contract, deliberately not built with NowPlaying helpers.
+  static bool validNowPlaying(const QVariantMap &command) {
+    const auto params = command.value("params").toMap();
+    if (params.value("type") != "npi-text" ||
+        params.value("mergePolicy") != "replace")
+      return false;
+    const auto info = params.value("params").toMap();
+    const QString prefix = "kMRMediaRemoteNowPlayingInfo";
+    const QStringList fields{"Title", "Artist", "IsLiveStream", "PlaybackRate",
+                             "DefaultPlaybackRate", "MediaType", "UniqueIdentifier"};
+    if (info.size() != fields.size())
+      return false;
+    for (const auto &field : fields)
+      if (!info.contains(prefix + field))
+        return false;
+    const auto rate = info.value(prefix + "PlaybackRate");
+    const auto defaultRate = info.value(prefix + "DefaultPlaybackRate");
+    const auto uid = info.value(prefix + "UniqueIdentifier");
+    return info.value(prefix + "Title") == "AirPlayQt" &&
+           info.value(prefix + "Artist") == QStringLiteral("实时音频") &&
+           info.value(prefix + "IsLiveStream").typeId() == QMetaType::Bool &&
+           info.value(prefix + "IsLiveStream").toBool() &&
+           rate.typeId() == QMetaType::Double &&
+           (rate.toDouble() == 0. || rate.toDouble() == 1.) &&
+           defaultRate.typeId() == QMetaType::Double && defaultRate.toDouble() == 1. &&
+           info.value(prefix + "MediaType").typeId() == QMetaType::QString &&
+           info.value(prefix + "MediaType") == "MRMediaRemoteMediaTypeMusic" &&
+           (uid.typeId() == QMetaType::ULongLong || uid.typeId() == QMetaType::LongLong) &&
+           uid.toULongLong() == 1;
+  }
   ~Receiver() override {
     for (auto *socket : findChildren<QTcpSocket *>())
       socket->disconnect(this);
@@ -186,6 +228,62 @@ public:
   }
 
 private:
+  int initialCommand_ = 0;
+  double pendingRate_ = -1;
+  void validateCommand(const QVariantMap &command) {
+    const auto type = command.value("type").toString();
+    const auto params = command.value("params").toMap();
+    const QStringList initial{"", "updateMRNowPlayingInfo",
+                              "updateMRSupportedCommands", "updateMRPlaybackState",
+                              "updateMRNowPlayingClient"};
+    const bool stopping = type == "updateMRPlaybackState" &&
+                          params.value("mrPlaybackState").toInt() == 3;
+    if (!stopping && initialCommand_ < initial.size()) {
+      if (type != initial[initialCommand_++])
+        throw Error("Mock initial metadata order mismatch");
+    } else if (!stopping && type != "updateMRNowPlayingInfo" &&
+               type != "updateMRPlaybackState")
+      throw Error("Mock unexpected runtime command");
+    if (type == "updateMRNowPlayingInfo") {
+      if (!validNowPlaying(command) || pendingRate_ != -1)
+        throw Error("Mock invalid now-playing fields or order");
+      pendingRate_ = params.value("params").toMap()
+                         .value("kMRMediaRemoteNowPlayingInfoPlaybackRate").toDouble();
+    } else if (type == "updateMRSupportedCommands") {
+      const auto list = params.value("mrSupportedCommandsFromSender");
+      if (list.typeId() != QMetaType::QVariantList || list.toList().size() != 3)
+        throw Error("Mock invalid supported commands");
+      int expected = 0;
+      for (const auto &item : list.toList()) {
+        if (item.typeId() != QMetaType::QByteArray || !item.toByteArray().startsWith("bplist00"))
+          throw Error("Mock command capability must be archived plist data");
+        const auto capability = plistDecode(item.toByteArray()).toMap();
+        const auto code = capability.value("kCommandInfoCommandKey");
+        if (capability.size() != 2 ||
+            (code.typeId() != QMetaType::LongLong && code.typeId() != QMetaType::ULongLong) ||
+            code.toInt() != expected++ ||
+            capability.value("kCommandInfoEnabledKey").typeId() != QMetaType::Bool ||
+            !capability.value("kCommandInfoEnabledKey").toBool())
+          throw Error("Mock invalid command capability fields");
+      }
+    } else if (type == "updateMRPlaybackState") {
+      const auto state = params.value("mrPlaybackState");
+      if ((state.typeId() != QMetaType::LongLong && state.typeId() != QMetaType::ULongLong) ||
+          state.toInt() < 1 || state.toInt() > 3 ||
+          (!stopping && pendingRate_ != (state.toInt() == 1 ? 1. : 0.)))
+        throw Error("Mock playback state does not match preceding metadata");
+      protocolState = state.toInt();
+      pendingRate_ = -1;
+    } else if (type == "updateMRNowPlayingClient") {
+      if (params.value("mrNowPlayingClient").typeId() != QMetaType::QByteArray ||
+          !params.value("mrNowPlayingClient").toByteArray().contains("org.airplayqt.app"))
+        throw Error("Mock invalid now-playing client");
+    } else if (type.isEmpty()) {
+      if (params.value("data").typeId() != QMetaType::QByteArray ||
+          !params.value("data").toByteArray().contains("org.airplayqt.app"))
+        throw Error("Mock invalid device info");
+    }
+  }
   void respond(const QByteArray &cseq, const QByteArray &body = {},
                int code = 200) {
     auto response = "RTSP/1.0 " + QByteArray::number(code) +
@@ -295,8 +393,22 @@ private:
                 failure == Failure::Volume && body.startsWith("volume:") &&
                 volumeRequests > 1 ? 500 : 200);
       } else if (path == "/command") {
-        commands.append(plistDecode(body).toMap());
-        respond(cseq, {}, rejectMetadata ? 400 : 200);
+        const auto command = plistDecode(body).toMap();
+        validateCommand(command);
+        commands.append(command);
+        const auto type = command.value("type").toString();
+        if (!holdCommandType.isEmpty() && type == holdCommandType)
+          continue;
+        const int code = rejectMetadata ||
+                         (!rejectCommandType.isEmpty() && type == rejectCommandType) ? 400 : 200;
+        if (commandDelay) {
+          auto *client = socket;
+          QTimer::singleShot(commandDelay, client, [this, client, cseq, code] {
+            if (socket == client && client->state() == QAbstractSocket::ConnectedState)
+              respond(cseq, {}, code);
+          });
+        } else
+          respond(cseq, {}, code);
       } else if (method == "OPTIONS") {
         ++options;
         const int code = failure == Failure::KeepAlive ? 500 : 200;

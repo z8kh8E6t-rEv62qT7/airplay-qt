@@ -46,10 +46,16 @@ void DacpServer::start(const QString &identity, const QHostAddress &local,
     if (publicationRoute.local.isNull())
       throw Error(i18n::text(i18n::Id::NoNetworkInterfaceMatchesTheDACPSource));
     advertisement_.start(identity, server_.serverPort(), publicationRoute);
-  } else
-    QTimer::singleShot(0, this, &DacpServer::ready);
+  } else {
+    const auto generation = generation_;
+    QTimer::singleShot(0, this, [this, generation] {
+      if (generation == generation_ && server_.isListening())
+        emit ready();
+    });
+  }
 }
 void DacpServer::stop() {
+  ++generation_;
   enabled_ = false;
   advertisement_.stop();
   server_.close();
@@ -187,8 +193,12 @@ int DacpServer::handle(QTcpSocket &socket, const ControlMessage &request,
     } else {
       return 501;
     }
+  } else if (action == "play" || action == "pause" ||
+             action == "playpause" || action == "playresume") {
+    if (url.hasQuery())
+      return 400;
+    operation = action == "playresume" ? "play" : action;
   } else {
-    // Never implement transport commands by mutating the streaming intent.
     return 501;
   }
   emit log(

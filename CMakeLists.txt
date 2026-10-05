@@ -68,6 +68,9 @@ add_library(airplay_core STATIC
   src/audio/PcmConverter.cpp src/app/SessionController.cpp
   src/airplay/Crypto.cpp src/airplay/RtspClient.cpp src/airplay/NetworkBinding.cpp
   src/airplay/EventChannel.cpp src/airplay/DacpServer.cpp src/airplay/NowPlaying.cpp
+  src/airplay/RemoteControl.cpp
+  src/airplay/InboundControlServer.cpp src/airplay/InboundControlConnection.cpp
+  src/airplay/TransientPairing.cpp src/airplay/FairPlaySetup.cpp src/airplay/MrpSession.cpp
   src/airplay/ServiceAdvertisement.h
   src/airplay/ReceiverEndpoint.cpp src/airplay/ReceiverDiscovery.h
   src/airplay/PtpClock.cpp src/airplay/AirPlaySession.cpp)
@@ -163,6 +166,12 @@ if(AIRPLAY_BUILD_VST3)
   add_subdirectory(src/vst3)
 endif()
 if(BUILD_TESTING)
+  add_executable(test_inbound_control tests/airplay/InboundControlTests.cpp)
+  target_link_libraries(test_inbound_control PRIVATE airplay_core Qt6::Test)
+  add_test(NAME inbound_control COMMAND test_inbound_control)
+  add_executable(test_mrp_session tests/airplay/MrpTests.cpp)
+  target_link_libraries(test_mrp_session PRIVATE airplay_core Qt6::Test)
+  add_test(NAME mrp_session COMMAND test_mrp_session)
   if(TARGET airplay_ui)
     add_executable(test_common_app tests/app/CommonTests.cpp)
     target_link_libraries(test_common_app PRIVATE airplay_ui Qt6::Test)
