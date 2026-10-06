@@ -1,5 +1,6 @@
 #include "SessionController.h"
 #include "app/Message.h"
+#include "airplay/ThreadScheduling.h"
 #include <QEventLoop>
 
 namespace app {
@@ -13,6 +14,9 @@ SessionController::SessionController(QObject *parent)
     : QObject(parent), network_(std::make_shared<NetworkContext>()),
       worker_(new QObject) {
   worker_->moveToThread(&thread_);
+#ifdef Q_OS_MACOS
+  thread_.setObjectName("AirPlayQt net");
+#endif
   connect(&thread_, &QThread::finished, worker_, &QObject::deleteLater);
   connect(this, &SessionController::status, this,
           [this](i18n::Message text) { status_ = text; });
@@ -72,6 +76,8 @@ void SessionController::start(const Timing &timing, audio::CaptureStream stream,
   QMetaObject::invokeMethod(worker_, [this, context = network_, timing, stream,
                                       endpoints, generation, environment,
                                       route] {
+    const auto scheduling = airplay::configureNetworkScheduling();
+    if (!scheduling.description.isEmpty()) emit log(i18n::Message("Network: " + scheduling.description));
     auto *session = new airplay::AirPlaySession(timing, stream, endpoints,
                                                 worker_, environment, route);
     context->session = session;

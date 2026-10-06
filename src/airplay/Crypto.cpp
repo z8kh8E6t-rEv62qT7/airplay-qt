@@ -1,4 +1,5 @@
 #include "Crypto.h"
+#include "AudioPacketEncoder.h"
 #include "app/Message.h"
 #include <algorithm>
 #include <limits>
@@ -267,45 +268,20 @@ QByteArray HapRecords::decodeAvailable(QByteArray &wire) {
   return plain;
 }
 QByteArray alac(std::span<const int16_t> samples) {
-  if (samples.empty() || samples.size() % 2 || samples.size() > 704)
-    throw Error(i18n::text(i18n::Id::ALACRequiresStereoFrames));
-  QByteArray out;
-  out.reserve(qsizetype(samples.size() * 2 + 8));
-  uint64_t bits = 0;
-  int count = 0;
-  auto put = [&](uint64_t value, int width) {
-    bits = (bits << width) | value;
-    count += width;
-    while (count >= 8) {
-      count -= 8;
-      out.append(char(bits >> count));
-      bits &= (uint64_t(1) << count) - 1;
-    }
-  };
-  put(1, 3);
-  put(0, 4);
-  put(0, 12);
-  put(1, 1);
-  put(0, 2);
-  put(1, 1);
-  put(samples.size() / 2, 32);
-  for (auto sample : samples)
-    put(uint16_t(sample), 16);
-  put(7, 3);
-  if (count)
-    put(0, 8 - count);
-  return out;
+  std::array<unsigned char, 1416> output{};
+  const auto size = encodeAlac(samples, output);
+  if (!size) throw Error(i18n::text(i18n::Id::ALACRequiresStereoFrames));
+  return QByteArray(reinterpret_cast<const char *>(output.data()), qsizetype(size));
 }
 QByteArray audioPacket(const QByteArray &key, std::span<const int16_t> samples,
-                       uint16_t seq, uint32_t ts, uint64_t counter,
-                       bool first) {
-  QByteArray header;
-  header.append(char(0x80));
-  header.append(char(first ? 0xe0 : 0x60));
-  appendBe(header, seq, 2);
-  appendBe(header, ts, 4);
-  appendBe(header, 0, 4);
-  auto iv = nonce(counter);
-  return header + seal(key, iv, alac(samples), header.mid(4, 8)) + iv.mid(4);
+                       uint16_t seq, uint32_t ts, uint64_t counter, bool first) {
+  AudioPacketEncoder encoder;
+  if (!encoder.prepare({reinterpret_cast<const unsigned char *>(key.constData()), size_t(key.size())}))
+    throw Error(i18n::text(i18n::Id::InvalidChaChaPolyParameters));
+  std::array<unsigned char, audioPacketCapacity> output{};
+  const auto size = encoder.encode(samples, seq, ts, counter, output);
+  if (!size) throw Error(i18n::text(i18n::Id::ALACRequiresStereoFrames));
+  output[1] = first ? 0xe0 : 0x60;
+  return QByteArray(reinterpret_cast<const char *>(output.data()), qsizetype(size));
 }
 } // namespace airplay

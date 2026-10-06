@@ -495,15 +495,13 @@ private slots:
   }
   void channelOrder() {
     std::array<int16_t, 3> left{1, 2, 3}, right{-1, -2, -3};
-    auto result =
-        audio::convert(std::as_bytes(std::span(left)), audio::format(16),
-                       std::as_bytes(std::span(right)), audio::format(16));
-    QCOMPARE(result, (std::vector<int16_t>{1, -1, 2, -2, 3, -3}));
-    QVERIFY_THROWS_EXCEPTION(
-        std::runtime_error,
-        audio::convert(std::as_bytes(std::span(left)).first(3),
-                       audio::format(16), std::as_bytes(std::span(right)),
-                       audio::format(16)));
+    std::array<int16_t, 6> result{};
+    QVERIFY(audio::convert(std::as_bytes(std::span(left)), audio::format(16),
+                           std::as_bytes(std::span(right)), audio::format(16), result));
+    QCOMPARE(result, (std::array<int16_t, 6>{1, -1, 2, -2, 3, -3}));
+    QVERIFY(!audio::convert(std::as_bytes(std::span(left)).first(3),
+                            audio::format(16), std::as_bytes(std::span(right)),
+                            audio::format(16), result));
   }
   void boundedQueue() {
     audio::CaptureQueue queue(2, 4, 4, 2);
@@ -514,12 +512,13 @@ private slots:
     QCOMPARE(queue.queuedFrames(), 4ULL);
     std::span<const std::byte> l, r;
     QVERIFY(queue.peek(l, r));
-    QCOMPARE(audio::convert(l, audio::format(16), r, audio::format(16)),
-             (std::vector<int16_t>{31, 1, 32, 2}));
+    std::array<int16_t, 4> result{};
+    QVERIFY(audio::convert(l, audio::format(16), r, audio::format(16), result));
+    QCOMPARE(result, (std::array<int16_t, 4>{31, 1, 32, 2}));
     queue.pop();
     QVERIFY(queue.peek(l, r));
-    QCOMPARE(audio::convert(l, audio::format(16), r, audio::format(16)),
-             (std::vector<int16_t>{1, 31, 2, 32}));
+    QVERIFY(audio::convert(l, audio::format(16), r, audio::format(16), result));
+    QCOMPARE(result, (std::array<int16_t, 4>{1, 31, 2, 32}));
     queue.pop();
     QVERIFY(!queue.peek(l, r));
     QVERIFY(queue.push(left.data(), right.data()));

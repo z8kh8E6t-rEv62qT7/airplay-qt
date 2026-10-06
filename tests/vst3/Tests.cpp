@@ -71,7 +71,8 @@ private:
     std::span<const std::byte> l, r;
     while (stream.queue->peek(l, r)) {
       QCOMPARE(std::memcmp(l.data(), expected.data() + cursor, l.size()), 0);
-      const auto pcm = audio::convert(l, stream.left, r, stream.right);
+      std::vector<int16_t> pcm(size_t(packetSamples) * 2);
+      QVERIFY(audio::convert(l, stream.left, r, stream.right, pcm));
       QCOMPARE(pcm.size(), size_t(packetSamples) * 2);
       QCOMPARE(pcm[0], audio::sample(l.data(), stream.left));
       cursor += packetSamples;
@@ -116,8 +117,9 @@ private slots:
     input.process(second, nullptr, 252, 0, true);
     std::span<const std::byte> l, r;
     QVERIFY(stream.queue->peek(l, r));
-    QCOMPARE(airplay::alac(audio::convert(l, stream.left, r, stream.right)),
-             expected);
+    std::array<int16_t, 704> pcm{};
+    QVERIFY(audio::convert(l, stream.left, r, stream.right, pcm));
+    QCOMPARE(airplay::alac(pcm), expected);
   }
   void sdkAlignedAllocation() {
     for (const uint32_t alignment : {0u, 8u, 16u, 32u, 64u, 256u, 4096u}) {

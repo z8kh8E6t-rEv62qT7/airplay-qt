@@ -32,7 +32,13 @@ PcmFormat format(long type) {
         i18n::text(i18n::Id::UnsupportedASIOFormatDSDIsNotAccepted));
   }
 }
-int16_t sample(const std::byte *source, PcmFormat f) {
+namespace {
+bool validFormat(PcmFormat f) noexcept {
+  return f.floating ? (f.bytes == 4 || f.bytes == 8)
+                    : (f.bytes >= 1 && f.bytes <= 4 && f.bits > 0 &&
+                       f.bits <= f.bytes * 8);
+}
+bool readSample(const std::byte *source, PcmFormat f, int16_t &result) noexcept {
   uint64_t raw = 0;
   for (int i = 0; i < f.bytes; ++i)
     raw |= uint64_t(std::to_integer<unsigned char>(source[i]))
@@ -41,9 +47,7 @@ int16_t sample(const std::byte *source, PcmFormat f) {
   if (f.floating) {
     value = f.bytes == 4 ? double(std::bit_cast<float>(uint32_t(raw)))
                          : std::bit_cast<double>(raw);
-    if (!std::isfinite(value))
-      throw i18n::MessageError(
-          i18n::text(i18n::Id::AudioInputContainsNaNInfStreamingStopped));
+    if (!std::isfinite(value)) return false;
     value = std::clamp(value, -1., 1.) * 32768.;
   } else {
     // ASIO Int32{MSB,LSB}{16,18,20,24} is right-aligned, signed PCM.
@@ -52,19 +56,30 @@ int16_t sample(const std::byte *source, PcmFormat f) {
     const int64_t signedValue = int64_t((raw & mask) ^ sign) - int64_t(sign);
     value = std::ldexp(double(signedValue), 16 - f.bits);
   }
-  return static_cast<int16_t>(std::clamp(std::round(value), -32768., 32767.));
+  result = static_cast<int16_t>(std::clamp(std::round(value), -32768., 32767.));
+  return true;
 }
-std::vector<int16_t> convert(std::span<const std::byte> left, PcmFormat lf,
-                             std::span<const std::byte> right, PcmFormat rf) {
-  if (left.size() % lf.bytes || right.size() % rf.bytes ||
-      left.size() / lf.bytes != right.size() / rf.bytes)
+} // namespace
+int16_t sample(const std::byte *source, PcmFormat f) {
+  int16_t result = 0;
+  if (!validFormat(f) || !readSample(source, f, result))
     throw i18n::MessageError(
-        i18n::text(i18n::Id::InputChannelDataLengthsDoNotMatch));
-  std::vector<int16_t> pcm(left.size() / lf.bytes * 2);
-  for (size_t i = 0; i < pcm.size() / 2; ++i) {
-    pcm[2 * i] = sample(left.data() + i * lf.bytes, lf);
-    pcm[2 * i + 1] = sample(right.data() + i * rf.bytes, rf);
+        i18n::text(i18n::Id::AudioInputContainsNaNInfStreamingStopped));
+  return result;
+}
+bool convert(std::span<const std::byte> left, PcmFormat lf,
+             std::span<const std::byte> right, PcmFormat rf,
+             std::span<int16_t> pcm) noexcept {
+  if (!validFormat(lf) || !validFormat(rf) || left.size() % lf.bytes ||
+      right.size() % rf.bytes || left.size() / lf.bytes != right.size() / rf.bytes ||
+      left.size() / lf.bytes > pcm.size() / 2)
+    return false;
+  for (size_t i = 0; i < left.size() / lf.bytes; ++i) {
+    const auto *l = left.data() + i * lf.bytes;
+    const auto *r = right.data() + i * rf.bytes;
+    if (!readSample(l, lf, pcm[2 * i]) || !readSample(r, rf, pcm[2 * i + 1]))
+      return false;
   }
-  return pcm;
+  return true;
 }
 } // namespace audio

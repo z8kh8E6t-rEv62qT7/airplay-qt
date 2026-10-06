@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "app/Message.h"
+#include "airplay/ThreadScheduling.h"
 #include <QCloseEvent>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -30,6 +31,9 @@ MainWindow::MainWindow(const airplay::DiscoveryApi &api,
   setCentralWidget(central);
   auto *layout = new QVBoxLayout(central);
   streaming_ = new StreamingPanel(controller_.session(), central, api);
+#ifdef Q_OS_LINUX
+  streaming_->appendLog(airplay::kernelRealtime().description());
+#endif
   auto *input = new QGroupBox;
   streaming_->bindText(input, "title",
                        backend +

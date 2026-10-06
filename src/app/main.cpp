@@ -21,10 +21,10 @@ int main(int argc, char **argv) {
   try {
 #ifdef Q_OS_WIN
     // Apply before MainWindow creates the controller and network thread.
-    if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)) {
+    if (!SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS)) {
       const auto error = GetLastError();
       throw i18n::MessageError(
-          i18n::text(i18n::Id::FailedToSetRealtimeProcessPriorityWin)
+          i18n::text(i18n::Id::FailedToSetHighProcessPriorityWin)
               .arg(error));
     }
     const auto priority = GetPriorityClass(GetCurrentProcess());
@@ -33,9 +33,9 @@ int main(int argc, char **argv) {
       throw i18n::MessageError(
           i18n::text(i18n::Id::FailedToReadProcessPriorityWin).arg(error));
     }
-    if (priority != REALTIME_PRIORITY_CLASS)
+    if (priority != HIGH_PRIORITY_CLASS)
       throw i18n::MessageError(
-          i18n::text(i18n::Id::WindowsDidNotApplyRealtimePriorityActual)
+          i18n::text(i18n::Id::WindowsDidNotApplyHighPriorityActual)
               .arg(priority, 0, 16));
 #endif
     ui::MainWindow window;

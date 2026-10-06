@@ -95,7 +95,8 @@ struct AirPlaySession::Peer {
   QHostAddress host;
   RtspClient rtsp;
   EventChannel event;
-  QUdpSocket data, control;
+  QUdpSocket control;
+  quint16 localDataPort = 0;
   Step step = Step::Info;
   ReceiverInfo info;
   SrpProof proof;
@@ -108,11 +109,6 @@ struct AirPlaySession::Peer {
   double sentVolume = 0, confirmedVolume = 0;
   PlaybackState sentPlaybackState = PlaybackState::Playing;
   PlaybackState confirmedPlaybackState = PlaybackState::Playing;
-  struct Packet {
-    uint16_t sequence = 0;
-    QByteArray bytes;
-  };
-  std::array<Packet, 1024> history;
   explicit Peer(const QHostAddress &address) : host(address) {}
   ~Peer() {
     OPENSSL_cleanse(key.data(), size_t(key.size()));
@@ -181,6 +177,7 @@ AirPlaySession::AirPlaySession(app::Timing timing, audio::CaptureStream stream,
 }
 AirPlaySession::~AirPlaySession() {
   state_ = State::Stopped;
+  if (sender_) sender_->stop();
   inbound_.stop();
   remote_.stop();
   clock_.stop();
@@ -227,6 +224,12 @@ void AirPlaySession::start() {
     activeRemote_ = quint32(readBe(randomBytes(4), 0, 4)) | 1;
     firstRtp_ = uint32_t(readBe(randomBytes(4), 0, 4));
     firstSequence_ = uint16_t(readBe(randomBytes(2), 0, 2));
+    sender_ = std::make_unique<RealtimeAudioSender>(timing_, stream_, firstSequence_,
+                                                   firstRtp_, size_t(endpoints_.size()));
+    if (!sender_->schedulingLog().isEmpty()) emit log(i18n::Message("Audio: " + sender_->schedulingLog()));
+    if (!sender_->ready())
+      throw Error(i18n::text(i18n::Id::AudioSchedulingRequired) + sender_->schedulingLog());
+    sender_->telemetry(telemetryEnabled_, telemetryRevision_);
     groupId_ = QUuid::createUuid().toString(QUuid::WithoutBraces).toUpper();
     for (const auto &endpoint : endpoints_)
       peers_.push_back(std::make_unique<Peer>(endpoint.host));
@@ -476,7 +479,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
                        {"sr", 44100},
                        {"spf", 352},
                        {"isMedia", true},
-                       {"dataPort", int(p.data.localPort())},
+                       {"dataPort", int(p.localDataPort)},
                        {"controlPort", int(p.control.localPort())},
                        {"latencyMin", 11025},
                        {"latencyMax", 88200},
@@ -499,6 +502,7 @@ void AirPlaySession::reply(int index, const QByteArray &body) {
     const auto stream = dictionary(streams.toList()[0]);
     p.dataPort = port(stream.value("dataPort"));
     p.controlPort = port(stream.value("controlPort"));
+    sender_->preparePeer(size_t(index), p.key, p.dataPort);
     p.step = Step::Peers;
     request(p, "SETPEERS",
             plistEncode(QVariantList{p.host.toString(), local_.toString()}),
@@ -568,66 +572,51 @@ void AirPlaySession::eventConnected(int index) {
   auto &p = *peers_[index];
   if (state_ != State::Connecting || p.step != Peer::Step::Event)
     return;
-  if (!route_.binding.automatic()) {
-    route_.bind(p.data);
-    route_.bind(p.control);
-  } else if (!p.data.bind(local_, 0, QUdpSocket::DontShareAddress) ||
-             !p.control.bind(local_, 0, QUdpSocket::DontShareAddress))
+  if (!route_.binding.automatic()) route_.bind(p.control);
+  else if (!p.control.bind(local_, 0, QUdpSocket::DontShareAddress))
     throw Error(i18n::text(i18n::Id::AudioUDPBindingFailed));
+  p.localDataPort = sender_->bindPeer(size_t(index), local_, p.host, route_,
+                                      p.control.socketDescriptor());
   p.step = Peer::Step::Record;
   request(p, "RECORD");
 }
 void AirPlaySession::captureStarted() {
-  if (state_ != State::Buffering)
-    return;
+  if (state_ != State::Buffering) return;
   elapsed_.start();
-  lastInput_ = lastStats_ = 0;
-  stream_.queue->targetFrames.store(
-      uint64_t(std::max(timing_.packetSamples, timing_.prebufferSamples)),
-      std::memory_order_release);
+  lastStats_ = 0;
   if (stream_.gapPolicy == audio::GapPolicy::Silence)
     emit log(i18n::text(i18n::Id::LinuxInputWaiting));
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   if (stream_.rateDiagnostics)
     emit log(i18n::text(i18n::Id::VSTRateStartingFramesSBitInput)
-                 .arg(stream_.left.bytes * 8)
-                 .arg(stream_.blockFrames)
+                 .arg(stream_.left.bytes * 8).arg(stream_.blockFrames)
                  .arg(double(timing_.prebufferSamples) / 44.1, 0, 'f', 1)
                  .arg(double(timing_.backlogSamples) / 44.1, 0, 'f', 1));
 #endif
+  sender_->begin();
   poll_.start();
 }
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
 void AirPlaySession::logRates(bool final) {
-  if (!stream_.rateDiagnostics || !elapsed_.isValid())
-    return;
+  if (!stream_.rateDiagnostics || !elapsed_.isValid()) return;
   const auto now = elapsed_.nsecsElapsed();
   const auto interval = now - rates_.reportedAt;
-  if (interval <= 0 || (!final && interval < 1000000000))
-    return;
+  if (interval <= 0 || (!final && interval < 1000000000)) return;
   const auto captured = stream_.queue->capturedFrames();
-  const auto queued = stream_.queue->queuedFrames();
   const double seconds = double(interval) / 1e9;
-  const double inputRate = double(captured - rates_.captured) / seconds;
-  const double outputRate = double(sentFrames_ - rates_.sent) / seconds;
+  const double input = double(captured - rates_.captured) / seconds;
+  const double output = double(lastReport_.sentFrames - rates_.sent) / seconds;
   emit log(i18n::text(i18n::Id::VSTRateWindowMsInputFramesS)
-               .arg(final ? i18n::text(i18n::Id::StoppedRateSuffix) : "")
-               .arg(seconds * 1000, 0, 'f', 1)
-               .arg(inputRate, 0, 'f', 1)
-               .arg(outputRate, 0, 'f', 1)
-               .arg((inputRate - outputRate) / 44.1, 0, 'f', 2)
-               .arg(double(queued + pcm_.size() / 2) / 44.1, 0, 'f', 2)
-               .arg(double(queued) / 44.1, 0, 'f', 2)
-               .arg(double(pcm_.size() / 2) / 44.1, 0, 'f', 2)
-               .arg(double(rates_.maxGap) / 1e6, 0, 'f', 3)
-               .arg(double(rates_.maxWork) / 1e6, 0, 'f', 3)
-               .arg(captured)
-               .arg(sentFrames_)
-               .arg(stream_.queue->fault.load()));
-  rates_.reportedAt = now;
-  rates_.captured = captured;
-  rates_.sent = sentFrames_;
-  rates_.maxGap = rates_.maxWork = 0;
+      .arg(final ? i18n::text(i18n::Id::StoppedRateSuffix) : "")
+      .arg(seconds * 1000, 0, 'f', 1).arg(input, 0, 'f', 1).arg(output, 0, 'f', 1)
+      .arg((input - output) / 44.1, 0, 'f', 2)
+      .arg(double(lastReport_.buffered) / 44.1, 0, 'f', 2)
+      .arg(double(stream_.queue->queuedFrames()) / 44.1, 0, 'f', 2)
+      .arg(double(lastReport_.pcmFrames) / 44.1, 0, 'f', 2)
+      .arg(double(lastReport_.maxGapNs) / 1e6, 0, 'f', 3)
+      .arg(double(lastReport_.maxWorkNs) / 1e6, 0, 'f', 3)
+      .arg(captured).arg(lastReport_.sentFrames).arg(stream_.queue->fault.load()));
+  rates_ = {now, captured, lastReport_.sentFrames};
 }
 #endif
 void AirPlaySession::setTelemetryEnabled(bool enabled, quint64 revision) {
@@ -635,218 +624,93 @@ void AirPlaySession::setTelemetryEnabled(bool enabled, quint64 revision) {
   telemetryRevision_ = revision;
   leftPeak_ = rightPeak_ = 0;
   lastStats_ = elapsed_.isValid() ? elapsed_.nsecsElapsed() : 0;
-}
-void AirPlaySession::resetContinuousInput(bool invalidate) {
-  if (invalidate)
-    stream_.queue->generation.fetch_add(1, std::memory_order_acq_rel);
-  inputGeneration_ = stream_.queue->generation.load(std::memory_order_acquire);
-  pcm_.clear();
-  inputReady_ = false;
-  stream_.queue->bufferedFrames.store(0, std::memory_order_release);
-  stream_.queue->playbackActive.store(false, std::memory_order_release);
-  emit log(i18n::text(i18n::Id::LinuxInputReset));
+  if (sender_) sender_->telemetry(enabled, revision);
 }
 void AirPlaySession::poll() {
-  if (state_ != State::Buffering && state_ != State::Streaming)
-    return;
-  const auto now = elapsed_.nsecsElapsed();
-#ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
-  if (stream_.rateDiagnostics) {
-    rates_.maxGap = std::max(rates_.maxGap, now - rates_.lastPoll);
-    rates_.lastPoll = now;
-  }
-#endif
+  if (state_ != State::Buffering && state_ != State::Streaming) return;
   try {
-    const bool continuous = stream_.gapPolicy == audio::GapPolicy::Silence;
-    if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
-      resetContinuousInput(false);
-    if (const int fault = stream_.queue->fault.load())
-      throw Error(
-          i18n::text(i18n::Id::AudioInputFaultBufferIndexOverflowCallback)
-              .arg(fault));
-    if (stream_.queue->interrupted.load()) {
-      stop({}, SessionEnd::HostInterrupted);
-      return;
-    }
-    const auto captured = stream_.queue->capturedFrames();
-    if (captured != seenFrames_) {
-      seenFrames_ = captured;
-      lastInput_ = now;
-    }
-    if (!continuous && now - lastInput_ > timing_.inputTimeoutMs * 1e6)
-      throw Error(i18n::text(i18n::Id::AudioInputTimedOut));
-    if (!continuous && stream_.queue->queuedFrames() + pcm_.size() / 2 >
-                           uint64_t(timing_.backlogSamples))
-      throw Error(i18n::text(i18n::Id::CaptureBacklogExceedsTheLimit));
-    std::span<const std::byte> left, right;
-    uint64_t generation = 0;
-    // Snapshot the producer cursor: polling must remain bounded while input
-    // is arriving. Newly arriving blocks are handled on the next poll.
-    auto remaining = stream_.queue->queuedFrames();
-    while (remaining >= uint64_t(stream_.blockFrames) && stream_.queue->peek(left, right, &generation)) {
-      remaining -= uint64_t(stream_.blockFrames);
-      if (continuous && generation != inputGeneration_) {
-        stream_.queue->pop();
-        continue;
+    const auto report = sender_->poll();
+#ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
+    lastReport_ = report;
+    logRates();
+#endif
+    const auto error = sender_->error();
+    if (error.code == SendFailure::Interrupted) { stop({}, SessionEnd::HostInterrupted); return; }
+    if (error.code != SendFailure::None) {
+      using Id = i18n::Id;
+      Id id = Id::RealtimeSenderFailed;
+      switch (error.code) {
+      case SendFailure::InputFault: id = Id::AudioInputFaultBufferIndexOverflowCallback; break;
+      case SendFailure::InputTimeout: id = Id::AudioInputTimedOut; break;
+      case SendFailure::Backlog: id = Id::CaptureBacklogExceedsTheLimit; break;
+      case SendFailure::InvalidPcm: id = Id::AudioInputContainsNaNInfStreamingStopped; break;
+      case SendFailure::ClockJump: id = Id::SystemClockOffsetExceedsTheLimit; break;
+      case SendFailure::Late: id = Id::SendingFellTooFarBehindTheTimeline; break;
+      case SendFailure::NonceExhausted: id = Id::AudioNonceExhausted; break;
+      case SendFailure::Encode: id = Id::OpenSSLOperationFailed; break;
+      case SendFailure::Send: id = Id::AudioUDPSendFailed; break;
+      case SendFailure::Retransmit: id = Id::RetransmissionFailed; break;
+      case SendFailure::QueueFull: id = Id::RealtimeRequestQueueFull; break;
+      default: break;
       }
-      const auto samples =
-          audio::convert(left, stream_.left, right, stream_.right);
-      stream_.queue->pop();
-      if (telemetryEnabled_)
-        for (size_t i = 0; i < samples.size(); i += 2) {
-          leftPeak_ = std::max(leftPeak_, std::abs(double(samples[i])) / 32768);
-          rightPeak_ =
-              std::max(rightPeak_, std::abs(double(samples[i + 1])) / 32768);
-        }
-      if (continuous && !inputReady_ && pcm_.empty() && !samples.empty())
-        emit log(i18n::text(i18n::Id::LinuxInputBuffering));
-      pcm_.insert(pcm_.end(), samples.begin(), samples.end());
-      if (pcm_.size() / 2 > size_t(timing_.backlogSamples)) {
-        if (continuous) resetContinuousInput(true);
-        else throw Error(i18n::text(i18n::Id::PCMBacklogExceedsTheLimit));
+      if (error.code == SendFailure::InputFault || error.code == SendFailure::Wait)
+        throw Error(i18n::text(id).arg(error.detail));
+      throw Error(error.detail ? i18n::text(id) + " (native code=" +
+                                    QString::number(error.detail) + ")"
+                              : i18n::text(id));
+    }
+    if (report.inputRevision != inputRevision_) {
+      inputRevision_ = report.inputRevision;
+      if (stream_.gapPolicy == audio::GapPolicy::Silence) {
+        const auto id = report.input == InputState::Playing ? i18n::Id::LinuxInputPlaying
+                      : report.input == InputState::Buffering ? i18n::Id::LinuxInputBuffering
+                      : i18n::Id::LinuxInputReset;
+        emit log(i18n::text(id));
       }
     }
-    if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
-      resetContinuousInput(false);
-    if (continuous && !inputReady_ &&
-        pcm_.size() / 2 >=
-            size_t(std::max(timing_.packetSamples, timing_.prebufferSamples))) {
-      inputReady_ = true;
-      emit log(i18n::text(i18n::Id::LinuxInputPlaying));
-    }
-    if (state_ == State::Buffering &&
-        (continuous ||
-         pcm_.size() / 2 >= size_t(std::max(timing_.packetSamples,
-                                            timing_.prebufferSamples)))) {
-      started_ = now;
-      anchorWall_ = wallNs();
-      audible_ = anchorWall_ + int64_t(std::llround(timing_.leadMs * 1e6));
+    if (report.streaming && state_ == State::Buffering) {
+      audible_ = report.audible;
       nextSync_ = 0;
       setState(State::Streaming, i18n::text(i18n::Id::StreamingKHzBitStereo));
     }
-    if (state_ == State::Streaming) {
-      if (std::abs(double(wallNs() - anchorWall_ - (now - started_))) >
-          timing_.lateMs * 1e6)
-        throw Error(i18n::text(i18n::Id::SystemClockOffsetExceedsTheLimit));
-      if (now >= nextSync_) {
-        const auto packet =
-            syncPacket(clockId_, firstRtp_, audible_, wallNs(), firstSync_);
-        for (auto &p : peers_)
-          if (p->control.writeDatagram(packet, p->host, p->controlPort) !=
-              packet.size())
-            throw Error(i18n::text(i18n::Id::AudioSyncPacketSendFailed));
-        firstSync_ = false;
-        nextSync_ = now + qint64(timing_.audioSyncMs * 1e6);
-      }
-      for (int batch = 0; batch < 128; ++batch) {
-        const auto current = elapsed_.nsecsElapsed();
-        const auto due =
-            started_ + qint64((sentFrames_ / 44100) * 1000000000 +
-                              (sentFrames_ % 44100) * 1000000000 / 44100);
-        if (current < due)
-          break;
-        if (current - due > timing_.lateMs * 1e6)
-          throw Error(i18n::text(i18n::Id::SendingFellTooFarBehindTheTimeline));
-        if (continuous && inputGeneration_ != stream_.queue->generation.load(std::memory_order_acquire))
-          resetContinuousInput(false);
-        if (continuous && inputReady_ &&
-            pcm_.size() < size_t(timing_.packetSamples) * 2)
-          resetContinuousInput(true);
-        if (!continuous && pcm_.size() < size_t(timing_.packetSamples) * 2)
-          break;
-        if (counter_ == UINT64_MAX)
-          throw Error(i18n::text(i18n::Id::AudioNonceExhausted));
-        std::array<int16_t, 704> storage{};
-        const auto frame = std::span<int16_t>(storage).first(
-            size_t(timing_.packetSamples) * 2);
-        if (!continuous || inputReady_)
-          for (auto &sample : frame) {
-            sample = pcm_.front();
-            pcm_.pop_front();
-          }
-        const auto sequence = uint16_t(firstSequence_ + counter_);
-        for (auto &p : peers_) {
-          const auto packet = audioPacket(p->key, frame, sequence,
-                                          firstRtp_ + uint32_t(sentFrames_),
-                                          counter_, counter_ == 0);
-          if (p->data.writeDatagram(packet, p->host, p->dataPort) !=
-              packet.size())
-            throw Error(i18n::text(i18n::Id::AudioUDPSendFailed));
-          p->history[sequence % 1024] = {sequence, packet};
-        }
-        ++counter_;
-        if (telemetryEnabled_)
-          ++telemetryPackets_;
-        sentFrames_ += uint64_t(frame.size() / 2);
+    const auto now = elapsed_.nsecsElapsed();
+    if (state_ == State::Streaming && now >= nextSync_) {
+      const auto packet = syncPacket(clockId_, firstRtp_, audible_, wallNs(), firstSync_);
+      for (auto &p : peers_)
+        if (p->control.writeDatagram(packet, p->host, p->controlPort) != packet.size())
+          throw Error(i18n::text(i18n::Id::AudioSyncPacketSendFailed));
+      firstSync_ = false;
+      nextSync_ = now + qint64(timing_.audioSyncMs * 1e6);
+    }
+    if (report.telemetryRevision == telemetryRevision_ && telemetryEnabled_) {
+      leftPeak_ = std::max(leftPeak_, report.leftPeak);
+      rightPeak_ = std::max(rightPeak_, report.rightPeak);
+      if (now - lastStats_ >= 100000000) {
+        emit telemetry(leftPeak_, rightPeak_, double(report.buffered) / 44100,
+                       report.packets, report.retransmitted, report.expired, telemetryRevision_);
+        leftPeak_ = rightPeak_ = 0;
+        lastStats_ = now;
       }
     }
-    if (continuous) {
-      stream_.queue->bufferedFrames.store(stream_.queue->queuedFrames() + pcm_.size() / 2,
-                                         std::memory_order_release);
-      stream_.queue->playbackActive.store(inputReady_, std::memory_order_release);
-    }
-    if (telemetryEnabled_ && now - lastStats_ >= 100000000) {
-      emit telemetry(leftPeak_, rightPeak_,
-                     double(stream_.queue->queuedFrames() + pcm_.size() / 2) /
-                         44100,
-                     telemetryPackets_, retransmitted_, expired_,
-                     telemetryRevision_);
-      leftPeak_ = rightPeak_ = 0;
-      lastStats_ = now;
-    }
-#ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
-    if (stream_.rateDiagnostics) {
-      rates_.maxWork = std::max(rates_.maxWork, elapsed_.nsecsElapsed() - now);
-      logRates();
-    }
-#endif
-  } catch (const std::exception &e) {
-#ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
-    if (stream_.rateDiagnostics)
-      rates_.maxWork = std::max(rates_.maxWork, elapsed_.nsecsElapsed() - now);
-#endif
-    fail(e);
-  }
+  } catch (const std::exception &e) { fail(e); }
 }
 void AirPlaySession::feedback(int index) {
   auto &p = *peers_[index];
   for (int batch = 0; batch < 64 && p.control.hasPendingDatagrams(); ++batch) {
     const auto datagram = p.control.receiveDatagram(1024);
     const auto request = datagram.data();
-    if (state_ != State::Streaming)
-      continue;
-    if (datagram.senderAddress() != p.host || request.size() < 8 ||
-        (uint8_t(request[1]) & 0x7f) != 0x55)
-      continue;
-    const auto requestSequence = readBe(request, 2, 2),
-               first = readBe(request, 4, 2), count = readBe(request, 6, 2);
-    if (count < 1 || count > 1024)
-      continue;
-    for (uint64_t i = 0; i < count; ++i) {
-      const auto seq = uint16_t(first + i);
-      const auto &packet = p.history[seq % 1024];
-      if (packet.bytes.isEmpty() || packet.sequence != seq) {
-        if (telemetryEnabled_)
-          ++expired_;
-        continue;
-      }
-      QByteArray response = QByteArray::fromHex("80d6");
-      appendBe(response, requestSequence, 2);
-      response += packet.bytes;
-      if (p.control.writeDatagram(response, p.host, datagram.senderPort()) !=
-          response.size())
-        throw Error(i18n::text(i18n::Id::RetransmissionFailed));
-      if (telemetryEnabled_)
-        ++retransmitted_;
-    }
+    if (state_ != State::Streaming || datagram.senderAddress() != p.host ||
+        request.size() < 8 || (uint8_t(request[1]) & 0x7f) != 0x55) continue;
+    const auto count = readBe(request, 6, 2);
+    if (count < 1 || count > 1024) continue;
+    if (!sender_->retransmit({uint16_t(index), uint16_t(datagram.senderPort()),
+                              uint16_t(readBe(request, 2, 2)),
+                              uint16_t(readBe(request, 4, 2)), uint16_t(count)}))
+      throw Error(i18n::text(i18n::Id::RealtimeRequestQueueFull));
   }
   if (p.control.hasPendingDatagrams())
     QTimer::singleShot(0, this, [this, index] {
-      try {
-        feedback(index);
-      } catch (const std::exception &e) {
-        fail(e);
-      }
+      try { feedback(index); } catch (const std::exception &e) { fail(e); }
     });
 }
 void AirPlaySession::volume(double db) {
@@ -1038,9 +902,6 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
     return;
   error_ = error;
   endReason_ = error.isEmpty() ? reason : SessionEnd::Failure;
-#ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
-  logRates(true);
-#endif
   setState(
       State::Stopping,
       endReason_ == SessionEnd::HostInterrupted
@@ -1048,9 +909,13 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
           : (error.isEmpty()
                  ? i18n::text(i18n::Id::Stopping)
                  : i18n::text(i18n::Id::StoppingReasonPrefix) + error));
+#ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
+  logRates(true);
+#endif
   inbound_.beginStop();
   emit stopCapture();
   poll_.stop();
+  if (sender_) sender_->stop();
   settle_.stop();
   keepAlive_.stop();
   clock_.stop();
@@ -1060,7 +925,6 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
   for (auto &p : peers_)
     if (p) {
       p->event.close();
-      p->data.close();
       p->control.close();
       if (p->active && p->rtsp.connected() && !p->rtsp.busy()) {
         try {
@@ -1098,10 +962,9 @@ void AirPlaySession::finishStop() {
     if (p) {
       p->rtsp.abort();
       p->event.close();
-      p->data.close();
       p->control.close();
     }
-  pcm_.clear();
+  sender_.reset();
   setState(error_.isEmpty() ? State::Stopped : State::Error,
            error_.isEmpty() ? i18n::text(i18n::Id::Stopped)
                             : i18n::text(i18n::Id::ErrorPrefix) + error_);

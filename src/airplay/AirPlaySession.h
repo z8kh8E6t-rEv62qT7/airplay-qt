@@ -4,6 +4,7 @@
 #include "PtpClock.h"
 #include "ReceiverEndpoint.h"
 #include "RtspClient.h"
+#include "RealtimeAudioSender.h"
 #include "app/Message.h"
 #include "audio/CaptureStream.h"
 #include <array>
@@ -74,9 +75,10 @@ private:
                const QByteArray &body = {}, const QByteArray &type = {});
   void eventConnected(int index);
   void poll();
-  void resetContinuousInput(bool invalidate);
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   void logRates(bool final = false);
+  struct RateDiagnostics { qint64 reportedAt = 0; uint64_t captured = 0, sent = 0; } rates_;
+  SendReport lastReport_;
 #endif
   void feedback(int index);
   void keepAlive();
@@ -109,30 +111,19 @@ private:
   i18n::Message error_;
   QString identity_, groupId_;
   QHostAddress local_;
-  uint64_t clockId_ = 0, counter_ = 0, sentFrames_ = 0, retransmitted_ = 0,
-           expired_ = 0;
-  // Display statistics exclude paused intervals; counter_ remains the nonce.
-  uint64_t telemetryPackets_ = 0;
+  uint64_t clockId_ = 0;
   uint32_t firstRtp_ = 0;
   quint32 activeRemote_ = 0;
   uint16_t firstSequence_ = 0;
-  qint64 started_ = 0, lastInput_ = 0, lastStats_ = 0, nextSync_ = 0;
-  int64_t audible_ = 0, anchorWall_ = 0;
-  uint64_t seenFrames_ = 0;
-  uint64_t inputGeneration_ = 0;
-  bool inputReady_ = false;
-  std::deque<int16_t> pcm_;
+  qint64 lastStats_ = 0, nextSync_ = 0;
+  int64_t audible_ = 0;
+  uint64_t inputRevision_ = 0;
+  std::unique_ptr<RealtimeAudioSender> sender_;
   double leftPeak_ = 0, rightPeak_ = 0, volume_ = 0;
   bool telemetryEnabled_ = true;
   quint64 telemetryRevision_ = 0;
   double restoreVolume_ = -30;
   bool volumePending_ = false, firstSync_ = true;
-#ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
-  struct RateDiagnostics {
-    // Include the delay from capture start to the first network poll.
-    qint64 reportedAt = 0, lastPoll = 0, maxGap = 0, maxWork = 0;
-    uint64_t captured = 0, sent = 0;
-  } rates_;
-#endif
+
 };
 } // namespace airplay

@@ -1,3 +1,4 @@
+#include <vector>
 #include "audio/AsioCapture.h"
 #include "audio/CaptureTiming.h"
 #include <QApplication>
@@ -164,7 +165,8 @@ void checkOutput(const QString &prefix) {
       right{.25f, -.25f, 0, -1, 1};
   const auto l = std::as_bytes(std::span(left)),
              r = std::as_bytes(std::span(right));
-  const auto pcm = audio::convert(l, audio::format(19), r, audio::format(19));
+  std::array<int16_t, 10> pcm{};
+  if (!audio::convert(l, audio::format(19), r, audio::format(19), pcm)) fail("Invalid PCM");
   WaveFile raw(prefix + "-raw-f32.wav", true),
       converted(prefix + "-pcm16.wav", false);
   raw.write(interleave(l, r));
@@ -296,8 +298,8 @@ int main(int argc, char **argv) {
               std::min(size_t(target - frames), left.size() / 4);
           left = left.first(count * 4);
           right = right.first(count * 4);
-          const auto pcm =
-              audio::convert(left, stream.left, right, stream.right);
+          std::vector<int16_t> pcm(count * 2);
+          if (!audio::convert(left, stream.left, right, stream.right, pcm)) fail("Invalid PCM");
           for (const auto channel : {left, right})
             for (size_t i = 0; i < count; ++i) {
               float value;

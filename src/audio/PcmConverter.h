@@ -2,7 +2,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <vector>
 namespace audio {
 struct PcmFormat {
   int bytes;
@@ -12,8 +11,9 @@ struct PcmFormat {
 };
 PcmFormat format(long asioType);
 int16_t sample(const std::byte *source, PcmFormat format);
-std::vector<int16_t> convert(std::span<const std::byte> left,
-                             PcmFormat leftFormat,
-                             std::span<const std::byte> right,
-                             PcmFormat rightFormat);
+// Writes exactly two samples per input frame. The destination may be larger.
+// Returns false for invalid formats, lengths, capacity or non-finite samples.
+bool convert(std::span<const std::byte> left, PcmFormat leftFormat,
+             std::span<const std::byte> right, PcmFormat rightFormat,
+             std::span<int16_t> destination) noexcept;
 } // namespace audio

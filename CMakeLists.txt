@@ -74,6 +74,13 @@ add_library(airplay_core STATIC
   src/airplay/ServiceAdvertisement.h
   src/airplay/ReceiverEndpoint.cpp src/airplay/ReceiverDiscovery.h
   src/airplay/PtpClock.cpp src/airplay/AirPlaySession.cpp)
+target_sources(airplay_core PRIVATE src/airplay/AudioPacketEncoder.cpp
+  src/airplay/AudioSendCore.cpp src/airplay/AudioPacketEncoder.h
+  src/airplay/AudioSendCore.h src/airplay/RealtimeQueue.h)
+find_package(Threads REQUIRED)
+target_sources(airplay_core PRIVATE src/airplay/RealtimeAudioSender.cpp
+  src/airplay/ThreadScheduling.cpp src/airplay/RealtimeWait.cpp)
+target_link_libraries(airplay_core PRIVATE Threads::Threads)
 target_include_directories(airplay_core PUBLIC src)
 target_compile_definitions(airplay_core PUBLIC AIRPLAY_VERSION="${PROJECT_VERSION}")
 if(AIRPLAY_VST_RATE_DIAGNOSTICS)
@@ -83,7 +90,7 @@ target_link_libraries(airplay_core PUBLIC Qt6::Core Qt6::Network OpenSSL::Crypto
 if(WIN32)
   target_sources(airplay_core PRIVATE src/airplay/ReceiverDiscoveryWindows.cpp src/airplay/ServiceAdvertisementWindows.cpp)
   target_compile_definitions(airplay_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(airplay_core PUBLIC ole32 advapi32 winmm dnsapi ws2_32)
+  target_link_libraries(airplay_core PUBLIC ole32 advapi32 winmm dnsapi ws2_32 avrt)
 elseif(APPLE)
   target_sources(airplay_core PRIVATE src/airplay/ReceiverDiscoveryMac.cpp src/airplay/ServiceAdvertisementMac.cpp)
   target_link_libraries(airplay_core PRIVATE "-framework CoreFoundation")
@@ -166,6 +173,12 @@ if(AIRPLAY_BUILD_VST3)
   add_subdirectory(src/vst3)
 endif()
 if(BUILD_TESTING)
+  add_executable(test_realtime tests/airplay/RealtimeTests.cpp)
+  add_executable(benchmark_sender tests/airplay/SenderBenchmark.cpp)
+  target_link_libraries(benchmark_sender PRIVATE airplay_core Threads::Threads)
+  target_link_libraries(test_realtime PRIVATE airplay_core Qt6::Test Threads::Threads)
+  add_test(NAME realtime COMMAND test_realtime)
+  set_tests_properties(realtime PROPERTIES TIMEOUT 60)
   add_executable(test_inbound_control tests/airplay/InboundControlTests.cpp)
   target_link_libraries(test_inbound_control PRIVATE airplay_core Qt6::Test)
   add_test(NAME inbound_control COMMAND test_inbound_control)

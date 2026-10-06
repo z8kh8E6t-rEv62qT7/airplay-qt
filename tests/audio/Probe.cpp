@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 // Inspect ASIO inputs 31/32 without recording or sending audio.
 int main(int argc, char **argv) {
@@ -51,7 +52,9 @@ int main(int argc, char **argv) {
               l.begin(), l.end(), [](std::byte b) { return b != std::byte{}; });
           rightNonzero += std::count_if(
               r.begin(), r.end(), [](std::byte b) { return b != std::byte{}; });
-          const auto pcm = audio::convert(l, stream.left, r, stream.right);
+          std::vector<int16_t> pcm(l.size() / size_t(stream.left.bytes) * 2);
+          if (!audio::convert(l, stream.left, r, stream.right, pcm))
+            throw std::runtime_error("Invalid PCM");
           for (size_t i = 0; i < pcm.size(); i += 2) {
             leftPeak = std::max(leftPeak, std::abs(double(pcm[i])) / 32768);
             rightPeak =

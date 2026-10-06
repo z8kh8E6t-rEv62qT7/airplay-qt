@@ -1,4 +1,5 @@
 #include "Controller.h"
+#include "airplay/ThreadScheduling.h"
 #include "audio/PipeWireCatalog.h"
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -342,6 +343,7 @@ int main(int argc, char **argv) {
   QCoreApplication application(argc, argv);
   QCoreApplication::setApplicationName("AirPlayQtCli");
   QCoreApplication::setApplicationVersion(AIRPLAY_VERSION);
+  log(airplay::kernelRealtime().description());
   try {
     QCommandLineParser parser;
     const auto configuration = options(parser, application.arguments());
