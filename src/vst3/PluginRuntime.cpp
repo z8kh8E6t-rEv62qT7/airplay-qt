@@ -5,6 +5,9 @@
 #include <QFileInfo>
 #include <QSignalBlocker>
 #include <QThread>
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+#include <QDebug>
+#endif
 #ifdef Q_OS_MACOS
 #include <dlfcn.h>
 #endif
@@ -264,8 +267,16 @@ struct PluginRuntime::Instance {
     timingRevision = timing;
   }
 };
-void PluginRuntime::addComponent() noexcept { ++components; }
+void PluginRuntime::addComponent() noexcept {
+  ++components;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "VST3 component added" << components.load();
+#endif
+}
 void PluginRuntime::removeComponent() noexcept {
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "VST3 component removed; previous count" << components.load();
+#endif
   if (components.fetch_sub(1) == 1)
     shutdown();
 }
@@ -292,6 +303,9 @@ PluginRuntime &PluginRuntime::acquire(void *parent,
 }
 PluginRuntime::PluginRuntime(airplay::SessionEnvironment environment)
     : environment_(std::move(environment)) {
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "VST3 runtime create" << this << "application" << QCoreApplication::instance();
+#endif
   if (auto *existing = QCoreApplication::instance()) {
     if (!qobject_cast<QApplication *>(existing) ||
         existing->thread() != QThread::currentThread())
@@ -337,6 +351,9 @@ PluginRuntime::PluginRuntime(airplay::SessionEnvironment environment)
   });
 }
 PluginRuntime::~PluginRuntime() {
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "VST3 runtime destroy" << this << "instances" << instances_.size();
+#endif
   shuttingDown_ = true;
   native_.reset();
   instances_.clear();
@@ -351,6 +368,9 @@ void PluginRuntime::shutdown() noexcept {
     return;
   }
   if (value->pumping_) {
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+    qInfo() << "VST3 shutdown deferred until pump returns" << value;
+#endif
     value->shutdownPending_ = true;
     return;
   }

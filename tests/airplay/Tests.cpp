@@ -234,7 +234,7 @@ private slots:
     QVERIFY(dacpRequest(remote->port(), "playpause", f.left.activeRemote).contains("204"));
     QTRY_COMPARE(f.left.protocolState, 1);
     if (stereo) QTRY_COMPARE(f.right.protocolState, 1);
-    QTest::qWait(10); // Allow the receiver's last RTSP acknowledgment to arrive.
+    QTRY_VERIFY(session.controlState().settled);
     QVERIFY(done.isEmpty());
     QVERIFY(f.left.error.isEmpty());
     QVERIFY(f.right.error.isEmpty());
@@ -306,6 +306,8 @@ private slots:
     auto *remote = session.findChild<RemoteControl *>();
     QVERIFY(remote);
     QCOMPARE(remote->port(), quint16(0));
+    // The sender is joined; already-sent loopback datagrams may still be unread.
+    f.left.receiveAudio();
     const auto count = f.left.packets.size();
     QTest::qWait(20);
     QCOMPARE(f.left.packets.size(), count);
@@ -911,7 +913,8 @@ private slots:
                           IP_UNICAST_IF, reinterpret_cast<char *>(&actual),
                           &size),
                0);
-      QCOMPARE(ntohl(actual), route.index);
+      // IP_UNICAST_IF is set in network order but queried in host order.
+      QCOMPARE(actual, route.index);
 #elif defined(Q_OS_LINUX)
       char actual[256]{};
       socklen_t size = sizeof(actual);

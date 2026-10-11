@@ -107,6 +107,13 @@ public:
   QList<QByteArray> packets, retransmits;
   QHostAddress eventSource, dataSource, controlSource;
   quint16 clientControl = 0;
+  void receiveAudio() {
+    while (data.hasPendingDatagrams()) {
+      const auto datagram = data.receiveDatagram();
+      dataSource = datagram.senderAddress();
+      packets.append(datagram.data());
+    }
+  }
   explicit Receiver(QString identity) : id(std::move(identity)) {
     if (!server.listen(QHostAddress::LocalHost, 0) ||
         !eventServer.listen(QHostAddress::LocalHost, 0) ||
@@ -161,13 +168,7 @@ public:
         }
       });
     });
-    connect(&data, &QUdpSocket::readyRead, this, [this] {
-      while (data.hasPendingDatagrams()) {
-        const auto datagram = data.receiveDatagram();
-        dataSource = datagram.senderAddress();
-        packets.append(datagram.data());
-      }
-    });
+    connect(&data, &QUdpSocket::readyRead, this, &Receiver::receiveAudio);
     connect(&control, &QUdpSocket::readyRead, this, [this] {
       while (control.hasPendingDatagrams()) {
         const auto datagram = control.receiveDatagram();

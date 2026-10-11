@@ -50,12 +50,14 @@ public:
       auto &runtime = PluginRuntime::acquire(parent);
       runtime_ = &runtime;
       panel_ = runtime.open(state_);
-      QObject::connect(panel_, &ui::StreamingPanel::languageChanged, panel_,
-                       [callback = stateEdited_] {
+      viewport_ = std::make_unique<QScrollArea>();
+      // Discovery may keep the panel alive after detachment. Editor callbacks
+      // must release their controller references with the viewport.
+      QObject::connect(panel_, &ui::StreamingPanel::languageChanged,
+                       viewport_.get(), [callback = stateEdited_] {
                          if (callback)
                            callback();
                        });
-      viewport_ = std::make_unique<QScrollArea>();
       viewport_->setWidgetResizable(true);
       viewport_->setFrameShape(QFrame::NoFrame);
       viewport_->setWidget(panel_);

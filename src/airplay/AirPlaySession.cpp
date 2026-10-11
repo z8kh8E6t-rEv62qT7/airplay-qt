@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <cmath>
 #include <openssl/crypto.h>
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+#include <QDebug>
+#endif
 
 namespace airplay {
 namespace {
@@ -109,6 +112,9 @@ struct AirPlaySession::Peer {
   double sentVolume = 0, confirmedVolume = 0;
   PlaybackState sentPlaybackState = PlaybackState::Playing;
   PlaybackState confirmedPlaybackState = PlaybackState::Playing;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  uint64_t retransmitRequests = 0, requestedPackets = 0;
+#endif
   explicit Peer(const QHostAddress &address) : host(address) {}
   ~Peer() {
     OPENSSL_cleanse(key.data(), size_t(key.size()));
@@ -584,6 +590,11 @@ void AirPlaySession::captureStarted() {
   if (state_ != State::Buffering) return;
   elapsed_.start();
   lastStats_ = 0;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "AUDIO timeline packet_frames=" << timing_.packetSamples
+          << "lead_ms=" << timing_.leadMs << "first_sequence=" << firstSequence_
+          << "first_rtp=" << firstRtp_;
+#endif
   if (stream_.gapPolicy == audio::GapPolicy::Silence)
     emit log(i18n::text(i18n::Id::LinuxInputWaiting));
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
@@ -630,6 +641,9 @@ void AirPlaySession::poll() {
   if (state_ != State::Buffering && state_ != State::Streaming) return;
   try {
     const auto report = sender_->poll();
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+    logSender(report);
+#endif
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
     lastReport_ = report;
     logRates();
@@ -694,6 +708,30 @@ void AirPlaySession::poll() {
     }
   } catch (const std::exception &e) { fail(e); }
 }
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+void AirPlaySession::logSender(const SendReport &r, bool final) {
+  const auto now = elapsed_.isValid() ? elapsed_.elapsed() : 0;
+  if (!final && now - lastSenderDiagnostic_ < 5000)
+    return;
+  lastSenderDiagnostic_ = now;
+  qInfo() << "AUDIO sender final=" << final << "elapsed_ms=" << now
+          << "packets=" << r.packets << "sent_frames=" << r.sentFrames
+          << "retransmitted=" << r.retransmitted << "expired=" << r.expired
+          << "max_gap_ns=" << r.maxGapNs << "max_work_ns=" << r.maxWorkNs
+          << "max_lateness_ns=" << r.maxLatenessNs
+          << "buffer_high_water_frames=" << r.maxBuffered
+          << "request_high_water=" << r.requestHighWater
+          << "deadline_buckets=" << r.deadlineHistogram[0]
+          << r.deadlineHistogram[1] << r.deadlineHistogram[2]
+          << r.deadlineHistogram[3] << r.deadlineHistogram[4]
+          << r.deadlineHistogram[5];
+  if (final)
+    for (const auto &p : peers_)
+      qInfo() << "AUDIO feedback host=" << p->host
+              << "requests=" << p->retransmitRequests
+              << "requested_packets=" << p->requestedPackets;
+}
+#endif
 void AirPlaySession::feedback(int index) {
   auto &p = *peers_[index];
   for (int batch = 0; batch < 64 && p.control.hasPendingDatagrams(); ++batch) {
@@ -703,6 +741,15 @@ void AirPlaySession::feedback(int index) {
         request.size() < 8 || (uint8_t(request[1]) & 0x7f) != 0x55) continue;
     const auto count = readBe(request, 6, 2);
     if (count < 1 || count > 1024) continue;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+    ++p.retransmitRequests;
+    p.requestedPackets += count;
+    if (p.retransmitRequests <= 32)
+      qInfo() << "AUDIO retransmit host=" << p.host
+              << "elapsed_ms=" << elapsed_.elapsed()
+              << "request=" << readBe(request, 2, 2)
+              << "first=" << readBe(request, 4, 2) << "count=" << count;
+#endif
     if (!sender_->retransmit({uint16_t(index), uint16_t(datagram.senderPort()),
                               uint16_t(readBe(request, 2, 2)),
                               uint16_t(readBe(request, 4, 2)), uint16_t(count)}))
@@ -916,6 +963,9 @@ void AirPlaySession::stop(const i18n::Message &error, SessionEnd reason) {
   emit stopCapture();
   poll_.stop();
   if (sender_) sender_->stop();
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  if (sender_) logSender(sender_->poll(), true);
+#endif
   settle_.stop();
   keepAlive_.stop();
   clock_.stop();

@@ -3,6 +3,8 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QWidget>
+#include <array>
+#include <cmath>
 #include <cstdio>
 
 // Explicitly invoked acceptance harness. Never part of automatic CTest runs.
@@ -38,32 +40,32 @@ int main(int argc, char **argv) {
     int result = 0;
     bool running = false;
     quint64 lastReport = 0;
-    double initialVolume = 0;
-    enum class VolumePhase { Initial, Lower, Mute, Restore, Done };
-    auto volumePhase = VolumePhase::Initial;
+    constexpr std::array volumeSequence{-5., -8., -144., -5.};
+    const size_t requiredVolumeSteps = duration >= 10 ? volumeSequence.size() : 1;
+    size_t volumeStep = 0;
+    bool volumePending = false;
+    QTimer volumeTimer;
+    volumeTimer.setSingleShot(true);
+    auto applyVolume = [&] {
+      if (controller.busy() && volumeStep < requiredVolumeSteps) {
+        volumePending = true;
+        controller.volume(volumeSequence[volumeStep]);
+      }
+    };
+    QObject::connect(&volumeTimer, &QTimer::timeout, &application, applyVolume);
     QObject::connect(&controller, &app::Controller::volumeApplied, &application,
                      [&](double db) {
                        std::fprintf(stdout, "VOLUME acknowledged_db=%.6f\n",
                                     db);
                        std::fflush(stdout);
-                       if (volumePhase == VolumePhase::Initial)
-                         initialVolume = db;
-                       else if (volumePhase == VolumePhase::Lower) {
-                         QTimer::singleShot(1000, &controller, [&] {
-                           if (controller.busy()) {
-                             volumePhase = VolumePhase::Mute;
-                             controller.volume(-144);
-                           }
-                         });
-                       } else if (volumePhase == VolumePhase::Mute) {
-                         QTimer::singleShot(1000, &controller, [&] {
-                           if (controller.busy()) {
-                             volumePhase = VolumePhase::Restore;
-                             controller.volume(initialVolume);
-                           }
-                         });
-                       } else if (volumePhase == VolumePhase::Restore)
-                         volumePhase = VolumePhase::Done;
+                       if (!volumePending || volumeStep >= requiredVolumeSteps ||
+                           !std::isfinite(db) ||
+                           std::abs(db - volumeSequence[volumeStep]) >= .005)
+                         return;
+                       volumePending = false;
+                       ++volumeStep;
+                       if (volumeStep < requiredVolumeSteps)
+                         volumeTimer.start(volumeStep == 1 ? 2000 : 1000);
                      });
     QObject::connect(&controller, &app::Controller::log, &application,
                      [](const i18n::Message &text) {
@@ -91,19 +93,18 @@ int main(int argc, char **argv) {
                          running = true;
                          elapsed.start();
                          stopTimer.start(duration * 1000);
-                         if (duration >= 10)
-                           QTimer::singleShot(2000, &controller, [&] {
-                             if (controller.busy()) {
-                               volumePhase = VolumePhase::Lower;
-                               controller.volume(
-                                   std::max(-144., initialVolume - 3));
-                             }
-                           });
+                         applyVolume();
                        }
                      });
     QObject::connect(&stopTimer, &QTimer::timeout, &controller,
                      &app::Controller::stop);
     QObject::connect(&controller, &app::Controller::stopped, &application, [&] {
+      volumeTimer.stop();
+      if (running && volumeStep != requiredVolumeSteps) {
+        std::fprintf(stderr, "ERROR Volume sequence incomplete: %zu/%zu steps\n",
+                     volumeStep, requiredVolumeSteps);
+        result = 1;
+      }
       std::fprintf(stdout, "FINISHED elapsed_ms=%lld result=%d\n",
                    running ? elapsed.elapsed() : 0, result);
       application.exit(result);

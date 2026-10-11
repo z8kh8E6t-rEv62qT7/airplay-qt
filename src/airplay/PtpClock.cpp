@@ -3,6 +3,9 @@
 #include <QNetworkDatagram>
 #include <QNetworkInterface>
 #include <cmath>
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+#include <QDebug>
+#endif
 #ifdef Q_OS_WIN
 #include <windows.h>
 #else
@@ -84,6 +87,12 @@ void PtpClock::start(const QHostAddress &local,
   identity_ = id;
   timing_ = timing;
   sequence_ = 0;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  sentKinds_.fill(0);
+  receivedKinds_.fill(0);
+  qInfo() << "PTP start local=" << local << "hosts=" << hosts
+          << "clock=" << id;
+#endif
   QNetworkInterface selected;
   for (const auto &iface : QNetworkInterface::allInterfaces())
     for (const auto &address : iface.addressEntries())
@@ -119,6 +128,13 @@ void PtpClock::start(const QHostAddress &local,
   }
 }
 void PtpClock::stop() {
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  if (active_)
+    for (size_t kind = 0; kind < sentKinds_.size(); ++kind)
+      if (sentKinds_[kind] || receivedKinds_[kind])
+        qInfo() << "PTP summary kind=" << kind << "sent=" << sentKinds_[kind]
+                << "received=" << receivedKinds_[kind];
+#endif
   active_ = false;
   timer_.stop();
   event_.close();
@@ -133,6 +149,9 @@ void PtpClock::send(QUdpSocket &socket, quint16 port, const QByteArray &packet,
         datagram.setSender(route_.local, socket.localPort());
       if (socket.writeDatagram(datagram) != packet.size())
         throw Error(i18n::text(i18n::Id::PTPSendFailed) + socket.errorString());
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+      ++sentKinds_[uint8_t(packet[0]) & 15];
+#endif
     }
 }
 void PtpClock::tick() {
@@ -197,6 +216,11 @@ void PtpClock::receive(QUdpSocket &socket) {
         continue;
       packet.truncate(length);
       const int kind = uint8_t(packet[0]) & 15;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+      if (++receivedKinds_[size_t(kind)] <= 4)
+        qInfo() << "PTP receive host=" << host << "kind=" << kind
+                << "length=" << length;
+#endif
       const auto sequence = uint16_t(readBe(packet, 30, 2));
       if ((kind == 1 || kind == 2) && length >= 44) {
         send(kind == 1 ? general_ : event_, kind == 1 ? 320 : 319,

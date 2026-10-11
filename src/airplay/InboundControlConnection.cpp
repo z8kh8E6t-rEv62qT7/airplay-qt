@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <openssl/crypto.h>
 #include <utility>
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+#include <QDebug>
+#endif
 
 namespace airplay {
 namespace {
@@ -36,6 +39,12 @@ InboundControlConnection::~InboundControlConnection() {
 }
 
 void InboundControlConnection::controlUpdated(bool publish) {
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "MRP state" << this << "publish" << publish
+          << "available" << owner_.state_.available
+          << "settled" << owner_.state_.settled
+          << "pendingControls" << pendingControls_.size();
+#endif
   if (closing_)
     return;
   try {
@@ -63,6 +72,9 @@ void InboundControlConnection::controlUpdated(bool publish) {
 void InboundControlConnection::attach(Channel &channel, QTcpSocket *socket) {
   channel.socket = socket;
   socket->setParent(this);
+  // Each event waits for an acknowledgement; Nagle delays can exhaust the
+  // bounded shutdown window before the final command result is sent.
+  socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
   socket->setReadBufferSize(BufferLimit);
   connect(socket, &QTcpSocket::readyRead, this,
           [this, &channel] { read(channel); });
@@ -81,6 +93,11 @@ void InboundControlConnection::clear(Channel &channel) {
 }
 
 void InboundControlConnection::shutdown() {
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "MRP shutdown" << this << "queued" << outgoing_.size()
+          << "inFlight" << inFlight_.has_value()
+          << "pendingControls" << pendingControls_.size();
+#endif
   deadline_.stop();
   eventDeadline_.stop();
   outgoing_.clear();
@@ -179,6 +196,11 @@ void InboundControlConnection::enqueue(quint64 stream, const QByteArray &data,
   if (outgoing_.size() + int(inFlight_.has_value()) >= 32)
     throw PublicationError("MRP event queue limit exceeded");
   outgoing_.append({stream, std::move(frames), snapshot});
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "MRP enqueue" << this << "stream" << stream
+          << "snapshot" << snapshot << "frames" << outgoing_.last().frames.size()
+          << "queued" << outgoing_.size();
+#endif
 }
 
 void InboundControlConnection::executeControls() {
@@ -217,6 +239,10 @@ void InboundControlConnection::sendNextEvent() {
   if (batch.frames.isEmpty())
     outgoing_.removeFirst();
   const auto sequence = ++nextEventSequence_;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "MRP send" << this << "sequence" << sequence
+          << "stream" << stream << "queued" << outgoing_.size();
+#endif
   const auto body =
       plistEncode(QVariantMap{{"params", QVariantMap{{"data", data}}}});
   const auto request =
@@ -261,6 +287,9 @@ void InboundControlConnection::eventResponse(Channel &channel,
 
   eventDeadline_.stop();
   inFlight_.reset();
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  qInfo() << "MRP acknowledged" << this << "sequence" << sequenceText;
+#endif
   sendNextEvent();
 }
 

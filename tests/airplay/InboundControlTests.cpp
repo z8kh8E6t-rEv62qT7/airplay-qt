@@ -270,6 +270,10 @@ private slots:
                  .status,
              200);
     QTRY_COMPARE(received.size(), 14);
+    const auto acceptedSockets = server.findChildren<QTcpSocket *>();
+    QCOMPARE(acceptedSockets.size(), 2);
+    for (auto *socket : acceptedSockets)
+      QCOMPARE(socket->socketOption(QAbstractSocket::LowDelayOption).toInt(), 1);
     received.clear();
     state.playback = PlaybackState::Paused;
     state.settled = false;
@@ -295,15 +299,18 @@ private slots:
     QTest::qWait(20);
     QVERIFY(
         received.isEmpty()); // No fabricated success before owner confirmation.
+    QSignalSpy disconnected(&control.socket, &QTcpSocket::disconnected);
     server.beginStop();
-    QTRY_VERIFY(std::ranges::any_of(received, [](const auto &frame) {
+    // Keep a real event loop running while the peer acknowledges each frame.
+    // QTRY's polling sleeps can consume the server's bounded drain window.
+    QVERIFY(!disconnected.isEmpty() || disconnected.wait(1000));
+    QVERIFY(std::ranges::any_of(received, [](const auto &frame) {
       return frame.contains(QByteArray::fromHex("30034a"));
     }));
-    QTRY_VERIFY(std::ranges::any_of(received, [](const auto &frame) {
+    QVERIFY(std::ranges::any_of(received, [](const auto &frame) {
       return frame.contains(QByteArray::fromHex("080212037265712001"));
     }));
-    QTRY_COMPARE_WITH_TIMEOUT(control.socket.state(),
-                              QAbstractSocket::UnconnectedState, 1000);
+    QCOMPARE(control.socket.state(), QAbstractSocket::UnconnectedState);
     QCOMPARE(accepted, 1);
   }
   void mrpAudioControl_data() {

@@ -41,5 +41,8 @@ private:
   uint16_t sequence_ = 0;
   qint64 nextSync_ = 0, nextAnnounce_ = 0;
   bool active_ = false;
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  std::array<uint64_t, 16> sentKinds_{}, receivedKinds_{};
+#endif
 };
 } // namespace airplay

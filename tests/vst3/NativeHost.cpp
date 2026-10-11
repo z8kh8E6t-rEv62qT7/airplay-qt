@@ -5,6 +5,7 @@
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include <cstdio>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -61,6 +62,11 @@ int wmain(int argc, wchar_t **argv) {
   CHECK(SetEnvironmentVariableW(L"PATH", system));
   CHECK(SetCurrentDirectoryW(system));
   CHECK(!GetModuleHandleW(L"Qt6Core.dll"));
+  const auto hostPriority = GetPriorityClass(GetCurrentProcess());
+  CHECK(hostPriority != 0);
+  constexpr std::array qtNames{L"Qt6Core.dll", L"Qt6Gui.dll", L"Qt6Widgets.dll",
+                               L"Qt6Network.dll"};
+  std::array<HMODULE, qtNames.size()> qtModules{};
   HMODULE preload = argc > 3 ? LoadLibraryExW(argv[3], nullptr,
                                               LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
                                                   LOAD_LIBRARY_SEARCH_SYSTEM32)
@@ -96,6 +102,14 @@ int wmain(int argc, wchar_t **argv) {
       break;
     }
     CHECK(initialized);
+    for (size_t i = 0; i < qtNames.size(); ++i) {
+      const auto loaded = GetModuleHandleW(qtNames[i]);
+      CHECK(loaded);
+      if (cycle == 0)
+        qtModules[i] = loaded;
+      else
+        CHECK(loaded == qtModules[i]);
+    }
     CHECK(init());
     CHECK(done());
     auto factory = owned(getFactory());
@@ -204,6 +218,9 @@ int wmain(int argc, wchar_t **argv) {
     }
     CHECK(FreeLibrary(module));
     CHECK(!GetModuleHandleW(path.c_str()));
+    for (size_t i = 0; i < qtNames.size(); ++i)
+      CHECK(GetModuleHandleW(qtNames[i]) == qtModules[i]);
+    CHECK(GetPriorityClass(GetCurrentProcess()) == hostPriority);
   }
   if (preload)
     CHECK(FreeLibrary(preload));

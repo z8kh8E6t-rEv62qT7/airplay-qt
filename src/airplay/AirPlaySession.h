@@ -75,6 +75,10 @@ private:
                const QByteArray &body = {}, const QByteArray &type = {});
   void eventConnected(int index);
   void poll();
+#ifdef AIRPLAY_LIFECYCLE_DIAGNOSTICS
+  void logSender(const SendReport &report, bool final = false);
+  qint64 lastSenderDiagnostic_ = 0;
+#endif
 #ifdef AIRPLAY_VST_RATE_DIAGNOSTICS
   void logRates(bool final = false);
   struct RateDiagnostics { qint64 reportedAt = 0; uint64_t captured = 0, sent = 0; } rates_;

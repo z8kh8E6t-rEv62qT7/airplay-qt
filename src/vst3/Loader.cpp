@@ -77,12 +77,7 @@ bool systemRuntime(const std::wstring &name) {
          _wcsnicmp(name.c_str(), L"vcruntime", 9) == 0 ||
          _wcsicmp(name.c_str(), L"ucrtbase.dll") == 0;
 }
-bool verify(const std::filesystem::path &directory) {
-  std::ifstream manifest(directory / L"runtime-sha256.txt");
-  if (!manifest) {
-    fail(L"Missing runtime-sha256.txt");
-    return false;
-  }
+std::vector<HMODULE> loadedModules() {
   std::vector<HMODULE> modules(256);
   DWORD needed = 0;
   for (;;) {
@@ -94,6 +89,50 @@ bool verify(const std::filesystem::path &directory) {
     modules.resize(needed / sizeof(HMODULE) + 32);
   }
   modules.resize(needed / sizeof(HMODULE));
+  return modules;
+}
+bool pinQtRuntime() {
+  constexpr std::array names{L"Qt6Core.dll", L"Qt6Gui.dll", L"Qt6Widgets.dll",
+                             L"Qt6Network.dll"};
+  std::array<bool, names.size()> found{};
+  std::vector<HMODULE> qtModules;
+  for (auto module : loadedModules()) {
+    const auto name = modulePath(module).filename().wstring();
+    for (size_t i = 0; i < names.size(); ++i)
+      if (_wcsicmp(name.c_str(), names[i]) == 0) {
+        found[i] = true;
+        qtModules.push_back(module);
+        break;
+      }
+  }
+  for (size_t i = 0; i < names.size(); ++i)
+    if (!found[i]) {
+      fail(std::wstring(L"Required Qt runtime is not loaded: ") + names[i]);
+      return false;
+    }
+  // Qt's platform plugin can keep Core/Gui loaded after Engine unloads.
+  // Keep the other Qt modules with them: their metatype registrations contain
+  // pointers into those DLLs (for example QtWidgets' Qt::GestureState).
+  // Pin by address so every verified copy is retained, even with duplicate names.
+  for (auto module : qtModules) {
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(module), &pinned)) {
+      fail(L"Cannot retain Qt runtime, Win32 error " +
+           std::to_wstring(GetLastError()));
+      return false;
+    }
+  }
+  return true;
+}
+bool verify(const std::filesystem::path &directory) {
+  std::ifstream manifest(directory / L"runtime-sha256.txt");
+  if (!manifest) {
+    fail(L"Missing runtime-sha256.txt");
+    return false;
+  }
+  const auto modules = loadedModules();
   std::string line;
   bool engineFound = false, platformFound = false;
   while (std::getline(manifest, line)) {
@@ -163,26 +202,35 @@ extern "C" __declspec(dllexport) bool InitDll() noexcept {
         FreeLibrary(candidate);
         return false;
       }
+      auto init = reinterpret_cast<Switch>(GetProcAddress(candidate, "InitDll"));
+      auto done = reinterpret_cast<Switch>(GetProcAddress(candidate, "ExitDll"));
+      auto ready = reinterpret_cast<Switch>(
+          GetProcAddress(candidate, "AirPlayQtCanUnload"));
+      auto getFactory = reinterpret_cast<Factory>(
+          GetProcAddress(candidate, "GetPluginFactory"));
+      if (!init || !done || !ready || !getFactory) {
+        fail(L"Engine entry points missing");
+        FreeLibrary(candidate);
+        return false;
+      }
+      if (!pinQtRuntime()) {
+        FreeLibrary(candidate);
+        return false;
+      }
+      if (!init()) {
+        fail(L"Engine initialization failed");
+        FreeLibrary(candidate);
+        return false;
+      }
+      engine = candidate;
+      engineExit = done;
+      canUnload = ready;
+      factory = getFactory;
+      references = 1;
     } catch (...) {
       FreeLibrary(candidate);
       throw;
     }
-    auto init = reinterpret_cast<Switch>(GetProcAddress(candidate, "InitDll"));
-    auto done = reinterpret_cast<Switch>(GetProcAddress(candidate, "ExitDll"));
-    auto ready = reinterpret_cast<Switch>(
-        GetProcAddress(candidate, "AirPlayQtCanUnload"));
-    auto getFactory = reinterpret_cast<Factory>(
-        GetProcAddress(candidate, "GetPluginFactory"));
-    if (!init || !done || !ready || !getFactory || !init()) {
-      fail(L"Engine entry points missing or initialization failed");
-      FreeLibrary(candidate);
-      return false;
-    }
-    engine = candidate;
-    engineExit = done;
-    canUnload = ready;
-    factory = getFactory;
-    references = 1;
     return true;
   } catch (const std::exception &error) {
     const std::string text = error.what();
