@@ -40,7 +40,7 @@ struct Options {
 
 Options options(QCommandLineParser &parser, const QStringList &arguments) {
   parser.setApplicationDescription(
-      "Send a Linux audio input to manually specified AirPlay receivers. "
+      "Send a Linux audio input or output monitor to manually specified AirPlay receivers. "
       "The first startup failure exits; after streaming once, sessions retry "
       "every 2 seconds until SIGINT or SIGTERM. Only timing is read from "
       "--config.");
@@ -48,13 +48,13 @@ Options options(QCommandLineParser &parser, const QStringList &arguments) {
       {{"help", "Show this help and exit."},
        {"version", "Show the application version and exit."},
        {"list-devices",
-        "Query input devices once, print stable IDs, and exit."},
+        "Query capture devices (including auto loopback) once, print stable IDs, and exit."},
        {"list-interfaces",
         "List available network interfaces and IPv4 addresses."},
        {"config",
         "Required version 4 application configuration; only timing is used.",
         "path"},
-       {"device", "Required input device ID from --list-devices.", "id"},
+       {"device", "Required capture device ID from --list-devices.", "id"},
        {"receiver",
         "Required IPv4[:port], default port 7000; repeat for a stereo pair.",
         "endpoint"},
@@ -124,7 +124,7 @@ void listDevices(const QList<audio::DriverInfo> &devices) {
   for (const auto &device : devices) {
     const auto state = device.connected
         ? (*device.connected ? "connected" : "disconnected") : "n/a";
-    output(stdout, singleLine(device.id) + '\t' + singleLine(device.name) +
+    output(stdout, singleLine(device.id) + '\t' + singleLine(device.displayName().render()) +
                        '\t' + state + '\n');
   }
 }

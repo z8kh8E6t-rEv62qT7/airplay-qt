@@ -62,6 +62,11 @@ std::optional<PipeWireSource> pipeWireSource(const QVariantMap &props, uint32_t 
   PipeWireSource source{"pipewire:" + name,
       props.value(PW_KEY_NODE_DESCRIPTION, name).toString(), serial,
       props.value("api.bluez5.codec").toString(), id, rate, channels};
+  if (props.value(PW_KEY_MEDIA_CLASS).toString() == "Audio/Sink") {
+    source.id = "loopback:" + name;
+    source.kind = CaptureKind::Loopback;
+    return source;
+  }
   const auto bluezPath = props.value("api.bluez5.path").toString();
   if (!bluezPath.isEmpty() || props.value(PW_KEY_DEVICE_API).toString() == "bluez5" || name.startsWith("bluez_input.")) {
     // A phone's HFP microphone must not replace its A2DP music source.
@@ -188,14 +193,15 @@ void PipeWireCatalog::global(void *data, uint32_t id, uint32_t, const char *type
   }
   if (std::strcmp(type, PW_TYPE_INTERFACE_Node) != 0) return;
   auto values = properties(props);
-  if (!values.value(PW_KEY_MEDIA_CLASS).toString().startsWith("Audio/Source")) return;
+  const auto mediaClass = values.value(PW_KEY_MEDIA_CLASS).toString();
+  if (!mediaClass.startsWith("Audio/Source") && mediaClass != "Audio/Sink") return;
   auto node = std::make_unique<Node>();
   node->props = std::move(values);
   node->proxy = static_cast<pw_node *>(pw_registry_bind(self.registry_, id, type,
       std::min(version, uint32_t(PW_VERSION_NODE)), 0));
   if (!node->proxy) {
     if (!self.snapshotReady_ && self.snapshotError_.isEmpty())
-      self.snapshotError_ = "Cannot bind an input node in the initial PipeWire query";
+      self.snapshotError_ = "Cannot bind an audio node in the initial PipeWire query";
     return;
   }
   static const pw_node_events events = [] {
@@ -246,7 +252,7 @@ QList<DriverInfo> PipeWireCatalog::devices() const {
   for (const auto &device : bluez_.sources())
     result.append({device.id, device.name, CaptureKind::Input, device.connected});
   for (const auto &source : sources_)
-    if (!source.id.startsWith("bluez:")) result.append({source.id, source.name});
+    if (!source.id.startsWith("bluez:")) result.append({source.id, source.name, source.kind});
   return result;
 }
 } // namespace audio

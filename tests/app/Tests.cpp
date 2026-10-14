@@ -52,6 +52,7 @@ struct CaptureState {
   int enumerations = 0, creations = 0, opens = 0, closes = 0, starts = 0, stops = 0;
   bool failEnumeration = false, failOpen = false, failClose = false;
   QString openedId;
+  audio::CaptureKind createdKind = audio::CaptureKind::Input;
   QPointer<audio::InputCapture> capture;
 };
 class FakeCapture final : public audio::InputCapture {
@@ -92,8 +93,9 @@ struct RefreshWindow {
       if (state.failEnumeration) throw std::runtime_error("enumeration failed");
       return state.devices;
     };
-    api.create = [this](audio::CaptureKind) {
+    api.create = [this](audio::CaptureKind kind) {
       ++state.creations;
+      state.createdKind = kind;
       return std::make_unique<FakeCapture>(state);
     };
     window = std::make_unique<ui::MainWindow>(unavailableDiscovery(), api);
@@ -144,6 +146,24 @@ struct RestoreDirectoryAcl {
 class AppTests : public QObject {
   Q_OBJECT
 private slots:
+  void loopbackSelectionSurvivesSettingsAndInputSwitch() {
+    const QString id = "loopback:test-sink";
+    RefreshWindow fixture(id);
+    fixture.state.devices.append({id, "Speakers", audio::CaptureKind::Loopback});
+    fixture.window->show();
+    QTRY_COMPARE(fixture.state.openedId, id);
+    QCOMPARE(fixture.state.createdKind, audio::CaptureKind::Loopback);
+    QCOMPARE(fixture.devices()->currentText(), QString("Speakers(auto loopback)"));
+    QCOMPARE(fixture.devices()->currentData().toString(), id);
+    QCOMPARE(app::Settings::load(fixture.path()).driverId, id);
+    fixture.devices()->setCurrentIndex(fixture.devices()->findData("a"));
+    QCOMPARE(fixture.state.openedId, QString("a"));
+    QCOMPARE(fixture.state.createdKind, audio::CaptureKind::Input);
+    fixture.devices()->setCurrentIndex(fixture.devices()->findData(id));
+    QCOMPARE(fixture.state.openedId, id);
+    QCOMPARE(fixture.state.createdKind, audio::CaptureKind::Loopback);
+    fixture.window->close();
+  }
   void windowLayoutSurvivesCloseAndRecreate() {
     RefreshWindow fixture;
     auto &window = *fixture.window;

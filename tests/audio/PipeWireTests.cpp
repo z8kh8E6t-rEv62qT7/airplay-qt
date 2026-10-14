@@ -3,9 +3,14 @@
 #include "audio/PipeWireCapture.h"
 #include "audio/PipeWireCatalog.h"
 #include "audio/PipeWireRecovery.h"
+#include "app/Settings.h"
 #include <QFile>
+#include <QDataStream>
+#include <QDBusMetaType>
+#include <QDBusVirtualObject>
 #include <QProcess>
 #include <QTemporaryDir>
+#include <QTcpServer>
 #include <QtTest>
 #include <cstring>
 
@@ -16,6 +21,44 @@ public:
     if (state() != NotRunning) { terminate(); if (!waitForFinished(2000)) { kill(); waitForFinished(); } }
   }
 };
+// Only CLI children use this session bus as their system bus. No host BlueZ
+// objects or PipeWire nodes are modified by the integration tests.
+class EmptyBluez : public QDBusVirtualObject {
+public:
+  QString introspect(const QString &) const override { return {}; }
+  bool handleMessage(const QDBusMessage &message, const QDBusConnection &bus) override {
+    if (message.interface() != "org.freedesktop.DBus.ObjectManager" ||
+        message.member() != "GetManagedObjects") return false;
+    return bus.send(message.createReply(QVariant::fromValue(DBusObjects{})));
+  }
+};
+namespace {
+// Consumes queued audio, so unlike QTRY_VERIFY the success predicate must not
+// be evaluated again after it has already consumed a matching block.
+bool waitForSignal(const CaptureStream &input, float expectedLeft, float expectedRight) {
+  QElapsedTimer timer;
+  timer.start();
+  float a = 0, b = 0;
+  while (timer.elapsed() < 6000) {
+    std::span<const std::byte> left, right;
+    uint64_t generation;
+    while (input.queue->peek(left, right, &generation)) {
+      bool matched = generation == input.queue->generation.load();
+      for (size_t offset = 0; offset < left.size(); offset += sizeof(float)) {
+        std::memcpy(&a, left.data() + offset, sizeof(float));
+        std::memcpy(&b, right.data() + offset, sizeof(float));
+        matched &= std::isfinite(a) && std::isfinite(b) &&
+            std::abs(a - expectedLeft) < .002f && std::abs(b - expectedRight) < .002f;
+      }
+      input.queue->pop();
+      if (matched) return true;
+    }
+    QTest::qWait(5);
+  }
+  qWarning() << "Expected" << expectedLeft << expectedRight << "last samples" << a << b;
+  return false;
+}
+}
 class Tests : public QObject {
   Q_OBJECT
 private slots:
@@ -42,6 +85,8 @@ private slots:
     replaced = metadata; replaced.codec = "sbc";
     QVERIFY(!retry.waiting(replaced, now));
     replaced = metadata; replaced.id = "bluez:adapter/other";
+    QVERIFY(!retry.waiting(replaced, now));
+    replaced = metadata; replaced.kind = CaptureKind::Loopback;
     QVERIFY(!retry.waiting(replaced, now));
     retry.clear(); // Observed disappearance, followed by the same target.
     QVERIFY(!retry.waiting(source, now));
@@ -227,13 +272,53 @@ private slots:
     QCOMPARE(pipeWireSource(props, 70, 0, 2, phones)->rate, 0u);
     QCOMPARE(pipeWireSource(props, 70, 0, 2, phones)->codec, "sbc");
   }
+  void outputSources_data() {
+    QTest::addColumn<QString>("name");
+    QTest::addColumn<QString>("api");
+    QTest::newRow("physical") << QString("alsa_output.test") << QString("alsa");
+    QTest::newRow("virtual") << QString("virtual-output") << QString{};
+    QTest::newRow("bluetooth") << QString("bluez_output.test") << QString("bluez5");
+  }
+  void outputSources() {
+    QFETCH(QString, name);
+    QFETCH(QString, api);
+    QVariantMap props{{"node.name", name}, {"node.description", "Same name"},
+      {"object.serial", "50"}, {"media.class", "Audio/Sink"}, {"device.api", api}};
+    if (api == "bluez5") {
+      props["api.bluez5.path"] = "/org/bluez/hci0/dev_A";
+      props["api.bluez5.profile"] = "a2dp-sink";
+    }
+    // Outputs do not require a paired phone source in BluezCatalog.
+    const auto output = pipeWireSource(props, 10, 48000, 2, {});
+    QVERIFY(output);
+    QCOMPARE(output->kind, CaptureKind::Loopback);
+    QCOMPARE(output->id, "loopback:" + name);
+    QCOMPARE(output->rate, 48000u);
+    props["node.name"] = name + ".other";
+    const auto other = pipeWireSource(props, 11, 44100, 2, {});
+    QVERIFY(other);
+    QCOMPARE(other->name, output->name);
+    QVERIFY(other->id != output->id);
+    props.remove("node.description");
+    QCOMPARE(pipeWireSource(props, 11, 0, 0, {})->name, name + ".other");
+    props.remove("node.name");
+    QVERIFY(!pipeWireSource(props, 11, 0, 0, {}));
+    props["node.name"] = name;
+    props.remove("object.serial");
+    QVERIFY(!pipeWireSource(props, 11, 0, 0, {}));
+  }
   void nativeServerRecovery_data() {
     QTest::addColumn<int>("sourceRate");
-    QTest::newRow("44100") << 44100;
-    QTest::newRow("48000") << 48000;
+    QTest::addColumn<bool>("loopback");
+    QTest::newRow("input-44100") << 44100 << false;
+    QTest::newRow("input-48000") << 48000 << false;
+    QTest::newRow("loopback-44100") << 44100 << true;
+    QTest::newRow("loopback-48000") << 48000 << true;
   }
   void nativeServerRecovery() {
     QFETCH(int, sourceRate);
+    QFETCH(bool, loopback);
+    const QString selected = loopback ? "loopback:test-sink" : "pipewire:test-source";
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const auto root = directory.path();
@@ -261,6 +346,8 @@ context.objects = [
   { factory = metadata args = { metadata.name = default } }
   { factory = spa-node-factory args = { factory.name = support.node.driver node.name = Dummy-Driver node.group = pipewire.dummy priority.driver = 20000 } }
   { factory = adapter args = { factory.name = audiotestsrc node.name = test-source node.description = TestSource media.class = Audio/Source audio.format = F32 audio.rate = 48000 audio.channels = 2 audio.position = [ FL FR ] } }
+  { factory = adapter args = { factory.name = support.null-audio-sink node.name = test-sink node.description = TestSink media.class = Audio/Sink audio.rate = 48000 audio.channels = 2 audio.position = [ FL FR ] } }
+  { factory = adapter args = { factory.name = support.null-audio-sink node.name = other-sink node.description = TestSink media.class = Audio/Sink audio.rate = 48000 audio.channels = 2 audio.position = [ FL FR ] } }
 ]
 )").replace("48000", QByteArray::number(sourceRate));
     QVERIFY(write(root + "/pipewire.conf", configuration));
@@ -286,22 +373,60 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
     QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(root + "/airplayqt-test"), 3000);
     environment.remove("PIPEWIRE_CONFIG_DIR");
     environment.insert("WIREPLUMBER_CONFIG_DIR", root);
+    environment.insert("XDG_STATE_HOME", root + "/state");
     policy.setProcessEnvironment(environment);
     policy.start("wireplumber", {});
     QVERIFY(policy.waitForStarted());
+    // A long PCM WAV keeps playback active during recovery checks. Distinct
+    // constant channels also expose swaps, wrong targets and stale packets.
+    const auto wavePath = root + "/signal.wav";
+    if (loopback) {
+      QFile wave(wavePath);
+      QVERIFY(wave.open(QIODevice::WriteOnly));
+      QDataStream pcm(&wave);
+      pcm.setByteOrder(QDataStream::LittleEndian);
+      const quint32 bytes = sourceRate * 60 * 4;
+      pcm.writeRawData("RIFF", 4); pcm << quint32(36 + bytes);
+      pcm.writeRawData("WAVEfmt ", 8); pcm << quint32(16) << quint16(1) << quint16(2);
+      pcm << quint32(sourceRate) << quint32(sourceRate * 4) << quint16(4) << quint16(16);
+      pcm.writeRawData("data", 4); pcm << bytes;
+      for (quint32 i = 0; i < bytes / 4; ++i) pcm << qint16(4096) << qint16(-8192);
+      QCOMPARE(pcm.status(), QDataStream::Ok);
+    }
+    Process playback;
+    playback.setProcessChannelMode(QProcess::MergedChannels);
+    const auto play = [&] {
+      // Pin the test producer too: WirePlumber otherwise moves an explicitly
+      // targeted playback stream when its original target was the default.
+      playback.start("pw-cat", {"--playback", "--target", "test-sink",
+          "--properties", "{ node.dont-reconnect = true node.dont-fallback = true }", wavePath});
+      return playback.waitForStarted();
+    };
+    const auto command = [](const QString &program, const QStringList &arguments) {
+      Process process;
+      process.setProcessChannelMode(QProcess::MergedChannels);
+      process.start(program, arguments);
+      const bool ok = process.waitForFinished(3000) && process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+      if (!ok) qWarning().noquote() << program << arguments << process.readAll();
+      return ok;
+    };
     // Each data row uses a different server/socket. Do not inherit a catalog
     // snapshot (or a pending server-loss event) from the previous row.
     auto *catalog = &PipeWireCatalog::instance();
     const auto disposeCatalog = qScopeGuard([&] { delete catalog; });
-    auto available = [] {
+    auto available = [&] {
       const auto devices = inputDevices();
-      return std::any_of(devices.begin(), devices.end(), [](const auto &d) { return d.id == "pipewire:test-source"; });
+      return std::any_of(devices.begin(), devices.end(), [&](const auto &d) {
+        return d.id == selected && d.kind == (loopback ? CaptureKind::Loopback : CaptureKind::Input);
+      });
     };
     QTRY_VERIFY_WITH_TIMEOUT(available(), 5000);
+    if (loopback) QVERIFY(play());
     PipeWireCapture capture;
     QSignalSpy logs(&capture, &InputCapture::log);
-    QCOMPARE(capture.open("pipewire:test-source", nullptr).size(), 2);
+    QCOMPARE(capture.open(selected, nullptr).size(), 2);
     auto stream = capture.prepare(0, 1, 352, 65537);
+    QCOMPARE(stream.gapPolicy, GapPolicy::Silence);
     capture.start();
     QTRY_VERIFY_WITH_TIMEOUT(stream.queue->capturedFrames() >= 352, 6000);
     std::span<const std::byte> l, r;
@@ -315,7 +440,8 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
       QVERIFY(std::isfinite(sample));
       nonzero |= sample != 0.f;
     }
-    QVERIFY(nonzero);
+    if (!loopback) QVERIFY(nonzero);
+    if (loopback) QVERIFY(waitForSignal(stream, .125f, -.25f));
     const auto logged = [&](const QString &text) {
       return std::any_of(logs.begin(), logs.end(), [&](const auto &entry) {
         return i18n::Message(entry[0].toJsonArray()).render().contains(text);
@@ -337,6 +463,34 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
       return i18n::Message(entry[0].toJsonArray()).render().contains("Negotiating ");
     });
     QCOMPARE(initialNegotiations, 1);
+    if (loopback) {
+      const auto source = [&]() -> PipeWireSource {
+        for (const auto &entry : catalog->sources()) if (entry.id == selected) return entry;
+        return {};
+      };
+      const auto original = source();
+      QVERIFY(command("pw-metadata", {"0", "default.configured.audio.sink", "{\"name\":\"other-sink\"}", "Spa:String:JSON"}));
+      QTest::qWait(300);
+      while (stream.queue->peek(l, r)) stream.queue->pop();
+      QVERIFY(waitForSignal(stream, .125f, -.25f));
+      QCOMPARE(source().serial, original.serial);
+      const auto generation = stream.queue->generation.load();
+      QVERIFY(command("pw-cli", {"destroy", QString::number(original.node)}));
+      QTRY_VERIFY_WITH_TIMEOUT(!available(), 3000);
+      QTRY_VERIFY_WITH_TIMEOUT(stream.queue->generation.load() > generation, 3000);
+      while (stream.queue->peek(l, r)) stream.queue->pop();
+      const auto disconnected = stream.queue->capturedFrames();
+      QTest::qWait(300);
+      QCOMPARE(stream.queue->capturedFrames(), disconnected);
+      QVERIFY(!stream.queue->peek(l, r));
+      playback.terminate(); playback.waitForFinished(3000);
+      QVERIFY(command("pw-cli", {"create-node", "adapter",
+          QString("{ factory.name = support.null-audio-sink node.name = test-sink node.description = TestSink media.class = Audio/Sink object.linger = true audio.rate = %1 audio.channels = 2 audio.position = [ FL FR ] }").arg(sourceRate)}));
+      QTRY_VERIFY_WITH_TIMEOUT(available(), 5000);
+      QVERIFY(source().serial != original.serial);
+      QVERIFY(play());
+      QVERIFY(waitForSignal(stream, .125f, -.25f));
+    }
     const auto oldEpoch = stream.queue->generation.load();
     server.terminate(); QVERIFY(server.waitForFinished(3000));
     QTRY_VERIFY_WITH_TIMEOUT(stream.queue->generation.load() > oldEpoch, 3000);
@@ -348,6 +502,11 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
     QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(root + "/airplayqt-test"), 3000);
     policy.start("wireplumber", {}); QVERIFY(policy.waitForStarted());
     QTRY_VERIFY_WITH_TIMEOUT(stream.queue->capturedFrames() > before, 8000);
+    if (loopback) {
+      playback.terminate(); playback.waitForFinished(3000);
+      QVERIFY(play());
+      QVERIFY(waitForSignal(stream, .125f, -.25f));
+    }
     QVERIFY(capture.stop().isEmpty());
     const auto stopped = stream.queue->capturedFrames();
     QTest::qWait(150);
@@ -355,10 +514,63 @@ wireplumber.profiles = { main = { monitor.alsa = disabled monitor.bluez = disabl
     auto restarted = capture.prepare(1, 0, 352, 65536);
     capture.start();
     QTRY_VERIFY_WITH_TIMEOUT(restarted.queue->capturedFrames() >= 352, 6000);
+    if (loopback) QVERIFY(waitForSignal(restarted, -.25f, .125f));
     QCOMPARE(stream.queue->capturedFrames(), stopped);
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(capture.stop().isEmpty());
     QVERIFY(!logs.isEmpty());
+    if (loopback) {
+      QCOMPARE(capture.open("pipewire:test-source", nullptr).size(), 2);
+      auto input = capture.prepare(0, 1, 352, 65536);
+      capture.start();
+      QTRY_VERIFY_WITH_TIMEOUT(input.queue->capturedFrames() >= 352, 6000);
+      QCOMPARE(capture.open(selected, nullptr).size(), 2);
+      const auto inputStopped = input.queue->capturedFrames();
+      auto monitor = capture.prepare(0, 0, 352, 65536);
+      capture.start();
+      QVERIFY(waitForSignal(monitor, .125f, .125f));
+      QCOMPARE(input.queue->capturedFrames(), inputStopped);
+      QVERIFY(capture.close().isEmpty());
+    }
+#ifdef AIRPLAY_TEST_LINUX_CLI
+    if (loopback && sourceRate == 44100) {
+      EmptyBluez bluez;
+      auto bus = QDBusConnection::sessionBus();
+      QVERIFY(bus.registerService("org.bluez"));
+      const auto unregister = qScopeGuard([&] {
+        bus.unregisterObject("/", QDBusConnection::UnregisterTree);
+        bus.unregisterService("org.bluez");
+      });
+      QVERIFY(bus.registerVirtualObject("/", &bluez, QDBusConnection::SubPath));
+      Process cli;
+      auto cliEnvironment = QProcessEnvironment::systemEnvironment();
+      cliEnvironment.insert("DBUS_SYSTEM_BUS_ADDRESS", qEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS"));
+      cli.setProcessEnvironment(cliEnvironment);
+      cli.start(AIRPLAY_TEST_LINUX_CLI, {"--list-devices"});
+      QVERIFY(cli.waitForStarted());
+      QTRY_COMPARE_WITH_TIMEOUT(cli.state(), QProcess::NotRunning, 8000);
+      QVERIFY2(cli.exitCode() == 0, cli.readAllStandardError().constData());
+      const auto listing = cli.readAllStandardOutput();
+      QVERIFY(listing.startsWith("ID\tNAME\tCONNECTION\n"));
+      QVERIFY(listing.contains("loopback:test-sink\tTestSink(auto loopback)\tn/a\n"));
+      QVERIFY(listing.contains("loopback:other-sink\tTestSink(auto loopback)\tn/a\n"));
+      QVERIFY(listing.contains("pipewire:test-source\tTestSource\tn/a\n"));
+      const auto settingsPath = root + "/settings.json";
+      app::Settings{}.save(settingsPath);
+      QTcpServer unusedPort;
+      QVERIFY(unusedPort.listen(QHostAddress::LocalHost));
+      const auto port = unusedPort.serverPort();
+      unusedPort.close();
+      cli.start(AIRPLAY_TEST_LINUX_CLI, {"--config", settingsPath, "--device", selected,
+          "--receiver", "127.0.0.1:" + QString::number(port)});
+      QVERIFY(cli.waitForStarted());
+      QTRY_COMPARE_WITH_TIMEOUT(cli.state(), QProcess::NotRunning, 8000);
+      QCOMPARE(cli.exitCode(), 1); // Receiver is absent; capture selection succeeded.
+      const auto diagnostics = cli.readAllStandardError();
+      QVERIFY2(diagnostics.contains("Driver loaded; ready to start"), diagnostics.constData());
+      QVERIFY(diagnostics.contains("Starting AirPlay session"));
+    }
+#endif
   }
 };
 QTEST_GUILESS_MAIN(Tests)

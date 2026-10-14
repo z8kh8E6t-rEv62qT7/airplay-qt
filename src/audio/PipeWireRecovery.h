@@ -4,9 +4,10 @@
 
 namespace audio {
 // Source format metadata can arrive after capture has already negotiated its
-// own format. Only a change of target or codec requires a new capture stream.
+// own format. Only a change of target, capture kind or codec requires a new stream.
 inline bool samePipeWireTarget(const PipeWireSource &a, const PipeWireSource &b) {
-  return a.id == b.id && a.serial == b.serial && a.node == b.node && a.codec == b.codec;
+  return a.id == b.id && a.serial == b.serial && a.node == b.node &&
+      a.codec == b.codec && a.kind == b.kind;
 }
 inline bool pipeWireStateInvalidates(pw_stream_state previous, pw_stream_state next) {
   const auto terminal = [](pw_stream_state state) {

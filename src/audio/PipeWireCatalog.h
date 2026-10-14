@@ -10,6 +10,7 @@ struct PipeWireSource {
   QString id, name, serial, codec;
   uint32_t node = SPA_ID_INVALID;
   uint32_t rate = 0, channels = 0;
+  CaptureKind kind = CaptureKind::Input;
   bool operator==(const PipeWireSource &) const = default;
 };
 std::optional<PipeWireSource> pipeWireSource(const QVariantMap &, uint32_t node,

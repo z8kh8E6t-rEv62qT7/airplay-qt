@@ -146,6 +146,7 @@ struct PipeWireCapture::State {
         PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, "Music",
         PW_KEY_TARGET_OBJECT, serial.constData(), PW_KEY_NODE_DONT_RECONNECT, "true",
         "node.dont-fallback", "true", "node.latency", "352/44100",
+        PW_KEY_STREAM_CAPTURE_SINK, source.kind == CaptureKind::Loopback ? "true" : "false",
         "resample.disable", "false", nullptr);
     stream = pw_stream_new(catalog.core(), "AirPlayQt input", props);
     if (!stream) { processError.store(ENOMEM); return; }

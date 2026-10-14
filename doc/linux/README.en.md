@@ -103,6 +103,14 @@ Launch the installed application as your normal desktop user, without `sudo`:
 
 You can start sending before the phone begins playback. Pausing or disconnecting the phone keeps the session sending silence; audio resumes when the same phone returns. Leave the prebuffer at its default of 2048 samples (about 46.44 ms) initially.
 
+### Capture computer output (auto loopback)
+
+Select an output labeled `(auto loopback)` in the input list to capture audio playing through it. Physical, Bluetooth, and virtual outputs are listed. The left/right selectors use FL/FR; swapping channels or selecting the same channel twice is supported. No additional virtual driver is needed; PipeWire converts to 44.1 kHz stereo.
+
+Local playback is preserved without changing system volume, mute, or routing. Monitor volume follows system configuration and does not guarantee bypassing volume or mute. Capture stays on the selected output and does not follow the system default. A missing output or disconnected PipeWire server produces silence until the same node name returns, without falling back to another device. Outputs without a usable monitor or connection produce diagnostics and remain in silent waiting mode.
+
+CLI `--list-devices` also lists these outputs with IDs of `loopback:<node.name>` and names labeled `(auto loopback)`. Pass the complete listed ID to `--device`, using the remaining startup options from section 7. Loopback does not forward the phone-input Bluetooth volume keys.
+
 ### Phone volume keys
 
 While streaming, Bluetooth volume requests from the selected phone control AirPlay volume, including both members of a stereo pair. Absolute volume `0` mutes (`-144 dB`); values `1–127` map to `-30 + 30 × value / 127 dB`. If only up/down keys are available, each press or repeat changes volume by `1 dB`; release does not add a step. Relative keys wait 100 ms so absolute volume takes priority in the same window. The application does not add PCM gain or send AirPlay volume changes back to the phone.
